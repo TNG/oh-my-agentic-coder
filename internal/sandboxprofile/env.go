@@ -1,9 +1,37 @@
 package sandboxprofile
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
+
+// ServePasswordEnv is consumed by serve before it launches host sidecars.
+const ServePasswordEnv = "OMAC_SERVE_PASSWORD"
+
+// ServeAuthTargetEnv names the auth variable the native supervisor must retain.
+const ServeAuthTargetEnv = "OMAC_SERVE_AUTH_TARGET"
+
+// ServeAuthDeniedError is the one message for "deny_vars blocks the auth
+// variable OMAC_SERVE_PASSWORD is passed as", shared by the `omac serve`
+// startup check and the supervisor's final check. target is the auth
+// variable (e.g. OPENCODE_SERVER_PASSWORD); profile is the policy profile
+// reference, or "" when unknown. Callers print it after "omac serve:".
+func ServeAuthDeniedError(target, profile string) error {
+	return fmt.Errorf("%s is passed to the server as %s, but %s blocks that variable in environment.deny_vars. "+
+		"Remove the matching entry or unset %s", ServePasswordEnv, target, ServeAuthProfileName(profile), ServePasswordEnv)
+}
+
+// ServeAuthProfileName is how the OMAC_SERVE_PASSWORD messages name a
+// sandbox profile: by its reference, which is also the name of the file the
+// user edits (e.g. "strict" for ~/.config/omac/sandbox-profiles/strict.json).
+// ref "" (unknown) gives "the sandbox profile".
+func ServeAuthProfileName(ref string) string {
+	if ref == "" {
+		return "the sandbox profile"
+	}
+	return fmt.Sprintf("sandbox profile %q", ref)
+}
 
 // dangerousEnvExact are always dropped from the child environment,
 // even when matched by allow_vars (nono's env_sanitization list plus
@@ -229,6 +257,14 @@ func EnvVarMatches(key string, pats []string) bool {
 	return false
 }
 
+// EnvDenied reports whether a profile's environment.deny_vars removes the
+// variable name from the child environment. FilterEnv applies deny_vars last,
+// over inherited and injected variables alike, so a denied name never
+// reaches the child whatever allow_vars says.
+func EnvDenied(name string, denyVars []string) bool {
+	return EnvVarMatches(name, denyVars)
+}
+
 // patternsOverlap reports whether two allow/deny patterns can match a
 // common key. Used by DeniedBaseVars to detect a deny that shadows a
 // base entry even when either side is a trailing-* prefix.
@@ -262,7 +298,9 @@ func envVarAllowed(key string, allowVars []string) bool {
 }
 
 // FilterEnv builds the child environment from scratch:
-//  1. drop the hardcoded danger blocklist,
+//  1. drop the hardcoded danger blocklist and the serve-password handoff
+//     variables (ServePasswordEnv, ServeAuthTargetEnv), even under
+//     allow_vars ["*"] and when injected,
 //  2. apply the optional allow_vars allowlist,
 //  3. overlay injected vars (which win over inherited values),
 //  4. LAST, drop everything matching denyVars.
@@ -284,7 +322,7 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 			continue
 		}
 		key := kv[:eq]
-		if IsDangerousEnvVar(key) {
+		if IsDangerousEnvVar(key) || key == ServePasswordEnv || key == ServeAuthTargetEnv {
 			continue
 		}
 		if !envVarAllowed(key, allowVars) {
@@ -296,6 +334,9 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 		out = append(out, kv)
 	}
 	for k, v := range injected {
+		if k == ServePasswordEnv || k == ServeAuthTargetEnv {
+			continue
+		}
 		out = append(out, k+"="+v)
 	}
 	if len(denyVars) == 0 {
@@ -304,7 +345,7 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 	kept := out[:0]
 	for _, kv := range out {
 		eq := strings.IndexByte(kv, '=')
-		if eq > 0 && EnvVarMatches(kv[:eq], denyVars) {
+		if eq > 0 && EnvDenied(kv[:eq], denyVars) {
 			continue
 		}
 		kept = append(kept, kv)

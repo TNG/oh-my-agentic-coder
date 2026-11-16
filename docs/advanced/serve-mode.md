@@ -27,7 +27,49 @@ See [omac serve](../usage/cli.md#omac-serve) for the command reference. This pag
 omac serve opencode --workdir ~/my-project
 ```
 
-omac automatically launches `opencode serve` on port 4096 and handles authentication. OpenCode Desktop connects to it there by default — no additional port configuration is needed.
+omac automatically launches `opencode serve` on port 4096. Add that server in OpenCode Desktop.
+By default, OpenCode generates a new random password on every start. It prints the password in the `omac serve` output, right after the line saying where the server listens:
+
+```text
+server listening on http://127.0.0.1:4096
+server password <random password>
+```
+
+For a stable password across restarts, set a password used only for this server:
+
+```bash
+# Read the password from a password manager rather than typing it inline,
+# so it does not end up in your shell history. For example, on macOS:
+OMAC_SERVE_PASSWORD="$(security find-generic-password -s omac-serve -w)" \
+  omac serve opencode --workdir ~/my-project
+```
+
+omac passes this value to the OpenCode server as `OPENCODE_SERVER_PASSWORD`.
+Other processes omac starts, such as skill helpers on your machine, do not
+see it. Never reuse this password for another service: the agent inside the
+sandbox can read it.
+
+How your shell environment is handled depends on the sandbox:
+
+- **In the sandbox (the default):** a password you set in your shell for other
+  tools (`OPENCODE_SERVER_PASSWORD`) is not passed to the server; only
+  `OMAC_SERVE_PASSWORD` is. The exception is a sandbox profile that lists
+  `OPENCODE_SERVER_PASSWORD` in
+  [`environment.allow_vars`](../configuration.md#sandbox-grants).
+  `OMAC_SERVE_PASSWORD` needs omac's own sandbox (the default
+  `builtin` profile); with another sandbox backend such as
+  [nono](./nono.md), omac stops with an error. omac also stops, instead of
+  starting the server without the password, if `environment.deny_vars` in
+  your sandbox profile (the list of variables the sandbox never passes on, in
+  the same file as `allow_vars`) matches `OPENCODE_SERVER_PASSWORD`, either
+  by name or by a pattern such as `OPENCODE_*`.
+- **With `--no-sandbox`:** the server sees your shell environment as usual,
+  including any `OPENCODE_SERVER_PASSWORD` you set there.
+  `OMAC_SERVE_PASSWORD` takes precedence over it.
+
+`OMAC_SERVE_PASSWORD` cannot be combined with `--no-inner`, because omac
+then starts no server to pass it to. (`--no-inner` makes omac skip starting
+OpenCode, for when you run your own server.)
 
 ## Choosing a different port
 

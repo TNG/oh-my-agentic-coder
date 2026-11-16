@@ -403,16 +403,19 @@ func TestServerExposureWarning(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
 
-	// opencode server + auth env UNSET -> warn (names the port + the env var).
+	// opencode server + auth env UNSET -> hint naming the port, where the
+	// random password appears, and how to keep a stable one.
 	unset := func(string) string { return "" }
 	inner := []string{"opencode", "serve"}
-	w := serverExposureWarning(oc, inner, unset)
-	if w == "" || !strings.Contains(w, "4096") || !strings.Contains(w, "OPENCODE_SERVER_PASSWORD") {
-		t.Errorf("expected warning naming :4096 and OPENCODE_SERVER_PASSWORD, got %q", w)
+	w := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD")
+	for _, want := range []string{"127.0.0.1:4096", "random password", `"server password …"`, "set OMAC_SERVE_PASSWORD"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("hint %q does not contain %q", w, want)
+		}
 	}
 
 	// The warning names the port actually bound, not the harness default.
-	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset)
+	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset, "set OMAC_SERVE_PASSWORD")
 	if !strings.Contains(ow, "4095") || strings.Contains(ow, "4096") {
 		t.Errorf("expected warning naming :4095 for `--port 4095`, got %q", ow)
 	}
@@ -424,12 +427,12 @@ func TestServerExposureWarning(t *testing.T) {
 		}
 		return ""
 	}
-	if w := serverExposureWarning(oc, inner, set); w != "" {
+	if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD"); w != "" {
 		t.Errorf("auth set should suppress the warning, got %q", w)
 	}
 
 	// Harness with no server mode -> nothing to warn about.
-	if w := serverExposureWarning(cc, []string{"claude"}, unset); w != "" {
+	if w := serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD"); w != "" {
 		t.Errorf("non-server harness should not warn, got %q", w)
 	}
 }

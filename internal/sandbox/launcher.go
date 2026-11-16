@@ -292,7 +292,9 @@ func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (i
 // ExecWithReadyPID is ExecWithReady with the child's pid (also its process
 // group id) passed to onReady.
 func ExecWithReadyPID(argv []string, extraEnv map[string]string, onReady func(pid int)) (int, error) {
-	// Inherit host env, then overlay extras.
+	// Inherit host env, then overlay extras. Appending can leave a key twice
+	// (an inherited value and an extra); os/exec keeps only the last value of
+	// a duplicate key, so the extra wins and the child sees a single entry.
 	env := os.Environ()
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)

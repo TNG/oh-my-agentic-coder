@@ -51,6 +51,10 @@ omac serve --workdir ~/my-project
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
 
+| Environment variable | Description |
+|---|---|
+| `OMAC_SERVE_PASSWORD` | Password for the OpenCode server that `omac serve` starts. Needs omac's own sandbox (or `--no-sandbox`) and can't be combined with `--no-inner`. Without it, OpenCode picks a new random password on every start. See [Serve mode](../advanced/serve-mode.md#how-to-use-it-today). |
+
 #### OpenCode v2 project discovery on macOS
 
 OpenCode 2.0.x treats denied configuration-discovery probes as fatal. In the

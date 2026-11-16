@@ -156,6 +156,11 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 // without OpenCode). When --workdir is given, that one directory is
 // auto-activated at cold start (§5.5).
 func runServe(args []string, env *Env) int {
+	password, passwordSet := os.LookupEnv(sandboxprofile.ServePasswordEnv)
+	if err := os.Unsetenv(sandboxprofile.ServePasswordEnv); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: consume password:", err)
+		return ExitIOError
+	}
 	parsed, ok := parseServeArgs(args, env)
 	if !ok {
 		return ExitMisuse
@@ -181,6 +186,23 @@ func runServe(args []string, env *Env) int {
 	roots := parsed.roots
 	openPorts := parsed.openPorts
 
+	// An empty value usually means a failed lookup, e.g. a missing keychain
+	// item in OMAC_SERVE_PASSWORD="$(security …)". Falling back to a random
+	// password would hide that from the user.
+	if passwordSet && password == "" {
+		fmt.Fprintf(env.Stderr, "omac serve: %s is set but empty; set a password or unset it.\n",
+			sandboxprofile.ServePasswordEnv)
+		return ExitMisuse
+	}
+
+	// Without an inner server the password would be dropped silently, and a
+	// user running their own server might believe it is protected by it.
+	if password != "" && noInner {
+		fmt.Fprintf(env.Stderr, "omac serve: %s has no effect with --no-inner (omac starts no server); unset it or drop --no-inner.\n",
+			sandboxprofile.ServePasswordEnv)
+		return ExitMisuse
+	}
+
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
@@ -197,6 +219,14 @@ func runServe(args []string, env *Env) int {
 	}
 	profName := plan.Name
 	prof := plan.Launcher
+	var authExtra map[string]string
+	if !noInner {
+		authExtra, err = prepareServeAuthEnv(password, harness, plan, noSandbox)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve:", err)
+			return ExitConfigInvalid
+		}
+	}
 
 	// Pre-flight: inner harness binary must be on $PATH (unless --no-inner
 	// or --inner override). Checked on the RESOLVED argv so a profile-pinned
@@ -275,12 +305,13 @@ func runServe(args []string, env *Env) int {
 	// Audit trail (persistent central path; NOT rtDir). Constructed before
 	// the inner command launches. In serve there is no set of pre-resolved
 	// secret values at this point (skills are brought up lazily), so the
-	// redactor's value-matching is seeded empty; secret NAMES are still
-	// always logged and never values, and namespaces are always hashed.
+	// redactor's value-matching is seeded only with the server password;
+	// secret NAMES are still always logged and never values, and
+	// namespaces are always hashed.
 	var auditFatal func(error) // assigned once sup/facade exist
-	auditCfg, auditMisuse := resolveAuditConfig(lc.Audit, auditFlags{
+	auditCfg, auditMisuse := serveAuditConfig(lc, auditFlags{
 		logPath: auditLog, disable: noAudit, strict: auditStrict,
-	}, audit.ModeServe, env.Version, nil, func(err error) {
+	}, env.Version, password, func(err error) {
 		if auditFatal != nil {
 			auditFatal(err)
 		}
@@ -513,6 +544,7 @@ func runServe(args []string, env *Env) int {
 	// per-skill OMAC_G_*/OMAC_D_* vars are added on top by serve as routes
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
+	addServeAuthEnv(extra, authExtra)
 	if injectBriefing {
 		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText
@@ -584,6 +616,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = injectServeAuthAllow(argv, harness, plan, password)
 		var ocClass openCodeVersionKind
 		if !learn {
 			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
@@ -649,9 +682,10 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
-	// Caution when the harness server will expose an unauthenticated loopback
-	// port (fires whether sandboxed or not — the server listens either way).
-	if w := serverExposureWarning(harness, inner, os.Getenv); w != "" {
+	// Hint when the harness server gets no password through omac and will use
+	// a random one (sandboxed or not; the server listens either way).
+	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox),
+		serveAuthAdvice(harness, plan, noSandbox)); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -785,15 +819,17 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 	return injectSandboxFlag(argv, "--open-port", strconv.Itoa(port))
 }
 
-// serverExposureWarning returns a one-line caution when a harness's server
-// daemon will bind a loopback port that is NOT protected by its auth env var
-// — that port is reachable by any local process, so an unauthenticated server
-// lets local callers drive the agent (bounded by the sandbox, but still). It
-// returns "" when there is no server port or the auth env var is set.
-// innerArgv is the launch's resolved inner command so the warning names the
-// port the server will really bind, not the harness default. getenv is
-// injected for testability.
-func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string) string {
+// serverExposureWarning returns a one-line hint when a harness's server will
+// bind a loopback port without a password supplied through omac. OpenCode
+// then protects the port with a random password that changes on every
+// restart and prints it itself; the hint says so and ends with advice on
+// keeping a stable one ("To keep the same password, <advice>."), usually
+// "set OMAC_SERVE_PASSWORD" (see serveAuthAdvice). It returns "" when there
+// is no server port or getenv reports the auth env var as set. getenv must
+// answer what the server will see, i.e. after the sandbox's env filter (see
+// serveAuthGetenv). innerArgv is the launch's resolved inner command so the
+// hint names the port the server will really bind, not the harness default.
+func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string, advice string) string {
 	sl := h.ServerLaunch
 	port := h.ResolveListenPort(innerArgv)
 	if sl == nil || port <= 0 || sl.AuthEnvVar == "" {
@@ -802,8 +838,9 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
 	}
-	return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local "+
-		"process; set %s to require authentication.", h.Name, port, sl.AuthEnvVar)
+	return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d uses a random password that changes on every restart "+
+		"(%s prints it as \"server password …\"). To keep the same password, %s.",
+		h.Name, port, h.Name, advice)
 }
 
 // injectOpenPort splices `--open-port <port>` into a sandbox argv so the
@@ -910,12 +947,22 @@ func forwardHarnessEnv(env *Env, argv []string, harness config.Harness, plan san
 		fmt.Fprintln(env.Stderr, `      allow_vars: ["*"] is not recommended because it forwards almost every ambient var.`)
 		fmt.Fprintln(env.Stderr, "      Continuing shortly…")
 		time.Sleep(emptyAllowVarsWarnDelay)
+	}
+	return injectSandboxEnvAllow(argv, harnessEnvAllowVars(harness, plan), plan)
+}
+
+// harnessEnvAllowVars returns the variable names forwardHarnessEnv adds to
+// the sandbox's env allowlist via --allow-env. It is the single place for
+// that rule, so code that predicts the server's environment (see
+// serveAuthGetenv) cannot drift from what the sandbox really lets through.
+func harnessEnvAllowVars(harness config.Harness, plan sandboxPlan) []string {
+	if planAllowVarsEmpty(plan) {
 		// Seed only the operational minimum; do NOT auto-forward auth vars.
 		// HomeEnv goes through: it is a path, not a credential, and
 		// ResolvedSandboxDirs already granted the config home it names.
-		return injectSandboxEnvAllow(argv, append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv), plan)
+		return append(sandboxprofile.DefaultAllowVars(), harness.HomeEnv)
 	}
-	return injectSandboxEnvAllow(argv, harness.ForwardedEnvVars(), plan)
+	return harness.ForwardedEnvVars()
 }
 
 // planAllowVarsEmpty reports whether the launch's resolved policy profile

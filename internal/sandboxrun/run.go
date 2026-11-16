@@ -253,7 +253,16 @@ func Run(opts Options) int {
 	// user where runtime diagnostics will land.
 	diag.AnnouncePath()
 
-	env := sandboxprofile.FilterEnv(os.Environ(), sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), merged.Environment.DenyVars, injected)
+	env, err := filterServeAuthEnv(os.Environ(), merged.Environment, injected, opts.Flags.ProfileRef)
+	if err != nil {
+		// Same prefix as the matching `omac serve` startup check. That check
+		// exits with the CLI's config-invalid code, but this returns 1 like
+		// every other supervisor failure (an invalid profile included): omac
+		// serve passes this code on as the server's own exit code, so a
+		// distinct value here could not be told apart from the server's.
+		fmt.Fprintln(stderr, "omac serve:", err)
+		return 1
+	}
 	var onReady func(int)
 	if recorder != nil {
 		onReady = recorder.Start
