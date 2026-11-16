@@ -198,7 +198,7 @@ setup: |            # shell script run as root at provisioning; default: none
   npm install --global pnpm
 ```
 
-The default memory is capped at 12GiB because a full test suite of a large Java project that uses Testcontainers needs about 7.6 GB, which 8GiB cannot hold comfortably and 12GiB does. The values above are examples, not recommendations.
+The 12GiB cap for the default memory comes from testing with a large Java project: its full test suite, including Testcontainers, ran well with 12GiB. The values above are examples, not recommendations.
 
 When omac creates the VM or reprovisions it, each `jdks` entry installs the matching Adoptium package: `temurin-25` installs `temurin-25-jdk`. An entry is either `temurin-<version>`, where the version has no leading zero, or the package name itself, such as `temurin-25-jdk`. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
