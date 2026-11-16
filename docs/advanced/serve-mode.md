@@ -113,8 +113,9 @@ Desktop's folder is, depending on the platform:
   older installs `~/.local/share/ai.opencode.desktop` (or under
   `$XDG_DATA_HOME`)
 
-The beta app uses `ai.opencode.desktop.beta` instead. omac protects these
-files in all of these folders, and in the folder `XDG_STATE_HOME` points to.
+The beta app uses `ai.opencode.desktop.beta` instead. omac reads your project
+list from `opencode.global.dat` in all of these folders, and protects these
+files in all of them and in the folder `XDG_STATE_HOME` points to.
 
 ### What omac refuses
 

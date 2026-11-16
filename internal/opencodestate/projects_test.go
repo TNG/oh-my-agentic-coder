@@ -324,3 +324,45 @@ func TestWorktreesSkipsFolderContainingDesktopStore(t *testing.T) {
 		}
 	}
 }
+
+// Discovery and the sandbox protection share one list of Desktop dirs, with
+// no duplicates, covering the stable and beta app in every location.
+func TestDesktopStorePathsListsEachDirOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "cfg"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share")) // same as the default
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "cfg", "ai.opencode.desktop"))
+
+	dirs := desktopDirs(home)
+	want := []string{
+		filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop"),
+		filepath.Join(home, ".config", "ai.opencode.desktop"),
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop"),
+		filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop.beta"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop.beta"),
+		filepath.Join(home, ".config", "ai.opencode.desktop.beta"),
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta"),
+	}
+	if !slices.Equal(dirs, want) {
+		t.Errorf("desktopDirs = %v\nwant %v", dirs, want)
+	}
+
+	paths := DesktopStorePaths()
+	if len(paths) != len(want)*5 {
+		t.Errorf("DesktopStorePaths has %d entries, want %d (5 files in each dir, XDG_STATE_HOME already listed): %v", len(paths), len(want)*5, paths)
+	}
+	for _, p := range []string{
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta", "drafts.sqlite-wal"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop", "opencode.global.dat"),
+	} {
+		if !slices.Contains(paths, p) {
+			t.Errorf("DesktopStorePaths misses %s", p)
+		}
+	}
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	if !slices.Contains(DesktopStorePaths(), filepath.Join(home, "state", "drafts.sqlite")) {
+		t.Error("DesktopStorePaths misses the XDG_STATE_HOME store")
+	}
+}
