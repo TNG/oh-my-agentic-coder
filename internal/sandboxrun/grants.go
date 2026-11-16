@@ -535,7 +535,10 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
 	}
-	roots = append(roots, p.Filesystem.AllowLiteral...)
+	// Cleaned like in ResolveGrants, so "/w/a/" and "/w/a" are one root.
+	for _, path := range p.Filesystem.AllowLiteral {
+		roots = append(roots, filepath.Clean(path))
+	}
 	roots = slices.DeleteFunc(roots, inDenyScanSkipPath)
 	return dedupe(roots), nil
 }

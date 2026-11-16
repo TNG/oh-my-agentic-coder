@@ -1303,3 +1303,17 @@ func TestResolveGrantsDenyScanPrunesProtectedDirs(t *testing.T) {
 		t.Errorf("protected subtree must be pruned, not descended: %s", sshEnv)
 	}
 }
+
+// A literal grant spelled with a trailing slash is the same scan root as
+// without one, as ResolveGrants also cleans it.
+func TestDenyScanRootsCleansLiteralGrants(t *testing.T) {
+	dir := t.TempDir()
+	p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{dir + "/", dir}}}
+	roots, err := denyScanRoots(p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(roots, []string{dir}) {
+		t.Errorf("denyScanRoots = %v, want [%s]", roots, dir)
+	}
+}
