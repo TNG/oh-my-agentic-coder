@@ -19,7 +19,7 @@ When a project directory is activated, omac generates a **random 128-bit dir tok
 
 The token is the access control mechanism for multi-directory isolation. Because it is 128-bit random, it cannot be guessed — a session that activates directory A never learns directory B's token and therefore cannot route requests to B's skills. "Bearer capability" means: whoever holds the token can use it; there is no separate authentication check.
 
-The token rotates on each deactivate/reactivate. The server keeps a `byToken` map — the routing table that maps each live dir token to its directory — and looks up every incoming request's token there. When a directory is deactivated, its token is removed from that map, so any later request using the old token gets a 404. A new random token is minted on the next activation. This prevents replay.
+The token rotates when a deactivated directory is activated again. The server keeps a `byToken` map — the routing table that maps each live dir token to its directory — and looks up every incoming request's token there. When a directory is deactivated, its token is removed from that map, so any later request using the old token gets a 404. A new random token is minted on the next activation. This prevents replay. A reload of a live directory is the one exception: it re-runs activation but keeps the existing token, because the owning session has no way to receive a replacement (the token is handed over exactly once, at first activation, and a reload response carries none).
 
 ### Directory states
 
@@ -49,7 +49,7 @@ There are two distinct identity keys used in different places:
 
 | Key | Value | Lifetime | Used for |
 |---|---|---|---|
-| **Routing token** | random 128-bit, minted per activation | per activation (rotates on each deactivate/reactivate) | Facade mount paths; controls which dir a caller can reach |
+| **Routing token** | random 128-bit, minted per activation | per activation (rotates when a deactivated dir is activated again; a reload keeps it) | Facade mount paths; controls which dir a caller can reach |
 | **Workdir identity** | `sha256(abs(workdir))`, stable across restarts | persistent | Keychain keys; skill registry; skill-dir resolution |
 
 The routing token must be random. The loopback port is reachable by any process running as the same user — including the agent's own npm, pip, or cargo dependencies. A compromised dependency could connect to the control plane and try to call another project's skills. A predictable token, such as a hash of the directory path, could be guessed, giving access to any active directory.
@@ -60,7 +60,7 @@ The workdir identity keys a directory's persistent state — its keychain secret
 
 When a directory is activated, omac returns a **manifest** — a JSON document listing the directory's workdir-local skills and the server's global skills, each with its state and base URL. Harnesses read it to find each skill's endpoint, and in multi-directory mode to get the namespaced URLs (rather than the flat `OMAC_<SKILL>_BASE` aliases).
 
-`dir_token` is included **only in the first activation response**. A re-activation of an already-active directory (e.g. `SessionStart` fired twice) returns the manifest without `dir_token` — the caller already holds it, and re-issuing it would hand the namespace key to whoever asked, regardless of whether they are the session that originally activated the directory.
+`dir_token` is included **only in the first activation response**. A re-activation of an already-active directory (e.g. `SessionStart` fired twice) returns the manifest without `dir_token` — the caller already holds it, and re-issuing it would hand the namespace key to whoever asked, regardless of whether they are the session that originally activated the directory. A `reload` response also never carries `dir_token`: reload keeps the directory's token unchanged, so the owner already holds the key and a copy in the response could only reach someone else. The one case where a token travels is a first activation — either via `POST /__omac__/activate` or a `reload` of a directory that is not active — and there it is handed over exactly once, to the caller that becomes the directory's owner.
 
 ```json
 {
@@ -112,22 +112,33 @@ OMAC_<SKILL>_BASE
 
 The control plane is a loopback HTTP server, advertised to the sandbox as `OMAC_CONTROL_BASE`.
 
-All mutation endpoints (`POST`) require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
+All control-plane endpoints, including the read-only `GET`s, require the per-session bearer token delivered as `OMAC_CONTROL_TOKEN` in the sandbox environment. Include it as:
 
 ```
 X-Omac-Control-Token: <value of OMAC_CONTROL_TOKEN>
 ```
 
-Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (`GET`) are not token-gated.
+Requests without a valid token receive `401 Unauthorized`. The token is daemon-wide: every activated session holds it, so it proves only "one of this daemon's sessions", never which workdir the caller owns.
+
+For that reason, the two endpoints that end or re-run a live namespace — `deactivate` and `reload` — demand a second credential when the target directory is already active: that directory's own `dir_token`, sent as:
+
+```
+X-Omac-Dir-Token: <the dir_token this session received at activation>
+```
+
+The comparison is constant-time. A missing or wrong value receives `403 Forbidden` and nothing is torn down. Two exceptions, both because no live namespace exists to take over:
+
+- `deactivate` of a directory that is not active is a no-op that still answers `200`.
+- `reload` of a directory that is not active acts as a plain first activation: it requires only the control token, and its response carries the freshly minted `dir_token` (see [manifest](#manifest)) once, to the caller that becomes the directory's owner.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/__omac__/activate` | required | Body `{"dir": "/abs/path"}`. Activates (or returns existing) dir. Response = [manifest](#manifest). `dir_token` only in first response. |
-| `POST` | `/__omac__/deactivate` | required | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. |
-| `POST` | `/__omac__/reload` | required | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. |
+| `POST` | `/__omac__/deactivate` | required + dir token for a live dir | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. `403` without the dir's `X-Omac-Dir-Token`; no-op `200` for a dir that is not active. |
+| `POST` | `/__omac__/reload` | required + dir token for a live dir | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. `403` without the dir's `X-Omac-Dir-Token`. Reload keeps the dir's token unchanged, and the response never carries `dir_token`; a reload of a dir that is not active is a plain activation and emits the token once. |
 | `POST` | `/__omac__/reload-global` | required | Re-activates the global skill layer (after `omac register --global`). |
-| `GET` | `/__omac__/dirs` | none | List active dirs and their states. |
-| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. |
+| `GET` | `/__omac__/dirs` | required | List active dirs and their states. |
+| `GET` | `/__omac__/global` | required | Global skills and their `/__global__/<mount>` URLs. |
 
 ---
 
