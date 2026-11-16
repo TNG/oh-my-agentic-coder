@@ -251,7 +251,7 @@ omac start --vm=acme                    # attach this session to it
 | Column | Meaning |
 |---|---|
 | `NAME` | The VM's name. |
-| `STATE` | `offline` or `online`; `not created` when the VM was never fully created; `error` when its state file cannot be read. |
+| `STATE` | `offline` or `online`; `not created` when the VM has no state yet; `error` when its state file cannot be read. STATE shows the stored mode, not whether the VM is running; use `omac vm status` for that. |
 | `SSH PORT` | The loopback port of the VM's SSH, or `-` if the VM was never created. |
 | `PORTS` | The VM's block of published ports, for example `30100-30199`, or `-` if the VM was never created. |
 
