@@ -31,7 +31,7 @@ on:
       model:
         description: 'Model id for the strix agent, for THIS RUN ONLY. Leave it as it comes to use the scan''s own pin (the E2E_MODEL default below — keep the two in step). Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
         type: string
-        default: 'deepseek-ai/DeepSeek-V4.1-Flash'
+        default: 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ jobs:
       # against: the model doing the scanning is chosen here. The same literal
       # is the `model` input's default above, so the dispatch form shows what
       # is about to run -- change both together.
-      E2E_MODEL: ${{ inputs.model || 'deepseek-ai/DeepSeek-V4.1-Flash' }}
+      E2E_MODEL: ${{ inputs.model || 'deepseek-ai/DeepSeek-V4.1-Flash-1017' }}
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4

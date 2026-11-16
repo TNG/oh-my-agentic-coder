@@ -81,7 +81,7 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
-All harnesses except claude-code use a shared OpenAI-compatible model gateway, trustedtokens.eu (`https://api.trustedtokens.eu/v1`), with `deepseek-ai/DeepSeek-V4.1-Flash`, because it is cost-effective.
+All harnesses except claude-code use a shared OpenAI-compatible model gateway, trustedtokens.eu (`https://api.trustedtokens.eu/v1`), with `deepseek-ai/DeepSeek-V4.1-Flash-1017`, because it is cost-effective.
 They read the gateway URL from `SKAINET_INTERNAL` and its key from `SKAINET_TOKEN` (the names predate the switch; CI fills them from the `TRUSTEDTOKENS_TOKEN` secret).
 claude-code is the exception because it speaks the Anthropic API, so it uses `claude-sonnet-5-5` through the SkaiNet Anthropic proxy: set `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (CI: the `ANTHROPIC_BASE_URL` and `SKAINET_TOKEN` secrets).
 

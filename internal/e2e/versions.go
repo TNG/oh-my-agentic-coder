@@ -31,13 +31,17 @@ import (
 // the other one automatically, so a future flip in either direction self-heals
 // rather than reddening the matrix. Keeping the pin current is therefore not a
 // correctness requirement, only a way to spend one fewer probe round-trip.
+// The DeepSeek pin is trustedtokens.eu's exact catalog name (with the -1017
+// release suffix, see https://trustedtokens.eu/api/public/models). The bare
+// "deepseek-ai/DeepSeek-V4.1-Flash" is accepted on /chat/completions, but
+// codex, the one harness on /responses, failed with it on every leg.
 var modelIDs = map[string]string{
-	"opencode":    "deepseek-ai/DeepSeek-V4.1-Flash",
+	"opencode":    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 	"claude-code": "claude-sonnet-5-5",
-	"codex":       "deepseek-ai/DeepSeek-V4.1-Flash",
-	"copilot":     "deepseek-ai/DeepSeek-V4.1-Flash",
-	"pi":          "deepseek-ai/DeepSeek-V4.1-Flash",
-	"codewhale":   "deepseek-ai/DeepSeek-V4.1-Flash",
+	"codex":       "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"copilot":     "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"pi":          "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"codewhale":   "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 }
 
 // fallbackModels are tried, in order, when neither name variant of the
