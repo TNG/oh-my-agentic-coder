@@ -1519,11 +1519,9 @@ func (s *serveServer) rediscover(d *dirState) {
 
 // autoRegister writes a registry entry for a discovered workdir-local skill
 // without prompting (serve mode has no human at the keyboard). Mirrors the
-// non-interactive parts of `omac register`.
+// non-interactive parts of `omac register`. ent comes from skillsource.Discover,
+// which only returns valid skill names, so ent.Name needs no further check.
 func (s *serveServer) autoRegister(absDir string, ent skillsource.Entry) (*registry.Entry, error) {
-	if err := config.ValidSkillName(ent.Name); err != nil {
-		return nil, fmt.Errorf("skillsource: autoRegister: %w", err)
-	}
 	metaPath := filepath.Join(ent.Dir, config.MetaFileName)
 	m, err := config.LoadMeta(metaPath)
 	if err != nil {
