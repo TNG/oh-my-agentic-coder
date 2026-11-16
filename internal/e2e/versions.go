@@ -35,10 +35,16 @@ import (
 // release suffix, see https://trustedtokens.eu/api/public/models). The bare
 // "deepseek-ai/DeepSeek-V4.1-Flash" is accepted on /chat/completions, but
 // codex, the one harness on /responses, failed with it on every leg.
+//
+// codex is pinned to GLM-5.3 instead: DeepSeek answers /responses on
+// trustedtokens.eu with HTTP 200 and burns tokens, but codex gets no message
+// or tool call out of the reply and exits silently (E2E: full runs
+// 43963600934 vs 43965294751, 2026-11-16). GLM-5.3 passed every codex stage.
+// The workflows resolve codex from this pin separately, see e2e.yml.
 var modelIDs = map[string]string{
 	"opencode":    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 	"claude-code": "claude-sonnet-5-5",
-	"codex":       "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"codex":       "zai-org/GLM-5.3",
 	"copilot":     "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 	"pi":          "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 	"codewhale":   "deepseek-ai/DeepSeek-V4.1-Flash-1017",

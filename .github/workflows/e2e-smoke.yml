@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: deepseek-ai/DeepSeek-V4.1-Flash-1017, claude-code: claude-sonnet-5-5).'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/copilot/pi/codewhale: deepseek-ai/DeepSeek-V4.1-Flash-1017, codex: zai-org/GLM-5.3, claude-code: claude-sonnet-5-5).'
         type: string
         default: ''
       claude_code_model:
@@ -71,7 +71,7 @@ jobs:
       fallback: ${{ steps.probe.outputs.fallback }}
       candidates: ${{ steps.probe.outputs.candidates }}
       claude_code: ${{ steps.probe.outputs.claude_code }}
-      codex_responses: ${{ steps.probe.outputs.responses_model }}
+      codex_responses: ${{ steps.probe.outputs.codex_model }}
     env:
       SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
       SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
@@ -85,6 +85,14 @@ jobs:
         id: probe
         run: |
           scripts/probe-model.sh opencode --github-output
+          # codex has its own pin in internal/e2e/versions.go (DeepSeek answers
+          # /responses with HTTP 200 on trustedtokens.eu, but codex can't use
+          # the reply), so resolve codex from that pin rather than reusing the
+          # opencode probe's responses-track pick above.
+          cx_out=$(mktemp)
+          GITHUB_OUTPUT="$cx_out" scripts/probe-model.sh codex --github-output >/dev/null
+          cx=$(awk '/^responses_model<<OMAC_DELIM$/ { getline; print; exit }' "$cx_out")
+          echo "codex_model=$cx" >> "$GITHUB_OUTPUT"
           cc=$(E2E_MODEL='' scripts/probe-model.sh claude-code)
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
@@ -95,7 +103,7 @@ jobs:
           PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
           PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
           PROBE_RESPONSES_WIRE: ${{ steps.probe.outputs.responses_wire }}
-          PROBE_CODEX_MODEL: ${{ steps.probe.outputs.responses_model }}
+          PROBE_CODEX_MODEL: ${{ steps.probe.outputs.codex_model }}
         run: |
           {
             echo "## Model selection"
