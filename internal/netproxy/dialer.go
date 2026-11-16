@@ -182,6 +182,9 @@ func (d *upstreamProxyDialer) DialTunnel(ctx context.Context, host string, port 
 		targetHost = addrs[0].String()
 	}
 	target := net.JoinHostPort(targetHost, fmt.Sprintf("%d", port))
+	// CONNECT uses URI authority syntax: escape the zone without changing
+	// the admission-pinned IPv6 address or outgoing interface.
+	target = strings.TrimPrefix((&url.URL{Host: target}).String(), "//")
 
 	var nd net.Dialer
 	rawConn, err := nd.DialContext(ctx, "tcp", d.proxyURL.Host)

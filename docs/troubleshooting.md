@@ -62,6 +62,8 @@ Fix: grant a one-time AppArmor exception — see [Installation → Linux (Debian
 ```
 omac start: unregistered skills found in this workdir:
   <skill-name> — register with: omac register <skill-name>
+...
+To start without them for now (they will not run), add --skip-unregistered: omac start --skip-unregistered
 ```
 
 Cause: the skill directory exists but `omac register` was never run for it.
@@ -70,6 +72,17 @@ Fix:
 
 ```bash
 omac register <skill-name>
+```
+
+To start without the skill for now, pass `--skip-unregistered`. omac prints a
+warning and runs without that skill's sidecar, secrets and install script. The
+built-in sandbox hides the skill's folder only if its content is not host-approved.
+Previously approved, unchanged content stays visible to the agent, even when the
+skill is unregistered. Other backends do not hide skill content. The skip is
+recorded in the audit log (`route.state`, `skipped-unregistered`):
+
+```bash
+omac start --skip-unregistered
 ```
 
 ### exec: node: executable file not found in $PATH
@@ -154,6 +167,18 @@ your profile's `filesystem.write` works as a workaround — but that makes
 the shared host temp directory writable for the agent and weakens the
 default hardening, so prefer the update.
 
+### zsh: `can't create temp file for here document: operation not permitted`
+
+Every zsh heredoc (`cat <<EOF`) and here-string (`cat <<< text`) fails
+inside the macOS sandbox. zsh writes their content to a temp file named
+after `TMPPREFIX`, which defaults to `/tmp/zsh`, and the macOS sandbox does
+not grant `/tmp`.
+
+Fix: update omac. Current builds set `TMPPREFIX` to `$TMPDIR/zsh` on macOS.
+A `TMPPREFIX` you set yourself is kept if your profile's `allow_vars` lets
+it through and it points into a writable directory. If you cannot update,
+run `export TMPPREFIX="$TMPDIR/zsh"` inside the session.
+
 ### An MCP server or other harness-launched tool cannot reach its token or open its port
 
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
@@ -163,11 +188,11 @@ The harness (opencode, claude-code, …) launches MCP servers **inside the sandb
 
 See [Running an MCP server the harness launches](./configuration.md#running-an-mcp-server-the-harness-launches) for a combined example.
 
-### Gradle build hangs or cannot reach its daemon
+### Gradle build hangs, cannot reach its daemon, or cannot start a daemon
 
 Cause: the Gradle daemon talks to its client over a random loopback port, which the sandbox's default kernel network enforcement blocks.
 
-Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). This is the recommended fix.
+Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). If Gradle still tries to start a daemon, align the JVM arguments with the project (see the [Gradle documentation](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:disabling_the_daemon); the _Single-use Daemon_ case must be prevented).
 
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external TCP egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 

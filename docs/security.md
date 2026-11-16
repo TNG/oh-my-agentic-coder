@@ -36,15 +36,35 @@ metadata.azure.internal) are blocked unconditionally and cannot be approved
 interactively. Any hostname resolving to a loopback, unspecified, link-local,
 or metadata address is also blocked.
 
+An IPv4 destination can also be named by an IPv6 address that embeds it.
+For hard-deny checks, the proxy decodes the IPv4-mapped form (`::ffff:`
+followed by the IPv4 address) and two supported NAT64 layouts:
+`64:ff9b::/96` (RFC 6052) and `64:ff9b:1::/96`. Both `/96` layouts carry
+IPv4 in their low 32 bits. A decoded public destination continues through
+the normal hostname rules and prompt; it is not denied merely for using NAT64.
+
+RFC 8215 allocates the broader local-use range `64:ff9b:1::/48`, not just
+that second `/96`. Addresses outside the supported `/96` within this `/48`
+are blocked unconditionally: their translation layout is unknown, so the
+proxy cannot safely infer the destination from the low 32 bits. This
+includes alternate prefixes such as `64:ff9b:1:fffe::/96`.
+
+Address checks ignore any trailing `%zone` interface suffix, including on
+native IPv6 metadata addresses such as `fd00:ec2::254%0`. Only the policy
+copy is normalized. The admitted address and its interface zone remain
+pinned for transport, so NAT64 traffic still uses the translator rather
+than silently switching to a direct IPv4 connection.
+
 `host.docker.internal` (the Docker bridge gateway, typically 172.17.0.1) is
 not in the hard-deny set. It is a private RFC 1918 address and is subject to
 the normal prompt or allow/deny policy. If you run Docker and want to
 prevent the agent from reaching it, add it to `network.deny_domain`.
 
 **Accepted gap, by design: private address ranges are not hard-denied.**
-Only loopback, unspecified, link-local, and cloud-metadata addresses are
-blocked unconditionally. RFC 1918 (`10/8`, `172.16/12`, `192.168/16`),
-carrier-grade NAT (`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
+Only loopback, unspecified, link-local, cloud-metadata, and
+unsupported local-use translation addresses (see above) are blocked unconditionally.
+RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), carrier-grade NAT
+(`100.64/10`), and IPv6 unique-local (`fc00::/7`) stay
 subject to the normal prompt and allow/deny policy. A hard deny would make VPN
 and corporate-internal hosts unreachable even after you allow them, for every
 user behind a VPN. The accepted tradeoff is that a granted hostname can reach a
@@ -52,6 +72,30 @@ private address, including when its DNS answer changes after admission. omac
 pins the resolved address and dials only that, and `network.deny_domain` blocks
 specific internal hosts. Recorded as an accepted gap, not a defect to be
 re-reported.
+
+**Accepted gap, Linux only: kernel port rules cannot be scoped to an address.**
+On Linux, kernel enforcement uses Landlock TCP rules, and those rules grant a
+*port number*, not a port on a specific address: the rule engine has no
+address dimension. Two grants are affected:
+
+- The proxy port, which every filtered launch must grant so the agent can
+  reach the proxy. The agent can also connect to that port on any other host
+  address that happens to have something listening on it.
+- Every port in `network.open_port` and any port a profile opens for local
+  services, with the same reach.
+
+This is a limitation of the kernel rule engine, not of omac's configuration:
+no Landlock rule available today can scope a port grant to `127.0.0.1`. You
+can compensate on the host side: a host firewall can restrict outbound TCP on
+those ports to loopback, and avoiding `open_port` entirely removes that half of
+the reach (the proxy port grant remains until the transport changes). The
+planned fix is architectural: move the proxy transport to a Unix-domain
+socket, which the mediation layer already supports end-to-end and which needs
+no TCP port grant at all. `omac doctor` and `omac provenance --check` report
+this reach as a low-severity finding for any profile that uses filtered
+network mode with kernel enforcement. The launch itself stays silent, so the
+gap is recorded here and surfaced by those audit commands rather than on
+every start. Recorded as an accepted gap, not a defect to be re-reported.
 
 ### Filesystem
 
@@ -120,7 +164,51 @@ What happens then depends on the system:
   changed while the session runs. The omac parent therefore re-scans the
   same roots every 10 seconds and warns you when a new protected file
   appears; the warning tells you that only a restart restores protection.
-  The watch warns, it does not block or mask. Directory timestamps come
+  The watch warns, it does not block or mask. Detections from one scan
+  arrive as one decision dialog, not one popup per file. It lists up to
+  eight paths and offers "Suppress warnings for this path" by exact path,
+  "Suppress warnings for all N files" for the whole batch (the label says
+  "(8 listed)" when the dialog showed only the first eight), and "Suppress
+  warnings for every file `<name>` under `<full path>`" for the session folder
+  or an explicitly selected parent folder. Choose one option at a time: after
+  suppressing warnings for one path or a filename under a folder, the dialog
+  reopens for any remaining files, so you can handle several paths in turn.
+  "Keep warning every time (default)"
+  is the first option, so pressing Enter keeps it. Keeping the
+  warning saves no exception: the file stays in the audit log and is listed
+  in the session-end report, and the dialog does not reopen for that path in
+  this session. Exact paths are stored in
+  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
+  stores `{root, name}` under `protected_watch_project_ignores`, where
+  `root` is the selected folder. Selecting `repo/` covers existing and future
+  worktrees under `repo/.worktrees/`; selecting just `repo/.worktrees/A/`
+  leaves sibling worktrees unaffected. A parent-folder exception also covers
+  any other projects below that folder, so check the full path before selecting
+  it. There is no global basename exception. The file stays protected at launch and every detection is still
+  audited. The prefs file lives outside the sandbox, so the agent cannot
+  grant itself an exception. Concurrent sessions merge preferences under a
+  shared file lock so they cannot overwrite each other's choices.
+  If no dialog backend is installed, omac falls
+  back to the informational dialog and a desktop notification.
+
+  The 10-second scan pauses while a decision dialog is open; a protected
+  file created then is caught on the next tick after it closes, except one
+  created and deleted while the dialog is open.
+
+  Folder choices come only from the session's launch path, never from `.git`
+  files or repository configuration. The session folder comes first, then its
+  parents, stopping before your home directory or the filesystem root. Only
+  the folder you explicitly select is saved. Worktrees outside that folder
+  are not covered, regardless of whether they share a Git repository. These
+  choices also work in non-Git projects. The exact-path and batch choices
+  remain available when no folder scope can be offered.
+
+  The end-of-session report collapses a burst to one summary line. Pass
+  `--verbose` to list every warning you kept; ignored files are not listed
+  because their warning was dismissed. The audit log always records one
+  event per path, including ignored files.
+
+  Directory timestamps come
   from the filesystem's coarse clock, so a file created in the same clock
   tick as a scan can share the previous scan's timestamp and slip past
   that scan. The watch therefore lists any directory once more on the
@@ -200,6 +288,27 @@ cannot access.
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
+### OpenCode v2 model state
+
+OpenCode v2 saves your selected model, recent models, favorites, and the
+selected reasoning variant in `model.json` inside its state directory. omac
+gives every sandboxed session a fresh, temporary state directory, so it copies
+the host's file into the session before launch and copies it back after the
+session exits. It skips the copy back when the session did not change the
+file, so an untouched session cannot overwrite a newer host choice.
+`service.json` is never copied.
+
+This hand-off is a convenience, not an isolation boundary. The host state
+directory stays read + write for the sandbox (see the table above), so the
+agent can already read and change `model.json` directly. The session state
+directory is writable too, so omac treats `model.json` as untrusted: it refuses
+to follow symlinks and only reads regular files. Without that check, the agent
+could use the file as a link to make omac copy `~/.ssh/id_rsa` into the session
+state or write session data into `~/.config/omac/approvals.json`.
+
+If omac is killed before the copy back, the host file stays unchanged and only
+the session's model change is lost.
+
 ## Self-authored skills
 
 Skill sidecars run on your machine outside the sandbox. That is intentional,
@@ -275,8 +384,13 @@ This has limits:
 
 When upgrading omac on a machine with existing registered skills, only
 **user-global** skills (registered outside any workdir) are automatically
-approved for the first run. Workdir-local skills — which the agent can write —
-always require an explicit `omac register` from a host terminal.
+approved for the first run, and only when the skill's on-disk content still
+matches the bundle hash recorded at registration. The recorded hash is the
+only evidence of what you reviewed when you registered the skill, so it is
+what the upgrade trusts. A user-global skill whose content has changed since
+registration is not migrated: review the change on the host and re-register
+the skill with `omac register --force`. Workdir-local skills — which the agent
+can write — always require an explicit `omac register` from a host terminal.
 
 If you change an approved skill yourself, omac refuses to run it until you
 review the change and re-register it with `omac register --force`.

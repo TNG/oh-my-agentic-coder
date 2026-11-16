@@ -807,8 +807,9 @@ func TestE2ECacheMainAndLinkedWorktreesAreIsolated(t *testing.T) {
 	writeCacheTestProfile(t, home, nil, nil, 0)
 	omacBin := buildOmac(t)
 
-	// Per-workdir isolation is opt-in since the default scope became
-	// global; --cache-scope workdir keys the cache on each worktree path.
+	// Pin workdir scope explicitly so the test does not depend on the
+	// compiled-in default; --cache-scope workdir keys the cache on each
+	// worktree path.
 	workdirScope := []string{"--cache-scope", "workdir"}
 	marker := "main-worktree-cache-marker"
 	out, code := runOmacShell(t, omacBin, home, repoRoot, workdirScope,
@@ -882,7 +883,7 @@ func TestE2ECacheServeScopes(t *testing.T) {
 
 	// Under workdir scope, a multi-dir serve (no --workdir) falls back to a
 	// serve-scoped cache while start keys on the workdir, so the two differ.
-	// The default global scope would collapse both onto the shared cache.
+	// The global scope would collapse both onto the shared cache.
 	workdirScope := []string{"--cache-scope", "workdir"}
 	out, code := runOmacServeShell(t, omacBin, home, workdir, workdirScope,
 		"/bin/sh", "-c", "echo SERVE_CACHE=$OMAC_CACHE_DIR")
@@ -918,7 +919,7 @@ func TestE2ECacheActiveScopeCannotBeCleared(t *testing.T) {
 	writeCacheTestProfile(t, home, nil, nil, 0)
 	// Pin workdir scope so provenance, `cache clear`, and the hold-lock
 	// helper (which uses DomainWorkdir) all resolve the same leaf; the
-	// default global scope would key clear on the shared cache instead.
+	// global scope would key clear on the shared cache instead.
 	writeLauncherCacheScope(t, workdir, "workdir")
 	omacBin := buildOmac(t)
 

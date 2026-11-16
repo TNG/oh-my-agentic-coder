@@ -13,7 +13,7 @@ import (
 // omac.yaml and from the sidecar registry, both of which sit in the
 // agent-writable workdir, so whatever the agent writes there is what reaches
 // the approval store as a name. The store then builds the snapshot path by
-// joining that name into <store>/skills/<name>/<hash>.
+// joining that name into the current snapshot root's <name>/<hash>.
 //
 // That join is a filesystem write driven by an untrusted string, and it runs
 // on the host side of the sandbox boundary with the user's full privileges —
@@ -23,9 +23,9 @@ import (
 // create it and fill it with attacker-supplied files.
 //
 // It also breaks the spawn backstop. IsSnapshotPath allows a sidecar to run
-// only from under <store>/skills, on the reasoning that the sandbox cannot
-// write there. A snapshot that escapes that root is no longer covered by
-// that reasoning.
+// only from under the current snapshot root, on the reasoning that the sandbox
+// cannot write there. A snapshot that escapes that root is no longer covered
+// by that reasoning.
 
 // isolateUnder points the approval store at <root>/xdg/omac and returns root,
 // so a path-traversal escape lands inside the test's own temp tree instead of
@@ -55,7 +55,7 @@ func under(root, path string) bool {
 // whichever is chosen. It passes if Approve refuses the name outright.
 func TestSecurityApproveWritesOnlyInsideTheStore(t *testing.T) {
 	root := isolateUnder(t)
-	skills := filepath.Join(dir(), "skills")
+	skills := filepath.Join(dir(), "skills-v2")
 
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "omac.yaml"), []byte("name: s\n"), 0o600); err != nil {

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -121,6 +123,7 @@ func Run(opts Options) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	maps.Copy(cacheEnv, zshTmpPrefixEnv(runtime.GOOS, grants, sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), os.Getenv))
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
 	// stay active) and record the folders the session touches. The
@@ -310,6 +313,26 @@ func injectedToolCacheEnv(grants *Grants, getenv func(string) string) (map[strin
 		}
 	}
 	return nil, fmt.Errorf("OMAC_CACHE_DIR %q does not match an exact writable grant", dir)
+}
+
+// zshTmpPrefixEnv moves zsh's heredoc and here-string temp files from
+// its default /tmp/zsh into TMPDIR. The macOS baseline denies writes to
+// /tmp, so every heredoc would fail; on Linux /tmp is a private, writable
+// tmpfs and zsh's default works. A TMPPREFIX that the allowlist passes
+// through and that already points into a writable grant is kept.
+func zshTmpPrefixEnv(goos string, grants *Grants, allowVars []string, getenv func(string) string) map[string]string {
+	tmpDir := getenv("TMPDIR")
+	if goos != "darwin" || tmpDir == "" {
+		return nil
+	}
+	if own := getenv("TMPPREFIX"); own != "" && sandboxprofile.EnvVarMatches("TMPPREFIX", allowVars) {
+		for _, allowed := range grants.AllowPaths {
+			if rel, err := filepath.Rel(allowed, own); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+				return nil
+			}
+		}
+	}
+	return map[string]string{"TMPPREFIX": filepath.Join(tmpDir, "zsh")}
 }
 
 // canonicalCachePath compares cleaned absolute paths and resolves symlinks for

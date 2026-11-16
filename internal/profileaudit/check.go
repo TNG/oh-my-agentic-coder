@@ -2,6 +2,7 @@ package profileaudit
 
 import (
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -340,6 +341,23 @@ func checkNetwork(profile *sandboxprofile.Profile) []Finding {
 			Field:    "network.open_port",
 			Value:    strconv.Itoa(port),
 			Message:  "Linux Landlock is address-blind: also allows outbound TCP to any host on this port",
+		})
+	}
+	// The port-scoped reach is not limited to user-configured ports: in
+	// kernel-enforced filtered mode the sandbox itself always grants the
+	// supervisor proxy's port for connect, so the default Linux launch
+	// carries the same residual reach even with no open_port entries.
+	// LOW so doctor / provenance --check surface it without failing
+	// closed; it is an accepted risk recorded in docs/security.md.
+	if runtime.GOOS == "linux" &&
+		profile.Network.EffectiveMode() == sandboxprofile.ModeFiltered &&
+		profile.Network.EffectiveEnforcement() == sandboxprofile.EnforceKernel {
+		findings = append(findings, Finding{
+			Severity: SeverityLow,
+			Category: CatNetwork,
+			Field:    "network.mode",
+			Value:    sandboxprofile.ModeFiltered,
+			Message:  "Linux Landlock is address-blind: the implicit proxy port grant allows outbound TCP to any host listening on that port, not only loopback",
 		})
 	}
 	for _, port := range profile.Network.AllowTCPConnect {

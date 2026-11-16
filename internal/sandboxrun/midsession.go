@@ -65,10 +65,12 @@ func (t resolvedTuning) fullPassDue(ticks int) bool {
 // the user that only a restart restores protection.
 //
 // Snapshot and ticks reuse resolveDenyPaths on the same roots, so a
-// tick recomputes what launch would mask now. One alert per path is
-// deliberate: a masked path keeps its mask even when the underlying
-// file is recreated (the bind mount shadows the path, not the inode),
-// and an already-alerted path must not re-alert on every tick.
+// tick recomputes what launch would mask now. onNew receives one batch
+// per tick, so a worktree setup that creates several dotenv files at
+// once costs one alert, not one per file. A path is reported once: a
+// masked path keeps its mask even when the underlying file is recreated
+// (the bind mount shadows the path, not the inode), and an already-known
+// path must not re-alert on every tick.
 //
 // The walk carries a denyScanCache across ticks: the snapshot seeds it
 // and every tick re-walks incrementally, re-reading only directories
@@ -88,7 +90,7 @@ func (t resolvedTuning) fullPassDue(ticks int) bool {
 // A full uncached pass remains available via tuning.FullPassTicks as an
 // opt-in backstop for filesystems with timestamps coarser than that
 // window; it is off by default.
-func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.Duration, onNew func(path string), stop <-chan struct{}, tuning WatchTuning) error {
+func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.Duration, onNew func(paths []string), stop <-chan struct{}, tuning WatchTuning) error {
 	t := tuning.resolve()
 	base := sandboxprofile.PlatformBaseline()
 	roots, err := denyScanRoots(p, workdir)
@@ -151,11 +153,16 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 			if err != nil {
 				return err
 			}
+			var batch []string
 			for _, m := range current {
-				if !known[m] {
-					known[m] = true
-					onNew(m)
+				if known[m] {
+					continue
 				}
+				known[m] = true
+				batch = append(batch, m)
+			}
+			if len(batch) > 0 {
+				onNew(batch)
 			}
 		}
 	}

@@ -125,6 +125,58 @@ func TestInjectedToolCacheEnv(t *testing.T) {
 	})
 }
 
+func TestZshTmpPrefixEnv(t *testing.T) {
+	tmp := "/var/folders/xy/T/omac-sandbox-tmp-1"
+	grants := &Grants{AllowPaths: []string{"/work", tmp}}
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
+	}
+	defaultAllow := sandboxprofile.DefaultAllowVars()
+
+	t.Run("darwin points TMPPREFIX into TMPDIR", func(t *testing.T) {
+		got := zshTmpPrefixEnv("darwin", grants, defaultAllow, env(map[string]string{"TMPDIR": tmp}))
+		if want := filepath.Join(tmp, "zsh"); got["TMPPREFIX"] != want {
+			t.Errorf("TMPPREFIX = %q, want %q", got["TMPPREFIX"], want)
+		}
+	})
+
+	t.Run("keeps an allowed TMPPREFIX inside a writable grant", func(t *testing.T) {
+		vars := map[string]string{"TMPDIR": tmp, "TMPPREFIX": "/work/.zsh/tmp"}
+		got := zshTmpPrefixEnv("darwin", grants, append(defaultAllow, "TMPPREFIX"), env(vars))
+		if len(got) != 0 {
+			t.Errorf("injected = %v, want nothing so the user's TMPPREFIX passes through", got)
+		}
+	})
+
+	t.Run("replaces a TMPPREFIX outside the writable grants", func(t *testing.T) {
+		vars := map[string]string{"TMPDIR": tmp, "TMPPREFIX": "/tmp/zsh"}
+		got := zshTmpPrefixEnv("darwin", grants, append(defaultAllow, "TMPPREFIX"), env(vars))
+		if want := filepath.Join(tmp, "zsh"); got["TMPPREFIX"] != want {
+			t.Errorf("TMPPREFIX = %q, want %q", got["TMPPREFIX"], want)
+		}
+	})
+
+	t.Run("replaces a TMPPREFIX the allowlist would drop", func(t *testing.T) {
+		vars := map[string]string{"TMPDIR": tmp, "TMPPREFIX": "/work/.zsh/tmp"}
+		got := zshTmpPrefixEnv("darwin", grants, defaultAllow, env(vars))
+		if want := filepath.Join(tmp, "zsh"); got["TMPPREFIX"] != want {
+			t.Errorf("TMPPREFIX = %q, want %q", got["TMPPREFIX"], want)
+		}
+	})
+
+	t.Run("linux keeps zsh's default", func(t *testing.T) {
+		if got := zshTmpPrefixEnv("linux", grants, defaultAllow, env(map[string]string{"TMPDIR": tmp})); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("no TMPDIR injects nothing", func(t *testing.T) {
+		if got := zshTmpPrefixEnv("darwin", grants, defaultAllow, env(nil)); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+}
+
 func TestCacheEnvSurvivesAllowVars(t *testing.T) {
 	cacheDir := t.TempDir()
 	injected, err := injectedToolCacheEnv(&Grants{AllowPaths: []string{cacheDir}}, func(key string) string {

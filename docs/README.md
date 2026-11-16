@@ -73,7 +73,7 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
   loopback port that the sandbox blocks, so the default `gradle build` /
   `gradle test` hangs. Run `./gradlew --no-daemon` (or set
   `org.gradle.daemon=false`); see
-  [troubleshooting](./troubleshooting.md#gradle-build-hangs-or-cannot-reach-its-daemon).
+  [troubleshooting](./troubleshooting.md#gradle-build-hangs-cannot-reach-its-daemon-or-cannot-start-a-daemon).
 - **Docker is not available inside the sandbox.** The sandbox does not expose the
   Docker daemon, so anything that needs it — `docker` commands, Testcontainers-based
   tests, etc. — fails, regardless of language.

@@ -179,13 +179,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -736,13 +730,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          .github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5

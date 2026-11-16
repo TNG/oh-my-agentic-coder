@@ -104,7 +104,7 @@ func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir str
 	// rather than letting the supervisor backstop fail the whole launch.
 	snap, present := skilltrust.SnapshotPath(name, h)
 	if !present {
-		return "", errSkillNotApproved(name)
+		return "", errSkillSnapshotMissing(name)
 	}
 	return snap, nil
 }
@@ -129,6 +129,15 @@ func snapshotMeta(name, snapDir string) (*config.Meta, error) {
 // host-side remedy the sandboxed agent cannot perform itself.
 func errSkillNotApproved(name string) error {
 	return fmt.Errorf("spawn refused: skill %q is not host-approved; run `omac register %s` from a host terminal (outside the sandbox) to approve its current code", name, name)
+}
+
+// errSkillSnapshotMissing is the refusal for an approved skill whose snapshot
+// is unavailable under the current copy policy: the host store was partly
+// deleted, or the snapshot was written by an older policy (and so may contain
+// bytes the approval hash never covered). The wording deliberately names the
+// policy rather than a release, so a future policy bump can reuse it.
+func errSkillSnapshotMissing(name string) error {
+	return fmt.Errorf("spawn refused: skill %q is approved, but its snapshot is missing or was made by an older copy policy; run `omac register %s` from a host terminal (outside the sandbox) to rebuild it", name, name)
 }
 
 // refusalNotice is the operator-facing line the launch paths print when a
@@ -195,6 +204,16 @@ func grandfatherOnce(scopes ...grandfatherScope) (int, error) {
 // agent-writable and must not be auto-approved. The upgrade promise
 // (docs/security.md) is scoped to skills the agent cannot forge.
 //
+// The registry entry's recorded BundleHash is the only evidence of the
+// content a human reviewed at `omac register` time, so it anchors every
+// approval: an entry is approved only when its recorded hash is non-empty
+// and still matches the bytes on disk. Anything else — including legacy
+// entries recorded without a hash — is skipped and left to the ordinary
+// spawn gate, which refuses drifted skills and names the re-register
+// remedy. Approving whatever is currently on disk would instead bless
+// changes made after registration, which for user-global skills can
+// include changes written inside the sandbox.
+//
 // A skill whose dir cannot be resolved or hashed is skipped (the spawn gate
 // will refuse it and name the remedy). Returns the count approved.
 func grandfatherApprovals(workdir string, reg *registry.Registry) (int, error) {
@@ -211,11 +230,16 @@ func grandfatherApprovals(workdir string, reg *registry.Registry) (int, error) {
 		if workdir != "" && isUnderDir(workdir, absDir) {
 			continue
 		}
-		hash, herr := config.BundleHash(absDir)
-		if herr != nil {
+		// Legacy entries recorded without a hash carry no record of what
+		// the human reviewed; skip them rather than trusting the disk.
+		if e.BundleHash == "" {
 			continue
 		}
-		if err := skilltrust.Approve(e.Name, hash, absDir); err != nil {
+		hash, herr := config.BundleHash(absDir)
+		if herr != nil || hash != e.BundleHash {
+			continue
+		}
+		if err := skilltrust.Approve(e.Name, e.BundleHash, absDir); err != nil {
 			return n, err
 		}
 		n++

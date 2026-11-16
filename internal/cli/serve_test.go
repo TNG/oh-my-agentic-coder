@@ -926,7 +926,7 @@ func TestPrepareServeCache(t *testing.T) {
 	}{
 		{name: "no inner skips cache", noInner: true, wantNil: true},
 		{name: "no sandbox skips cache", noSandbox: true, wantNil: true},
-		{name: "global default shares one cache", scope: config.CacheScopeGlobal, wantDomain: toolcache.DomainShared, wantMode: toolcache.ModePersistent},
+		{name: "global scope shares one cache", scope: config.CacheScopeGlobal, wantDomain: toolcache.DomainShared, wantMode: toolcache.ModePersistent},
 		{name: "config scope keys on config path", scope: config.CacheScopeConfig, cfgPath: cfgPath, wantDomain: toolcache.DomainConfig, wantMode: toolcache.ModePersistent, wantCanonical: canonicalCfg},
 		{name: "config scope without file falls back to shared", scope: config.CacheScopeConfig, wantDomain: toolcache.DomainShared, wantMode: toolcache.ModePersistent},
 		{name: "workdir scope, single workdir", scope: config.CacheScopeWorkdir, explicitWorkdir: explicitWorkdir, wantDomain: toolcache.DomainWorkdir, wantMode: toolcache.ModePersistent, wantCanonical: canonicalExplicit},

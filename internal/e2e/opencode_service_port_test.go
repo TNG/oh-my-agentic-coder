@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,4 +128,108 @@ func TestE2EOpenCodeV2RefusesTakenServicePort(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestE2EOpenCodeV2PersistsModelState drives a full `omac start` with a fake
+// OpenCode v2 binary that writes a model choice into its per-launch state dir.
+// After the inner command exits, omac must copy that file back to the host
+// state dir; before the fix the choice was removed with the temp dir.
+//
+// This covers the wiring that the unit tests cannot: the pin seeds before
+// launch, and the save in runLaunch happens after the child exits but before
+// the deferred os.RemoveAll(sandboxTmp). It needs a working OS sandbox because
+// the write-back only happens for a native (sandboxed) launch.
+func TestE2EOpenCodeV2PersistsModelState(t *testing.T) {
+	if nestedInOmacSandbox() {
+		t.Skip("nested runs use --no-sandbox, which has no service pin")
+	}
+	if ok, reason := sandboxUnavailableForLaunch(); ok {
+		t.Skipf("omac sandbox unavailable in this environment: %s", reason)
+	}
+	omacBin := buildOmac(t)
+
+	// Short base: on Linux the facade socket lives under XDG_STATE_HOME and
+	// t.TempDir() (named after this test) exceeds the unix-socket path limit.
+	base, err := os.MkdirTemp("", "ocm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	home := filepath.Join(base, "home")
+	work := filepath.Join(base, "work")
+	bin := filepath.Join(base, "bin")
+	for _, d := range []string{home, work, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fake OpenCode v2: answers --version, then writes the TUI's model choice
+	// exactly where OpenCode writes it ($XDG_STATE_HOME/opencode/model.json).
+	// The marker lives in the workdir, which the sandbox grants read + write.
+	marker := filepath.Join(work, "inner-ran")
+	modelBody := `{"variant":{"trustedtokens/deepseek":"high"}}`
+	fake := filepath.Join(bin, "opencode")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then echo 2.0.26; exit 0; fi\n" +
+		"touch " + strconv.Quote(marker) + "\n" +
+		"mkdir -p \"$XDG_STATE_HOME/opencode\"\n" +
+		"printf '%s' " + strconv.Quote(modelBody) + " > \"$XDG_STATE_HOME/opencode/model.json\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, omacBin, "start", "opencode", "--inner", fake, "--", "api", "get", "/api/info")
+	cmd.Dir = work
+	env := os.Environ()
+	for k, v := range map[string]string{
+		"HOME":                home,
+		"XDG_CONFIG_HOME":     filepath.Join(home, ".config"),
+		"XDG_DATA_HOME":       filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME":      filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME":      filepath.Join(home, ".cache"),
+		"OPENCODE_CONFIG_DIR": "",
+	} {
+		env = withEnv(env, k, v)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("omac start: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the inner command did not run: %v\n%s", err, out)
+	}
+
+	hostModel := filepath.Join(home, ".local", "state", "opencode", "model.json")
+	got, err := os.ReadFile(hostModel)
+	if err != nil {
+		t.Fatalf("the session's model state was not saved to %s: %v\n%s", hostModel, err, out)
+	}
+	if string(got) != modelBody {
+		t.Errorf("host model.json = %q, want %q", got, modelBody)
+	}
+}
+
+// sandboxUnavailableForLaunch reports whether the native sandbox a successful
+// `omac start` needs cannot run here, so the model-state test skips instead of
+// failing on a machine without bubblewrap or with a too-long TMPDIR.
+func sandboxUnavailableForLaunch() (bool, string) {
+	if runtime.GOOS == "darwin" {
+		// macOS SUN_LEN is 104; the runtime socket path is about TMPDIR + 35.
+		if tmp := os.Getenv("TMPDIR"); len(tmp)+40 > 104 {
+			return true, "TMPDIR is too long for the macOS sandbox socket"
+		}
+	}
+	if runtime.GOOS == "linux" {
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			return true, "bubblewrap is not installed"
+		}
+		if err := exec.Command("bwrap", "--ro-bind", "/", "/", "true").Run(); err != nil {
+			return true, "bubblewrap is not functional: " + err.Error()
+		}
+	}
+	return false, ""
 }

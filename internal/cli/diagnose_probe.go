@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -88,9 +89,12 @@ func rawTCPProbe(profile *sandboxprofile.Profile, port int) (probeOutcome, strin
 
 // isLoopbackHost reports whether target names the local host, whose
 // reachability is governed by network.open_port rather than the proxy.
-// Delegates to netproxy.IsLoopbackHost so this and the runtime proxy
-// always agree.
+// The runtime's raw refusal guard also covers embedded link-local addresses;
+// those must go through the filter here, not the loopback port-grant branch.
 func isLoopbackHost(host string) bool {
+	if ip, err := netip.ParseAddr(netproxy.NormalizeHost(host)); err == nil {
+		return netproxy.IsHostLocal(ip)
+	}
 	return netproxy.IsLoopbackHost(host)
 }
 

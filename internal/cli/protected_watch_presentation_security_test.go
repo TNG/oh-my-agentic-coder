@@ -50,7 +50,14 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 		t.Fatal("watch did not start")
 	}
 	var report bytes.Buffer
-	t.Cleanup(func() { w.report(func(f string, args ...any) { fmt.Fprintf(&report, f+"\n", args...) }) })
+	reported := false
+	stopWatch := func() {
+		if !reported {
+			reported = true
+			w.report(false, func(f string, args ...any) { fmt.Fprintf(&report, f+"\n", args...) })
+		}
+	}
+	t.Cleanup(stopWatch)
 	// There is no public baseline-ready signal. Allow the tiny initial scan one second.
 	time.Sleep(time.Second)
 	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
@@ -60,7 +67,12 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 	var raw []byte
 	for time.Now().Before(deadline) {
 		raw, _ = os.ReadFile(auditPath)
-		if bytes.Contains(raw, []byte("protected-file-watch")) {
+		// The path is recorded only after the dialog step, so waiting for
+		// it keeps the stop below from cancelling the dialog.
+		w.mu.Lock()
+		recorded := len(w.paths)
+		w.mu.Unlock()
+		if bytes.Contains(raw, []byte("protected-file-watch")) && recorded > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -78,9 +90,10 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 	if event.Dir != safe || bytes.Contains(raw, []byte("\u009b")) {
 		t.Errorf("unsafe audit path: %q", event.Dir)
 	}
-	w.mu.Lock()
-	notices := append([]string(nil), w.notices...)
-	w.mu.Unlock()
+	// Stopping the watch waits for the dialog step, after which the
+	// end-of-session report holds the recorded path.
+	stopWatch()
+	notices := strings.Split(strings.TrimSpace(report.String()), "\n")
 	if len(notices) != 1 || !strings.Contains(notices[0], safe) || strings.ContainsAny(notices[0], "\x1b\u009b") {
 		t.Errorf("unsafe/missing notice: %q", notices)
 	}

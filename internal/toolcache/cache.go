@@ -23,7 +23,8 @@ const (
 	DomainWorkdir Domain = "workdir"
 	DomainServe   Domain = "serve"
 	// DomainShared is a single persistent cache reused across every workdir.
-	// It backs the default "global" cache scope.
+	// It backs the "global" cache scope and the "config" scope fallback when
+	// no config file is on disk.
 	DomainShared Domain = "shared"
 	// DomainConfig keys the cache on a launcher config file path, so all
 	// workdirs governed by that config share one cache ("config" scope).

@@ -166,17 +166,11 @@ jobs:
           persist-credentials: false
 
       - name: Install bubblewrap
-        # The planning session runs inside the write-isolation sandbox; the
-        # AppArmor grant is what lets bwrap create a user namespace.
+        # The planning session runs inside the write-isolation sandbox, which
+        # needs a working bwrap.
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          repo/.github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Bun
         # install_opencode in lib.sh installs the pinned opencode CLI with bun.
@@ -364,13 +358,7 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          repo/.github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -455,13 +443,7 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          repo/.github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -536,13 +518,7 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          repo/.github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -617,13 +593,7 @@ jobs:
       - name: Install bubblewrap
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap
-          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          repo/.github/scripts/allow-bwrap-userns.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5

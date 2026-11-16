@@ -60,6 +60,10 @@ type launchOpts struct {
 	// (.opencode/sidecar.json) is gitignored and therefore empty on every
 	// fresh checkout.
 	autoRegisterSkills bool
+	// skipUnregistered, when set, starts anyway when unregistered skills
+	// exist: they are listed as a warning and run without a sidecar,
+	// instead of aborting the launch.
+	skipUnregistered bool
 	// audit flags (see internal/audit). auditLog overrides the config/default
 	// path; noAudit disables; auditStrict makes an unwritable log fatal.
 	auditLog    string
@@ -89,12 +93,13 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		innerCmdOverride   = fs.String("inner", "", "Override inner_cmd's executable.")
 		noSandbox          = fs.Bool("no-sandbox", false, "Run inner command directly, without a sandbox (debug only).")
 		ephemeralCache     = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
-		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: global).")
+		cacheScope         = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		keepRunning        = fs.Bool("keep-running", false, "Do not stop sidecars when the inner command exits.")
 		acceptSkillChanges = fs.Bool("accept-skill-changes", false, "Tolerate bundle_hash drift in registered skills (proceed even if the on-disk skill differs from what was registered).")
 		skipSecretPattern  = fs.Bool("skip-secret-pattern", false, "Do not enforce a secret's pattern against an env_passthrough-supplied value (escape hatch for an outdated pattern; the raw value is still passed through).")
 		verbose            = fs.Bool("verbose", false, "Verbose lifecycle logging.")
 		autoRegisterSkills = fs.Bool("auto-register-skills", false, "Silently register discovered workdir-local skills whose required values resolve without prompting, instead of refusing to start. Values only in the agent-writable workdir skill-config.yaml do not count, since nothing approved them. Skills with unresolved required values need `omac register` (non-interactively: --fields-from or OMAC_CONFIG_<NAME>).")
+		skipUnregistered   = fs.Bool("skip-unregistered", false, "Start even if unregistered skills exist. They are listed as a warning and run without their sidecar (nothing is registered or prompted for).")
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
@@ -156,6 +161,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		skipSecretPattern:  *skipSecretPattern,
 		verbose:            *verbose,
 		autoRegisterSkills: *autoRegisterSkills,
+		skipUnregistered:   *skipUnregistered,
 		auditLog:           *auditLog,
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
@@ -439,13 +445,22 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+": scan skills:", err)
 		return ExitIOError
 	}
-	if len(unregistered) > 0 {
+	var skippedUnregistered []string
+	if len(unregistered) > 0 && opts.skipUnregistered {
+		skippedUnregistered = unregistered
+		fmt.Fprintf(env.Stderr, "%s: warning: continuing without unregistered skills (--skip-unregistered): %s\n"+
+			"  Their sidecars, secrets and install scripts will not run. The built-in sandbox hides\n"+
+			"  only skill content that is not host-approved; previously approved, unchanged content\n"+
+			"  stays visible. Other backends do not hide skill content.\n",
+			prefix, strings.Join(unregistered, ", "))
+	} else if len(unregistered) > 0 {
 		fmt.Fprintln(env.Stderr, prefix+": unregistered skills found in this workdir:")
 		for _, name := range unregistered {
 			safe := stripControlChars(name)
 			fmt.Fprintf(env.Stderr, "  %s — register with: omac register %s\n", safe, safe)
 		}
 		fmt.Fprintln(env.Stderr, "\nA skill you no longer want can be deleted with `omac deregister <skill>` (add --global for a user-global skill).")
+		fmt.Fprintf(env.Stderr, "To start without them for now (they will not run), add --skip-unregistered: omac %s --skip-unregistered\n", opts.label)
 		return ExitPrerequisiteMissing
 	}
 
@@ -978,6 +993,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		sandboxBackend = profName
 	}
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, sandboxBackend))
+	for _, name := range skippedUnregistered {
+		auditor.Emit(audit.RouteStateEvent(name, "", "skipped-unregistered", "started with --skip-unregistered"))
+	}
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
 	// The post-exit hint needs the id of the session this run created. opencode
@@ -998,7 +1016,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
-	watch.report(func(format string, args ...any) {
+	if ocPin != nil {
+		// Always report a failed save: otherwise the user silently re-picks
+		// their model every session with nothing to diagnose.
+		if stateErr := ocPin.saveModelState(); stateErr != nil {
+			fmt.Fprintf(env.Stderr, "%s: opencode v2 model state not saved: %v\n", prefix, stateErr)
+		}
+	}
+	watch.report(verbose, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	if finishServiceCheck != nil {
@@ -1044,7 +1069,7 @@ func prepareLaunchCache(noSandbox, ephemeral bool, scope config.CacheScope, work
 }
 
 // resolveCacheScope merges the config's cache scope with an optional
-// --cache-scope flag override (precedence: flag > config > default global).
+// --cache-scope flag override (precedence: flag > config > default workdir).
 func resolveCacheScope(cfg config.CacheConfig, override string) (config.CacheScope, error) {
 	if override != "" {
 		return config.ValidateCacheScope(override)
