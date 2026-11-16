@@ -30,22 +30,18 @@ Fill in the parts in `<…>`. Leave out a section that would be empty. Style ref
 
 _Background only: everything relevant from these reports is already in the findings above. Each item notes where it went (`→ F3`, `merged into …`, `dropped: …`), so there is no need to review them again._
 
+<one line on the reviewers that ran and the ones skipped, with the reason, and one line on the tests, e.g.:>
+Reviewers: code style, error handling, tests, security. Skipped: documentation and UX (no docs or user-facing changes), complexity (small, local change), performance (no hot path touched).
+Tests: build, vet and the touched packages' tests pass; 2 failures also happen on the base branch.
+
+<one details block per reviewer that ran, in this order and with these titles: "Code style &amp; duplication report", "Error handling report", "Tests report", "Documentation report", "UX consistency report", "Security report", "Complexity report", "Performance report">
+
 <details><summary>Code style &amp; duplication report</summary>
 
 <annotated report>
 
 </details>
-<details><summary>Documentation report</summary>
-
-<annotated report>
-
-</details>
-<details><summary>UX consistency report</summary>
-
-<annotated report>
-
-</details>
-<details><summary>Error handling report</summary>
+<details><summary>Security report</summary>
 
 <annotated report>
 

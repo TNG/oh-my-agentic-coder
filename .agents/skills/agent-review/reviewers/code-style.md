@@ -8,8 +8,8 @@ Look for:
 
 - **Duplication.** Logic that re-implements an existing helper, type or pattern in the repo. Search for it, and name the existing function and file in your finding.
 - **Fit with the surroundings.** Naming, file layout, error style, comment density and idioms that differ from neighboring code without a reason.
-- **Needless complexity.** Indirection, configuration or abstraction with a single user; code that could be removed or merged.
 - **Dead code.** Functions, flags, constants or branches nothing uses, including leftovers the PR makes unused.
-- **Tests.** New behavior without a test, or tests that don't check what their name says. Name the missing test case.
 
 Project conventions come from the repo itself: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, linter config, and the style of the files the PR touches.
+
+Simpler alternatives to the PR's design belong to the complexity reviewer and missing tests to the tests reviewer; leave them out here, even if those reviewers don't run.

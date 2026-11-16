@@ -1,8 +1,8 @@
 # Triage
 
-You have four reviewer reports. Your job is to turn them into a short list of findings that are true, matter, and can be acted on by someone who reads only the PR comment.
+You have the reports of the reviewers that ran, and the test results (`tests.md`). Your job is to turn them into a short list of findings that are true, matter, and can be acted on by someone who reads only the PR comment.
 
-1. **Read all four reports** and the PR context.
+1. **Read all reports**, `tests.md` and the PR context. A build, lint or test failure that is new in this PR is a finding of its own (🐛 Bug or 🧪 Tests), even if no reviewer mentioned it.
 2. **Verify each item** against the code. Open the file, run the test or command where it's cheap. An item you can't confirm is either dropped or kept as "Not verified", never presented as fact.
 3. **Merge duplicates.** Two reviewers often find the same thing from different angles; keep one finding and note both sources.
 4. **Rate the severity, and drop what doesn't matter.** Rate each finding by its effect on users and maintainers if the PR is merged as is:
