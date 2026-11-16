@@ -219,8 +219,8 @@ async function createBridge(
 
   // Make a skill-supplied field safe for the manifest, mirroring Go's
   // manifest.sanitizeField: newlines become spaces, markdown bold markers (*)
-  // are removed, and so are control, bidi, zero-width and line-separator
-  // characters. The field then cannot start a new block, forge bold structure
+  // are removed, and so is every character that could change how the text is
+  // displayed. The field then cannot start a new block, forge bold structure
   // or reorder the text around it.
   // Keep the character class in sync with internal/displaytext (TestBridgeCopiesMatch).
   function sanitizeField(s: string): string {
