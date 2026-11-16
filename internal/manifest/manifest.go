@@ -108,12 +108,12 @@ func Render(activateJSON, skillsDir string) string {
 	return b.String()
 }
 
-// sanitizeField collapses newlines, strips every C0/C1 control character and
-// Unicode line separators, zero-width characters and bidi controls, and removes
-// markdown bold markers (*) so skill-supplied
-// values cannot inject new markdown blocks or forge bold structure into the
-// manifest text. It is the last sink before the text joins the agent's own
-// system prompt, so it defends regardless of what discovery accepted.
+// sanitizeField turns newlines into spaces and removes markdown bold markers
+// (*) and every displaytext.Unsafe character (control, bidi, zero-width and
+// line-separator characters), so skill-supplied values cannot start new
+// markdown blocks, forge bold structure or reorder the manifest text. It is
+// the last step before the text joins the agent's own system prompt, so it
+// defends regardless of what discovery accepted.
 func sanitizeField(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' {
