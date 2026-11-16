@@ -194,7 +194,7 @@ memory: 10GiB       # default: a quarter of the host's RAM, between 8GiB and 12G
 disk: 60GiB         # default: 60GiB
 packages: [jq]      # extra Ubuntu packages to install; default: none
 jdks: [temurin-25]  # Java versions to install; default: none
-setup: |            # shell script run once as root while provisioning; default: none
+setup: |            # shell script run as root at provisioning; default: none
   npm install --global pnpm
 ```
 
