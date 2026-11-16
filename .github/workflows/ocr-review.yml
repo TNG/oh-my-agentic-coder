@@ -1,0 +1,86 @@
+# Advisory only: do not make this check required in branch protection.
+name: OCR review
+
+on:
+  # Use the trusted base workflow and files, never executable PR-head content.
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: OCR review
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout trusted base
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate gateway configuration
+        id: configure
+        env:
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+        run: |
+          : "${SKAINET_INTERNAL:?Set the SKAINET_INTERNAL repository secret}"
+          : "${SKAINET_TOKEN:?Set the SKAINET_TOKEN repository secret}"
+          printf 'url=%s/chat/completions\n' "${SKAINET_INTERNAL%/}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and verify model
+        id: model
+        env:
+          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
+        run: scripts/probe-model.sh opencode --github-output
+
+      - name: Review and publish
+        id: ocr
+        uses: alibaba/open-code-review@7e5ce06c88de5ce81df5dc4f24e2e485b517fae8 # v1.13.10
+        with:
+          ocr_version: '1.13.10'
+          github_token: ${{ github.token }}
+          llm_url: ${{ steps.configure.outputs.url }}
+          llm_auth_token: ${{ secrets.SKAINET_TOKEN }}
+          llm_model: ${{ steps.model.outputs.model }}
+          llm_use_anthropic: 'false'
+          # The Action otherwise disables model thinking by default.
+          llm_extra_body: '{}'
+          language: English
+          effort: high
+          sticky_summary: 'true'
+          incremental: 'true'
+          checkpoint_range: 'true'
+          full_review: ${{ contains(github.event.pull_request.labels.*.name, 'ocr-full-review') }}
+          background: ${{ github.event.pull_request.title }}
+
+      - name: Check publication
+        id: publication
+        env:
+          COMMENTS_FAILED: ${{ steps.ocr.outputs.comments_failed }}
+          SUMMARY_URL: ${{ steps.ocr.outputs.summary_comment_url }}
+          RANGE_REASON: ${{ steps.ocr.outputs.range_reason }}
+        run: |
+          if [ "$COMMENTS_FAILED" != "0" ]; then
+            echo "::error::OCR could not publish all inline comments; inspect its summary and artifacts."
+            exit 1
+          fi
+          if [ -z "$SUMMARY_URL" ] && [ "$RANGE_REASON" != "same_head_noop" ]; then
+            echo "::error::OCR did not publish a review summary; inspect the review step and artifacts."
+            exit 1
+          fi
