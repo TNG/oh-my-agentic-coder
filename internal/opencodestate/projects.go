@@ -53,6 +53,10 @@ type SkipReason string
 const (
 	SkipStale     SkipReason = "no longer exists"
 	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+	// SkipDesktopStore: granting the folder read+write would let the agent
+	// change the Desktop's own stores, which the sandbox refuses to start
+	// with (for example a dotfiles project at ~/.config).
+	SkipDesktopStore SkipReason = "contains OpenCode Desktop's own project list, which the agent must not be able to change"
 )
 
 // SkippedWorktree pairs a rejected worktree path with its reason.
@@ -94,6 +98,10 @@ func storageProjectDir() (string, error) {
 // records are routed into skipped. Records from the Desktop app's own
 // store (outside the sandbox mount) keep the looser isBroadWorktree
 // rule so the Desktop workflow still resolves in-home projects.
+//
+// A folder that contains one of the Desktop's own stores (see
+// DesktopStorePaths) is skipped too: the sandbox refuses any write grant
+// over those stores, so granting it would block every start.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	storage, err := storageWorktrees()
 	if err != nil {
@@ -103,6 +111,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	raw = append(raw, desktopWorktrees()...)
 
 	home, _ := os.UserHomeDir()
+	stores := DesktopStorePaths()
 	seen := map[string]bool{}
 	for _, e := range raw {
 		wt := e.path
@@ -120,6 +129,10 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 		seen[wt] = true
 		if fi, serr := os.Stat(wt); serr != nil || !fi.IsDir() {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
+			continue
+		}
+		if containsAny(wt, stores) {
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipDesktopStore})
 			continue
 		}
 		worktrees = append(worktrees, wt)
@@ -141,6 +154,24 @@ func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
 		return isBroadWorktree(wt, home)
 	}
 	return isInHome(wt, home)
+}
+
+// containsAny reports whether dir is one of paths or an ancestor of one.
+// dir is checked as written and with symlinks resolved, because the
+// sandbox resolves a grant's symlinks before comparing it.
+func containsAny(dir string, paths []string) bool {
+	dirs := []string{filepath.Clean(dir)}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dirs = append(dirs, real)
+	}
+	for _, d := range dirs {
+		for _, p := range paths {
+			if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isInHome reports whether wt lies anywhere inside home: equal to it,

@@ -273,3 +273,54 @@ func TestWorktreesNoState(t *testing.T) {
 		t.Errorf("expected empty: %v %v", worktrees, skipped)
 	}
 }
+
+// A Desktop project folder that contains one of Desktop's own stores (here
+// a dotfiles project at ~/.config) is skipped with a notice instead of
+// making the sandbox refuse to start; the other projects still work.
+func TestWorktreesSkipsFolderContainingDesktopStore(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	config := filepath.Join(home, ".config")
+	nested := filepath.Join(config, "nvim")
+	project := filepath.Join(home, "work", "p")
+	link := filepath.Join(home, "dots")
+	for _, d := range []string{nested, project} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(config, link); err != nil {
+		t.Fatal(err)
+	}
+	records := `{"value":[{"worktree":"` + config + `"},{"worktree":"` + nested + `"},{"worktree":"` + project + `"},{"worktree":"` + link + `"}]}`
+	data, err := json.Marshal(map[string]any{"globalSync.project": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(config, "ai.opencode.desktop")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{nested, project}; !slices.Equal(worktrees, want) {
+		t.Errorf("worktrees = %v, want %v", worktrees, want)
+	}
+	for _, p := range []string{config, link} {
+		if !slices.Contains(skipped, SkippedWorktree{Path: p, Reason: SkipDesktopStore}) {
+			t.Errorf("%s not skipped as a Desktop store folder: %v", p, skipped)
+		}
+	}
+}
