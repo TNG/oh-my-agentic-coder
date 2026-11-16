@@ -30,15 +30,15 @@ func useFakeVMExec(t *testing.T, connErr error, code int, execErr error) *[]vm.E
 		resolveVMConn, runVMExecFn, newVMManager, loadVMState = origConn, origRun, origMgr, origState
 	})
 	conn := vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}}
-	resolveVMConn = func(*Env) (vm.ConnInfo, error) { return conn, connErr }
+	resolveVMConn = func(*Env, string) (vm.ConnInfo, error) { return conn, connErr }
 	// --env needs an online VM; tests about other refusals override this.
-	loadVMState = func() (*vm.State, error) { return &vm.State{Mode: vm.ModeOnline}, nil }
+	loadVMState = func(string) (*vm.State, error) { return &vm.State{Mode: vm.ModeOnline}, nil }
 	var calls []vm.ExecOpts
 	runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
 		calls = append(calls, o)
 		return code, execErr
 	}
-	newVMManager = func(*Env) (vmManager, error) {
+	newVMManager = func(*Env, string) (vmManager, error) {
 		t.Error("exec must not build a VM manager")
 		return nil, errors.New("no manager")
 	}
@@ -241,7 +241,7 @@ func TestVMExecEnvRefusedWhenVMWentOfflineDuringPrompt(t *testing.T) {
 	t.Setenv("MY_REPO_TOKEN", "x")
 	var mode atomic.Value
 	mode.Store(vm.ModeOnline)
-	loadVMState = func() (*vm.State, error) { return &vm.State{Mode: mode.Load().(string)}, nil }
+	loadVMState = func(string) (*vm.State, error) { return &vm.State{Mode: mode.Load().(string)}, nil }
 	env, _, stderr := vmTestEnv(t)
 	w, done := startVMExecAtPrompt(t, env, stderr)
 	mode.Store(vm.ModeOffline)
@@ -365,7 +365,7 @@ func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
 	for _, spec := range []string{"A=1", "OMAC_TEST_SURELY_UNSET_VAR"} {
 		t.Run(spec, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
-			resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+			resolveVMConn = func(*Env, string) (vm.ConnInfo, error) {
 				return vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}, FromSandbox: true}, nil
 			}
 			env, _, stderr := vmTestEnv(t)
@@ -394,7 +394,7 @@ func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
 
 func TestVMExecEnvUnreadableStateIsIOError(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
-	loadVMState = func() (*vm.State, error) { return nil, errors.New("state.json: permission denied") }
+	loadVMState = func(string) (*vm.State, error) { return nil, errors.New("state.json: permission denied") }
 	env, _, stderr := vmTestEnv(t)
 	if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitIOError {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitIOError, stderr())
@@ -414,7 +414,7 @@ func TestVMExecEnvRefusedUnlessOnline(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
-			loadVMState = func() (*vm.State, error) { return st, nil }
+			loadVMState = func(string) (*vm.State, error) { return st, nil }
 			env, _, stderr := vmTestEnv(t)
 			if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitMisuse {
 				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
@@ -456,7 +456,7 @@ func TestVMExecMisuse(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
-			resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+			resolveVMConn = func(*Env, string) (vm.ConnInfo, error) {
 				t.Error("misuse must be caught before the connection is resolved")
 				return vm.ConnInfo{}, errors.New("no connection")
 			}
@@ -479,7 +479,7 @@ func TestVMExecEnvMisuse(t *testing.T) {
 		for _, mode := range []string{vm.ModeOnline, vm.ModeOffline} {
 			t.Run(name+"/"+mode, func(t *testing.T) {
 				calls := useFakeVMExec(t, nil, 0, nil)
-				loadVMState = func() (*vm.State, error) { return &vm.State{Mode: mode}, nil }
+				loadVMState = func(string) (*vm.State, error) { return &vm.State{Mode: mode}, nil }
 				env, _, stderr := vmTestEnv(t)
 				if code := runVM([]string{"exec", "--env", tc.spec, "--", "true"}, env); code != ExitMisuse {
 					t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())

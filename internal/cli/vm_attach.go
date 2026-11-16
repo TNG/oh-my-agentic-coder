@@ -132,11 +132,11 @@ func (m *vmMarkers) release() {
 // re-checks the markers after marking itself online, either sees this session
 // or makes the check below fail. Tests replace it.
 var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, *vmMarkers, error) {
-	m, err := newVMManager(env)
+	m, err := newVMManager(env, vm.DefaultVMName)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}

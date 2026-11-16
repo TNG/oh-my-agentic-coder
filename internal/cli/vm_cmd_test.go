@@ -57,7 +57,7 @@ func (f *fakeVMManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 func useFakeVM(t *testing.T, fake *fakeVMManager) {
 	t.Helper()
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { fake.factoryCalls++; return fake, nil }
+	newVMManager = func(*Env, string) (vmManager, error) { fake.factoryCalls++; return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 }
 
@@ -320,7 +320,7 @@ func TestVMReadVerbErrorPrintsNothingToStdout(t *testing.T) {
 
 func TestVMManagerConstructionFailureIsIOError(t *testing.T) {
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return nil, errors.New("no home") }
+	newVMManager = func(*Env, string) (vmManager, error) { return nil, errors.New("no home") }
 	t.Cleanup(func() { newVMManager = orig })
 	env, _, stderr := vmTestEnv(t)
 	if code := runVM([]string{"status"}, env); code != ExitIOError {

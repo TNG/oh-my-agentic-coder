@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 
 	"golang.org/x/term"
 
@@ -31,12 +33,34 @@ type vmManager interface {
 }
 
 // newVMManager builds the real manager. Tests replace it so no VM is touched.
-var newVMManager = func(env *Env) (vmManager, error) {
-	root, err := vm.DefaultRoot()
+var newVMManager = func(env *Env, name string) (vmManager, error) {
+	root, err := vm.InstanceRoot(name)
 	if err != nil {
 		return nil, err
 	}
-	return vm.NewManager(vm.NewLayout(root), vm.UserConfigPath(), vm.RealDeps(), env.Stdout), nil
+	return vm.NewManager(vm.NewLayout(root), vm.InstanceConfigPath(name), vm.RealDeps(), env.Stdout), nil
+}
+
+// extractVMName removes --name <x> or --name=<x> from args wherever it sits
+// and returns its value; named is false when the flag is absent. The
+// arguments left over keep their order.
+func extractVMName(args []string) (name string, named bool, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--name":
+			if i+1 >= len(args) {
+				return "", false, nil, errors.New("--name needs a value")
+			}
+			name, named = args[i+1], true
+			i++
+		case strings.HasPrefix(a, "--name="):
+			name, named = strings.TrimPrefix(a, "--name="), true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return name, named, rest, nil
 }
 
 // vmOp is one validated `omac vm` invocation, run once the manager exists.
@@ -50,8 +74,36 @@ func runVM(args []string, env *Env) int {
 		return ExitMisuse
 	}
 	verb, rest := args[0], args[1:]
+	name := vm.DefaultVMName
+	if verb != "exec" && verb != "help" && verb != "-h" && verb != "--help" {
+		given, named, left, err := extractVMName(rest)
+		if err != nil {
+			return vmMisuse(env, err.Error())
+		}
+		if named {
+			if verb == "list" {
+				return vmMisuse(env, "list takes no arguments")
+			}
+			if err := vm.ValidateName(given); err != nil {
+				return vmMisuse(env, err.Error())
+			}
+			name = given
+		}
+		rest = left
+	}
 	var op vmOp
 	switch verb {
+	case "list":
+		if len(rest) > 0 {
+			return vmMisuse(env, "list takes no arguments")
+		}
+		rows, err := vm.ListInstances()
+		if err != nil {
+			fmt.Fprintln(env.Stderr, err)
+			return ExitIOError
+		}
+		writeVMList(env.Stdout, rows)
+		return ExitOK
 	case "up":
 		reprovision := false
 		for _, a := range rest {
@@ -84,7 +136,7 @@ func runVM(args []string, env *Env) int {
 
 	// Errors print as returned: most Manager errors already start with
 	// "omac vm", and a prefix here would repeat it.
-	m, err := newVMManager(env)
+	m, err := newVMManager(env, name)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		return ExitIOError
@@ -103,8 +155,8 @@ func runVM(args []string, env *Env) int {
 
 // resolveVMConn finds the VM's ssh connection: from the OMAC_VM_*
 // variables inside a sandbox, else from the host-side state directory.
-var resolveVMConn = func(*Env) (vm.ConnInfo, error) {
-	root, err := vm.DefaultRoot()
+var resolveVMConn = func(_ *Env, name string) (vm.ConnInfo, error) {
+	root, err := vm.InstanceRoot(name)
 	if err != nil {
 		return vm.ConnInfo{}, err
 	}
@@ -116,8 +168,8 @@ var isTerminal = func(f *os.File) bool { return f != nil && term.IsTerminal(int(
 
 // loadVMState reads the host-side state.json; nil when the VM was never
 // created. Tests replace it.
-var loadVMState = func() (*vm.State, error) {
-	root, err := vm.DefaultRoot()
+var loadVMState = func(name string) (*vm.State, error) {
+	root, err := vm.InstanceRoot(name)
 	if err != nil {
 		return nil, err
 	}
@@ -129,19 +181,21 @@ var runVMExecFn = vm.Exec
 
 // vmExecArgs is a parsed `omac vm exec` invocation.
 type vmExecArgs struct {
+	name    string
 	cwd     string
 	envs    []string
 	cmd     []string
 	verbose bool
 }
 
-// parseVMExecArgs parses [--cwd <dir>] [--env SPEC]... [--verbose] [--] <cmd...>.
+// parseVMExecArgs parses [--name <x>] [--cwd <dir>] [--env SPEC]... [--verbose] [--] <cmd...>.
 // Flags end at "--" or at the first argument that is not a flag, so the
 // command keeps its own flags. ok is false when the caller should exit with
 // code: after -h/--help or a usage error.
 func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) {
 	fs := flag.NewFlagSet("omac vm exec", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&a.name, "name", vm.DefaultVMName, "")
 	fs.StringVar(&a.cwd, "cwd", "", "")
 	fs.Func("env", "", func(s string) error {
 		a.envs = append(a.envs, s)
@@ -157,6 +211,9 @@ func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) 
 	if a.cmd = fs.Args(); len(a.cmd) == 0 {
 		return a, vmExecMisuse(env, "no command given"), false
 	}
+	if err := vm.ValidateName(a.name); err != nil {
+		return a, vmExecMisuse(env, err.Error()), false
+	}
 	if err := vm.ValidateCwd(a.cwd); err != nil {
 		return a, vmExecMisuseErr(env, err), false
 	}
@@ -170,7 +227,7 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
-	conn, err := resolveVMConn(env)
+	conn, err := resolveVMConn(env, a.name)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err) // ErrNotCreated already says to run `omac vm up`
 		if errors.Is(err, vm.ErrNotCreated) {
@@ -178,7 +235,7 @@ func runVMExec(args []string, env *Env) int {
 		}
 		return ExitIOError
 	}
-	envs, code, ok := resolveVMExecEnv(env, conn, a.envs)
+	envs, code, ok := resolveVMExecEnv(env, conn, a.envs, a.name)
 	if !ok {
 		return code
 	}
@@ -197,7 +254,7 @@ func runVMExec(args []string, env *Env) int {
 			return vm.ExitInterrupted
 		}
 		// The wait can be long; a session may have attached meanwhile.
-		if err := checkVMOnline(); err != nil {
+		if err := checkVMOnline(a.name); err != nil {
 			fmt.Fprintln(env.Stderr, err)
 			if errors.Is(err, errVMNotOnline) {
 				return ExitMisuse
@@ -240,7 +297,7 @@ func runVMExec(args []string, env *Env) int {
 // before any lookup, since it filters most variables and "not set" would
 // send the agent looking for the secret; on the host a bad --env is
 // reported before the user brings the VM online for nothing.
-func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int, bool) {
+func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string, name string) ([]string, int, bool) {
 	if len(specs) == 0 {
 		return nil, ExitOK, true
 	}
@@ -251,7 +308,7 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	if err != nil {
 		return nil, vmExecMisuseErr(env, err), false
 	}
-	if err := checkVMOnline(); errors.Is(err, errVMNotOnline) {
+	if err := checkVMOnline(name); errors.Is(err, errVMNotOnline) {
 		return nil, vmExecMisuseErr(env, err), false
 	} else if err != nil {
 		fmt.Fprintln(env.Stderr, err)
@@ -267,16 +324,17 @@ const vmExecEnvReason = "--env is for priming from the host while the VM is onli
 const vmExecEnvPrompt = "Press Enter to continue, Ctrl-C to stop.\n" +
 	"A line pasted after this command answers this prompt: omac stops, and the pasted line does not run."
 
-var errVMNotOnline = errors.New("omac vm exec: " + vmExecEnvReason + "; run `omac vm online` first")
+var errVMNotOnline = errors.New("omac vm exec: " + vmExecEnvReason)
 
-// checkVMOnline returns errVMNotOnline, or the error reading the VM state.
-func checkVMOnline() error {
-	st, err := loadVMState()
+// checkVMOnline returns an error wrapping errVMNotOnline, or the error
+// reading the VM state.
+func checkVMOnline(name string) error {
+	st, err := loadVMState(name)
 	if err != nil {
 		return err
 	}
 	if st == nil || st.Mode != vm.ModeOnline {
-		return errVMNotOnline
+		return fmt.Errorf("%w; run `omac vm online%s` first", errVMNotOnline, vmNameSuffix(name))
 	}
 	return nil
 }
@@ -346,7 +404,28 @@ func vmExecMisuseErr(env *Env, err error) int {
 	return ExitMisuse
 }
 
-const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--verbose] -- <cmd...>
+// vmNameSuffix is the " --name <x>" a hint needs for any VM but the default.
+func vmNameSuffix(name string) string {
+	if name == vm.DefaultVMName {
+		return ""
+	}
+	return " --name " + name
+}
+
+func writeVMList(w io.Writer, rows []vm.InstanceRow) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATE\tSSH PORT")
+	for _, r := range rows {
+		port := "-"
+		if r.SSHPort > 0 {
+			port = strconv.Itoa(r.SSHPort)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Name, r.Mode, port)
+	}
+	tw.Flush()
+}
+
+const vmExecUsage = `  omac vm exec [--name <x>] [--cwd <dir>] [--env NAME[=VALUE]]... [--verbose] -- <cmd...>
                                Copies the worktree (the git top level) into the VM, one way, skipping
                                .git, .env files and what git ignores. Runs the command there, in the
                                current directory or in <dir> relative to it. Absolute paths and ..
@@ -437,7 +516,13 @@ func vmExitCode(err error) int {
 func printVMUsage(env *Env) {
 	fmt.Fprintln(env.Stderr, `omac vm — persistent Lima VM that runs Docker for omac sessions
 
+Every verb except list takes --name <x> to act on another VM than the default
+"omac". A name is a lowercase letter, then up to 15 lowercase letters, digits
+or '-'. Outside a session, vm exec uses --name; inside one it uses the VM the
+session is attached to.
+
 Usage:
+  omac vm list                 Show every VM with its state and SSH port.
   omac vm up [--reprovision]   Create or start the VM. A new VM ends offline; a VM switched online stays online.
                                --reprovision reinstalls the packages and JDKs from vm.yaml, then switches offline.
   omac vm down                 Stop the VM.
