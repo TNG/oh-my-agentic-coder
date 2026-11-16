@@ -19,16 +19,18 @@ func TestSecurityVMStateRootIsProtected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("XDG_STATE_HOME", xdgState)
-			root, err := vm.DefaultRoot()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for platform, b := range map[string]sandboxprofile.Baseline{
-				"linux":  sandboxprofile.LinuxBaselineForTest(),
-				"darwin": sandboxprofile.DarwinBaselineForTest(),
-			} {
-				if !coveredBy(root, sandboxprofile.EffectiveProtectedPaths(b, nil)) {
-					t.Errorf("%s baseline does not protect the VM state root %s: the sandbox could read admin_key", platform, root)
+			for _, vmName := range []string{vm.DefaultVMName, "acme"} {
+				root, err := vm.InstanceRoot(vmName)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for platform, b := range map[string]sandboxprofile.Baseline{
+					"linux":  sandboxprofile.LinuxBaselineForTest(),
+					"darwin": sandboxprofile.DarwinBaselineForTest(),
+				} {
+					if !coveredBy(root, sandboxprofile.EffectiveProtectedPaths(b, nil)) {
+						t.Errorf("%s baseline does not protect the state root %s of VM %q: the sandbox could read admin_key", platform, root, vmName)
+					}
 				}
 			}
 		})

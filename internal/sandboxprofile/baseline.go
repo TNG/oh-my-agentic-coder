@@ -43,9 +43,12 @@ func protectedCommon() []string {
 		// $XDG_CONFIG_HOME overrides it on systems that set it.
 		"~/.config/omac",
 		"$XDG_CONFIG_HOME/omac",
-		// omac VM state: admin_key gives root access to the omac VM.
+		// omac VM state: admin_key gives root access to the omac VM. vm is
+		// the default VM, vms/<name> the named ones.
 		"~/.local/state/omac/vm",
 		"$XDG_STATE_HOME/omac/vm",
+		"~/.local/state/omac/vms",
+		"$XDG_STATE_HOME/omac/vms",
 		// credentials
 		"~/.ssh",
 		"~/.gnupg",
