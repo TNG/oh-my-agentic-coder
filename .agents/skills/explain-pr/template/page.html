@@ -1,3 +1,19 @@
+<!doctype html>
+<!--
+  Explainer page template. Copy this file and replace every double-brace
+  placeholder; template/content.md says what goes in each.
+
+  One file serves both uses: opened in a browser it is a complete page, and
+  when the Claude Artifact publisher wraps it in its own skeleton, the browser
+  ignores the nested html, head and body tags.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Allows only the pinned Mermaid file and the one inline script at the end,
+     so a script, onload= attribute or javascript: link copied from PR text can't run. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://cdn.jsdelivr.net/npm/mermaid@11.4.1/ 'sha256-M0q/XZxWaxHLud8JN4WBgn6JEElE0lb4SEPzvxLtRd4='; style-src 'unsafe-inline'; img-src data:">
 <title>{{title}}</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
@@ -84,8 +100,10 @@ footer{color:var(--muted);font-size:13px;padding-block:0 40px}
 @media (max-width:860px){.layout{grid-template-columns:minmax(0,1fr)}nav.toc{position:static}nav.toc ol{display:flex;flex-wrap:wrap;gap:6px}nav.toc a{border:1px solid var(--line);border-radius:30px;padding:4px 12px}}
 @media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 </style>
+</head>
+<body>
 <header class="band gut"><div class="in">
-  <div class="eyebrow"><a href="{{pr_url}}" target="_blank" rel="noopener">{{repo_name}} PR #{{number}}</a> · explainer for reviewers</div>
+  <div class="eyebrow"><a href="https://github.com/{{repo}}/pull/{{number}}" target="_blank" rel="noopener">{{repo_name}} PR #{{number}}</a> · explainer for reviewers</div>
   <h1>{{title}}</h1>
   <p class="lede">{{lede}}</p>
   <div class="facts">{{facts}}</div>
@@ -93,7 +111,15 @@ footer{color:var(--muted);font-size:13px;padding-block:0 40px}
 <div class="gut"><div class="in layout">
   <nav class="toc" aria-label="Sections"><ol>{{toc}}</ol></nav>
   <article>
-{{content}}
+{{sections}}
   </article>
 </div></div>
 <footer class="gut"><div class="in">Agent-generated from PR #{{number}} at head <code>{{head_short}}</code>. Check claims against the code before relying on them.</div></footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" integrity="sha384-rbtjAdnIQE/aQJGEgXrVUlMibdfTSa4PQju4HDhN3sR2PmaKFzhEafuePsl9H/9I" crossorigin="anonymous"></script>
+<!-- The CSP above allows the next script by its SHA-256 hash. If you change
+     the script, recompute the hash of the exact text between its tags and
+     replace the 'sha256-…' value in the CSP:
+     printf '%s' 'mermaid.initialize(…);' | openssl dgst -sha256 -binary | openssl base64 -A -->
+<script>mermaid.initialize({startOnLoad: true, securityLevel: "strict", theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default"});</script>
+</body>
+</html>

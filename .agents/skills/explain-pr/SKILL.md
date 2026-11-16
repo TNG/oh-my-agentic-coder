@@ -5,7 +5,7 @@ description: Use when a pull request is complex enough that a reviewer needs to 
 
 # Explain a PR
 
-Write a page that explains one pull request from the ground up: what it changes, where that fits in the codebase, the usage scenarios that matter, the viable approaches, and how to review it. In Claude Code the page is published as a Claude Artifact; in other agents it is a standalone HTML file.
+Write a page that explains one pull request from the ground up: what it changes, where that fits in the codebase, the usage scenarios that matter, the viable approaches, and how to review it. The page is one HTML file filled in from `template/page.html`: in Claude Code it is published as a Claude Artifact, in other agents the user opens the file in a browser.
 
 ## Inputs
 
@@ -26,29 +26,24 @@ You need to read the PR (description, files, commits, comments, reviews), its li
 
 1. **Fetch the code.** `git fetch origin +refs/pull/<N>/head:refs/remotes/pr/<N>` plus the base branch. If the PR's base branch is the head branch of another open PR, it is stacked: diff against that PR's head, not the default branch.
 2. **Read.** Go through the sources in the "Where to look" table of `template/content.md`.
-3. **Write** `meta.json` and `content.html` in the work directory, following `template/content.md`.
-4. **Build.**
-   - In Claude Code: `python3 scripts/build.py <work-dir>` (paths relative to this skill's directory).
-   - In any other agent: `python3 scripts/build.py <work-dir> --standalone`.
-
-   It writes `<work-dir>/explainer.html` and must print `"problems": []`. Fix and rebuild until it does.
+3. **Write.** Copy `template/page.html` (relative to this skill's directory) to `<work-dir>/pr-<N>-explainer.html` and replace every `{{…}}` placeholder, following `template/content.md`.
+4. **Check** what you wrote:
+   - The five sections are there in order (`what`, `context`, `scenarios`, `approaches`, `review`), and the table of contents has one entry per section with the same id and heading.
+   - Text taken from the PR (titles, descriptions, code, comments) has `&`, `<` and `>` escaped.
+   - You added no `<script>`, `<style>`, `<link>`, `<iframe>` or `<img>`, no `on…=` attributes and no `javascript:` links.
+   - Every tag you opened is closed.
+   - No `{{` is left in the file.
 5. **Deliver.**
-   - In Claude Code: publish `<work-dir>/explainer.html` with the Artifact tool (copy it into the session's scratchpad first if the tool only accepts paths there). Pass a one-word `icon` such as `book` and a one-sentence `description`. To update an explainer that already exists, publish to its existing URL so the link stays the same. Give the user the link.
-   - Elsewhere: copy the file to a name like `pr-<N>-explainer.html` where the user can open it, and give them the path. It needs network access to load Mermaid for the diagrams.
+   - In Claude Code: publish the file with the Artifact tool (copy it into the session's scratchpad first if the tool only accepts paths there). Pass a one-word `icon` such as `book` and a one-sentence `description`. To update an explainer that already exists, publish to its existing URL so the link stays the same. Give the user the link.
+   - Elsewhere: put the file where the user can open it and give them the path.
+
+   The page loads Mermaid from cdn.jsdelivr.net, so diagrams need network access; without it, the reader sees the diagram's source.
 
 ## When the user asks for changes
 
-**Always ask first** whether the change is for this one explainer only, or for the template so that every future explainer gets it. Then edit the matching files:
-
-| Scope | Edit |
-|---|---|
-| This explainer only | its `meta.json` / `content.html`, then rebuild and republish to the same URL |
-| Look of every explainer (colors, layout, typography) | `template/page.html` |
-| Structure or contents of every explainer (sections, what goes in them, building blocks) | `template/content.md`, and `scripts/build.py` if the checks must change |
-
-After a template change, offer to rebuild the explainers that already exist so they match.
-
-Example: the user says "the code in the title is hard to read". Ask: "Fix it in the template, so all explainers get it, or only on this page?"
+- If the request is about this page, edit the page and republish it to the same URL.
+- If it is clearly about all future explainers, edit `template/page.html` (look) or `template/content.md` (structure and contents), and offer to update the explainers that already exist.
+- Ask only when it's unclear which of the two the user means.
 
 ## Common mistakes
 
