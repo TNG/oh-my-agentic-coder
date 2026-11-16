@@ -73,7 +73,7 @@ tests use it.
 
 ## 6. Prime the build caches
 
-Builds run with `--offline` in the VM, so their dependencies must be
+The VM has no network access, so everything a build downloads must be
 downloaded once while the VM is online. No session may be attached, because
 omac refuses `omac vm online` while one is.
 
@@ -95,7 +95,7 @@ and import the images again.
 
 ```sh
 omac vm online
-omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- <full build command>
 omac vm offline
 ```
 
@@ -103,26 +103,26 @@ omac vm offline
   sessions while the VM is online.
 - Run it from the fresh clone. `--cwd` is the module with the build,
   relative to the current directory.
-- Use the task that runs all checks (`check` or the project's own), not only
-  `test`: Gradle downloads the tools behind tasks such as Checkstyle or
-  Spotless only when those tasks run.
+- `<full build command>` runs all checks, not only the tests, because some
+  tools, such as Checkstyle or Spotless, are downloaded only when their task
+  runs. Examples: Gradle `./gradlew check --no-daemon`, Maven `./mvnw verify`.
 - `--env NAME` passes a token from the host's shell. The human exports `NAME`
   in that shell first; otherwise omac stops with `environment variable NAME
   is not set`. Never look for the token or its value yourself. Leave `--env`
   out if the downloads need no token. Use a short-lived, read-only token,
   because anything a session left behind in the VM runs online with it and
   can store the token in the VM, where later sessions can read it; revoke it
-  after priming. `--no-daemon` makes sure no Gradle daemon keeps the token
-  afterwards.
+  after priming. With Gradle, `--no-daemon` makes sure no daemon keeps the
+  token afterwards.
 - With `--env`, omac names the variables the build can read and waits: the
   human presses Enter on an empty line to continue, or Ctrl-C to stop.
   In some shells, pasting the three lines at once gives `omac vm offline`
   to that prompt as its answer: the build stops and the VM stays online.
   So the human runs the lines one at a time, and runs `omac vm offline` if
   the build stopped.
-- If the build reads its token from a Gradle property, for example `gpr.key`
-  in `~/.gradle/gradle.properties`, do not reuse that stored token: it is
-  usually long-lived. The human creates a short-lived read-only token,
+- Gradle: if the build reads its token from a Gradle property, for example
+  `gpr.key` in `~/.gradle/gradle.properties`, do not reuse that stored token:
+  it is usually long-lived. The human creates a short-lived read-only token,
   exports it as `TOKEN` and hands it to Gradle under the property's name.
   Gradle reads a property `foo` also from the environment variable
   `ORG_GRADLE_PROJECT_foo`. The wrapper runs under `bash` because the VM's
@@ -132,9 +132,9 @@ omac vm offline
   omac vm exec --env TOKEN --cwd backend -- sh -c 'env "ORG_GRADLE_PROJECT_gpr.key=$TOKEN" bash ./gradlew check --no-daemon'
   ```
 
-- Priming has to end with `BUILD SUCCESSFUL`. Gradle stops at the first
-  failed task and skips the downloads of the tasks after it, so offline
-  builds in a session can then miss dependencies.
+- Priming has to end with a successful build. Gradle, for example, stops at
+  the first failed task and skips the downloads of the tasks after it, so
+  offline builds in a session can then miss dependencies.
 
 ## 7. Sandbox grants
 
