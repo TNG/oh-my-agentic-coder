@@ -283,7 +283,7 @@ cannot access.
 | The host OpenCode service's `service.json` in `~/.config/opencode` and `~/.local/state/opencode` (also under `$XDG_CONFIG_HOME`, `$OPENCODE_CONFIG_DIR` and `$XDG_STATE_HOME` when set) | **blocked** (OpenCode harness) | Least privilege: these files hold the configuration and registration of the host's OpenCode v2 shared service. A sandboxed OpenCode v2 uses its own private `service.json` in the per-launch temp dir instead, so the sandbox doesn't need the host's copies. Keeping them out of reach means a sandboxed session cannot read or change the host service's settings. The rest of both dirs stays read + write. On Linux the file is masked when it exists at launch |
 | The omac VM's SSH port (opened like `--open-port`) and a copy of the VM's agent SSH key in omac's tool cache | port: connect and bind, **only with `--vm`**; key copy: read | So the agent can run commands in the VM with `omac vm exec`, including Docker. The key copy stays in the tool cache after the session, so later sessions that share that cache can read it. It is only useful together with the SSH port, which only `--vm` sessions get, unless your sandbox profile opens all loopback ports (`open_port: [0]`); then any session can reach the VM's SSH port. See [The omac VM](#the-omac-vm) |
 | `~/.config/omac` (approval store, sandbox profiles, global registry) | **blocked** | The agent must not be able to forge skill approvals; protected in the baseline even under broader grants |
-| `~/.local/state/omac/vm` (also under `$XDG_STATE_HOME`) | **blocked** | The omac VM's state, including the key that gives root access to the VM; protected in the baseline even under broader grants |
+| `~/.local/state/omac/vm` and `~/.local/state/omac/vms` (also under `$XDG_STATE_HOME`) | **blocked** | The state of the default VM and of named VMs, including the key that gives root access to the VM; protected in the baseline even under broader grants |
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
@@ -319,7 +319,7 @@ What `omac vm exec` shares with the VM:
 
 The `setup` script of a VM (see [Setup script](./configuration.md#setup-script)) runs as root in the VM, with network access, while the VM is provisioned. It comes only from your `vm.yaml` or `vms/<name>.yaml`, never from a repository or from the agent, and the sandbox cannot write `~/.config/omac`. Treat its content like a script you run on your own machine: whatever it downloads runs as root in the VM.
 
-The state of the default VM lives in `~/.local/state/omac/vm` (named VMs: `~/.local/state/omac/vms/<name>`) and includes the key for root access to the VM. The sandbox blocks the default VM's directory.
+The state of the default VM lives in `~/.local/state/omac/vm` (named VMs: `~/.local/state/omac/vms/<name>`) and includes the key for root access to the VM. The sandbox blocks both locations.
 
 ### OpenCode v2 model state
 
