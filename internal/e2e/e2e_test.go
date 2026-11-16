@@ -437,7 +437,9 @@ func runSecurityAudit(t *testing.T, h harnessConfig) {
 	logCrossSkillIsolation(t, stdout)
 }
 
-// installHarness installs the harness CLI into the temp HOME.
+// installHarness installs the harness CLI into the temp HOME. With
+// E2E_HARNESS_PREINSTALLED=1 it installs nothing and instead checks that the
+// harness on PATH has the pinned version.
 //
 // When E2E_RECOVER_INSTALL=1 (set by scripts/e2e-local.sh for nested-sandbox
 // runs), a failed install is retried with --ignore-scripts and the package's
@@ -453,14 +455,26 @@ func installHarness(t *testing.T, h harnessConfig, home string) {
 	if preinstalledEnabled() {
 		// withHome keeps the host PATH, so the tests find this binary
 		// without it being linked into the temp HOME.
-		binPath := lookPathInHome(t, h.BinaryName, env)
-		cmd := exec.Command(binPath, "--version")
+		lookupCmd := exec.Command("sh", "-c", "command -v "+h.BinaryName)
+		lookupCmd.Env = env
+		found, err := lookupCmd.Output()
+		if err != nil {
+			t.Fatalf("harness binary %q not on PATH, but %s=1 is set", h.BinaryName, preinstalledEnvVar)
+		}
+		binPath := strings.TrimSpace(string(found))
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binPath, "--version")
 		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("preinstalled %s: --version failed: %v\n%s", h.Name, err, out)
 		}
-		if err := checkPreinstalledVersion(h.Name, pinnedPackage(h.Name), string(out)); err != nil {
+		spec := pinnedPackage(h.Name)
+		if _, ok := pinnedVersion(spec); !ok {
+			t.Logf("no pinned version in %q: accepting any installed %s version", spec, h.Name)
+		}
+		if err := checkPreinstalledVersion(h.Name, spec, string(out)); err != nil {
 			t.Fatalf("%v", err)
 		}
 		t.Logf("using preinstalled %s at %s", h.BinaryName, binPath)

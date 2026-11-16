@@ -137,7 +137,7 @@ By default each E2E test installs its harness (via bun or npm) into a temporary 
 E2E_HARNESS_PREINSTALLED=1 go test -tags=e2e -run TestHarnessCLIContract -v ./internal/e2e/
 ```
 
-The tests then take the harness binary from `PATH` and skip the installation. The binary's `--version` must match the pinned version (in `internal/e2e/pinned_package.go`, or `E2E_VERSION_<HARNESS>` if set); otherwise the test fails and names both versions. With `E2E_USE_LATEST` set, any version is accepted.
+The tests then take the harness binary from `PATH` and skip the installation. The binary's `--version` must match the pinned version (in `internal/e2e/pinned_package.go`, or `E2E_VERSION_<HARNESS>` if set); otherwise the test fails and names both versions. To check against a different version, override one harness's pin, for example `E2E_VERSION_OPENCODE=opencode-ai@1.18.29`. With `E2E_USE_LATEST=1` the tests drop all pins and install the newest release of each harness, so a preinstalled harness of any version is accepted. A pin without a version number, such as `opencode-ai@latest`, accepts any version too.
 
 ---
 

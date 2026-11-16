@@ -39,6 +39,8 @@ func doPost(url, body string) (*http.Response, string, error) {
 	req.Header.Set("X-Api-Key", secretValue)
 	req.Header.Set("Cookie", "session="+secretValue)
 	req.Header.Set("Set-Cookie", "session="+secretValue)
+	req.Header.Set("Api-Key", secretValue)
+	req.Header.Set("X-Goog-Api-Key", secretValue)
 	req.Header.Set("X-Custom", "visible-header")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -101,7 +103,7 @@ func assertNoSecrets(t *testing.T, what, s string) {
 		t.Errorf("%s leaks credential:\n%s", what, s)
 	}
 	low := strings.ToLower(s)
-	for _, h := range []string{"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie"} {
+	for _, h := range []string{"authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie", "set-cookie"} {
 		if strings.Contains(low, h) {
 			t.Errorf("%s mentions header %q:\n%s", what, h, s)
 		}

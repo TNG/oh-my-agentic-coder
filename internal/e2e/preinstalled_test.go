@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_fast
 
 package e2e
 
@@ -36,6 +36,7 @@ func TestCheckPreinstalledVersion(t *testing.T) {
 		{"scoped package match", "@anthropic-ai/claude-code@2.1.197", "2.1.197 (Claude Code)\n", false},
 		{"v prefix", "codex@0.142.5", "codex-cli v0.142.5\n", false},
 		{"trailing period", "@github/copilot@1.0.68", "copilot 1.0.68.\n", false},
+		{"explicit latest tag", "opencode-ai@latest", "9.9.9\n", false},
 		{"mismatch", "opencode-ai@1.18.29", "1.18.30\n", true},
 		{"unparseable output", "opencode-ai@1.18.29", "garbage\n", true},
 		{"latest has no version to compare", "opencode-ai", "9.9.9\n", false},

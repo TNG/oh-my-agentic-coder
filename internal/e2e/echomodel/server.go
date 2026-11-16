@@ -241,19 +241,24 @@ func (r request) toolNames() []string {
 	return names
 }
 
-// omittedHeaders carry credentials and never appear in a response or dump.
-var omittedHeaders = map[string]bool{
-	"Authorization":       true,
-	"Proxy-Authorization": true,
-	"X-Api-Key":           true,
-	"Cookie":              true,
-	"Set-Cookie":          true,
+// credentialMarkers are name fragments of headers that carry credentials.
+// Such headers never appear in a response or dump.
+var credentialMarkers = []string{"auth", "key", "token", "secret", "cookie"}
+
+func isCredentialHeader(name string) bool {
+	low := strings.ToLower(name)
+	for _, m := range credentialMarkers {
+		if strings.Contains(low, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func visibleHeaders(h http.Header) map[string]string {
 	out := map[string]string{}
 	for k, v := range h {
-		if omittedHeaders[http.CanonicalHeaderKey(k)] {
+		if isCredentialHeader(k) {
 			continue
 		}
 		out[http.CanonicalHeaderKey(k)] = strings.Join(v, ", ")
@@ -287,7 +292,7 @@ func describe(kind apiKind, req request, headers map[string]string, n int) strin
 }
 
 func (s *Server) dump(n int, r *http.Request, headers map[string]string, body []byte) error {
-	if err := os.MkdirAll(s.opts.DumpDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.opts.DumpDir, 0o700); err != nil {
 		return err
 	}
 	var payload any = string(body)
@@ -304,7 +309,7 @@ func (s *Server) dump(n int, r *http.Request, headers map[string]string, body []
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.opts.DumpDir, fmt.Sprintf("%06d.json", n)), data, 0o644)
+	return os.WriteFile(filepath.Join(s.opts.DumpDir, fmt.Sprintf("%06d.json", n)), data, 0o600)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
