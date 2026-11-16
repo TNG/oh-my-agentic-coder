@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -10,7 +11,10 @@ import (
 )
 
 func TestServePassword(t *testing.T) {
-	h, _ := config.LookupHarness("opencode")
+	h, ok := config.LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
 	for _, tc := range []struct {
 		name                       string
 		password                   string
@@ -91,6 +95,69 @@ func TestServePasswordErrorsNameTheSetting(t *testing.T) {
 				t.Fatalf("error = %v\nwant    %s", err, tc.want)
 			}
 		})
+	}
+}
+
+// The hint about the random password must disappear once omac supplies a
+// password, whether the server runs in the sandbox or not.
+func TestServePasswordSuppressesHint(t *testing.T) {
+	h, ok := config.LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "")
+	os.Unsetenv("OPENCODE_SERVER_PASSWORD")
+	plan := sandboxPlan{Name: "builtin", Native: true, PolicyRef: "default", Policy: &sandboxprofile.Profile{Environment: sandboxprofile.Environment{AllowVars: []string{"PATH"}}}}
+	inner := []string{"opencode", "serve"}
+	for _, noSandbox := range []bool{false, true} {
+		for _, password := range []string{"", "serve-only"} {
+			extra, err := prepareServeAuthEnv(password, h, plan, noSandbox)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox))
+			if (hint == "") != (password != "") {
+				t.Errorf("noSandbox=%v password=%q: hint = %q", noSandbox, password, hint)
+			}
+		}
+	}
+}
+
+// The sandbox lets the auth variable through only when omac supplies a
+// password; otherwise a shell value of it must stay filtered out.
+func TestServePasswordAllowsAuthVarOnlyWithPassword(t *testing.T) {
+	h, ok := config.LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	plan := sandboxPlan{Name: "builtin", Native: true, PolicyRef: "default", Policy: &sandboxprofile.Profile{}}
+	base := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode", "serve"}
+	allowsAuth := func(argv []string) bool {
+		for i := 0; i+1 < len(argv) && argv[i] != "--"; i++ {
+			if argv[i] == "--allow-env" && argv[i+1] == "OPENCODE_SERVER_PASSWORD" {
+				return true
+			}
+		}
+		return false
+	}
+	if !allowsAuth(injectServeAuthAllow(slices.Clone(base), h, plan, "serve-only")) {
+		t.Error("with a password: --allow-env OPENCODE_SERVER_PASSWORD missing")
+	}
+	if allowsAuth(injectServeAuthAllow(slices.Clone(base), h, plan, "")) {
+		t.Error("without a password: OPENCODE_SERVER_PASSWORD must not be allowed")
+	}
+}
+
+// runServe must remove OMAC_SERVE_PASSWORD from its own environment first,
+// so host-side processes it starts (skill sidecars) never inherit it.
+func TestRunServeConsumesPassword(t *testing.T) {
+	t.Setenv(sandboxprofile.ServePasswordEnv, "serve-only")
+	env, _ := launchTestEnv(t, t.TempDir())
+	if code := runServe([]string{"--no-such-flag"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+	}
+	if _, set := os.LookupEnv(sandboxprofile.ServePasswordEnv); set {
+		t.Errorf("%s is still set in the omac process environment", sandboxprofile.ServePasswordEnv)
 	}
 }
 

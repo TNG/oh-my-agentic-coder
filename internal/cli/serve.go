@@ -608,9 +608,7 @@ func runServe(args []string, env *Env) int {
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
-		if password != "" && !noInner {
-			argv = injectSandboxEnvAllow(argv, []string{harness.ServerLaunch.AuthEnvVar}, plan)
-		}
+		argv = injectServeAuthAllow(argv, harness, plan, password)
 		var ocClass openCodeVersionKind
 		if !learn {
 			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)

@@ -43,6 +43,17 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 	return extra, nil
 }
 
+// injectServeAuthAllow lets the auth variable that carries OMAC_SERVE_PASSWORD
+// through the native sandbox's env filter. Without a password it adds
+// nothing, so a shell value of that variable stays filtered out.
+// (runServe rejects a password together with --no-inner before this point.)
+func injectServeAuthAllow(argv []string, h config.Harness, plan sandboxPlan, password string) []string {
+	if password == "" || h.ServerLaunch == nil {
+		return argv
+	}
+	return injectSandboxEnvAllow(argv, []string{h.ServerLaunch.AuthEnvVar}, plan)
+}
+
 // The warning must consider the sandbox filter, not just the host shell.
 func serveAuthGetenv(h config.Harness, plan sandboxPlan, extra map[string]string, noSandbox bool) func(string) string {
 	var allow, deny []string

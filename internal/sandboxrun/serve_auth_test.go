@@ -8,21 +8,44 @@ import (
 )
 
 func TestServeAuthFinalFilter(t *testing.T) {
-	for _, deny := range [][]string{nil, {"OPENCODE_*"}} {
-		env, err := filterServeAuthEnv([]string{"OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_PASSWORD=dedicated"}, sandboxprofile.Environment{AllowVars: []string{"OPENCODE_SERVER_PASSWORD"}, DenyVars: deny}, nil, "default")
-		if (err != nil) != (len(deny) > 0) {
-			t.Fatalf("deny %v: %v", deny, err)
-		}
-		if want := sandboxprofile.ServeAuthDeniedError("OPENCODE_SERVER_PASSWORD", "default"); err != nil && err.Error() != want.Error() {
-			t.Fatalf("error = %q, want the shared deny message %q", err, want)
-		}
-		if err == nil && !slices.Contains(env, "OPENCODE_SERVER_PASSWORD=dedicated") {
-			t.Fatal("password missing")
-		}
-		for _, kv := range env {
-			if kv == "OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD" {
-				t.Fatal("internal marker leaked")
+	environ := []string{"OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD", "OPENCODE_SERVER_PASSWORD=dedicated"}
+	for _, tc := range []struct {
+		name    string
+		policy  sandboxprofile.Environment
+		wantErr string
+	}{
+		{
+			name:   "allowed",
+			policy: sandboxprofile.Environment{AllowVars: []string{"OPENCODE_SERVER_PASSWORD"}},
+		},
+		{
+			name:    "denied",
+			policy:  sandboxprofile.Environment{AllowVars: []string{"OPENCODE_SERVER_PASSWORD"}, DenyVars: []string{"OPENCODE_*"}},
+			wantErr: sandboxprofile.ServeAuthDeniedError("OPENCODE_SERVER_PASSWORD", "default").Error(),
+		},
+		{
+			name:    "not allowed",
+			policy:  sandboxprofile.Environment{AllowVars: []string{"PATH"}},
+			wantErr: "OMAC_SERVE_PASSWORD cannot reach the server: OPENCODE_SERVER_PASSWORD is missing from the sandbox environment",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, err := filterServeAuthEnv(environ, tc.policy, nil, "default")
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
 			}
-		}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Contains(env, "OPENCODE_SERVER_PASSWORD=dedicated") {
+				t.Error("password missing")
+			}
+			if slices.Contains(env, "OMAC_SERVE_AUTH_TARGET=OPENCODE_SERVER_PASSWORD") {
+				t.Error("internal marker leaked")
+			}
+		})
 	}
 }
