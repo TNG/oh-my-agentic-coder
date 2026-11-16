@@ -22,7 +22,7 @@ human brings in Docker images and build dependencies. A session started with
 - **rsync** on the host, which copies the project into the VM. macOS ships
   one; on Linux install the `rsync` package.
 - **Resources**: by default the VM takes half the host's CPU cores (at least
-  4), a quarter of its RAM (at least 8 GiB) and 60 GiB of disk.
+  4), a quarter of its RAM (at least 8 GiB, at most 12 GiB) and 60 GiB of disk.
 
 ## 3. Optional: `~/.config/omac/vm.yaml`
 
