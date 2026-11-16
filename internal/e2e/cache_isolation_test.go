@@ -1180,6 +1180,9 @@ func TestE2ECacheTools(t *testing.T) {
 
 	t.Run("pip", func(t *testing.T) {
 		requireTool(t, "python3", "pip cache probe")
+		if err := exec.Command("python3", "-m", "pip", "--version").Run(); err != nil {
+			t.Skipf("pip not available locally (python3 -m pip: %v); CI installs it", err)
+		}
 		runToolRuntimeProbe(t, omacBin, home, workdir, nil, "python3 --version", "PYTHON_RUNTIME_OK")
 		// Start the loopback HTTP fixture BEFORE writing the test profile.
 		fixture := newPipFixture(t)
