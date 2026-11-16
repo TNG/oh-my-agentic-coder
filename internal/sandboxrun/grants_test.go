@@ -12,6 +12,18 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
+func TestResolveGrantsAllowLiteralErrors(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{path: "rel/path", want: "must be absolute"},
+		{path: filepath.Join(t.TempDir(), "missing"), want: "no such file"},
+	} {
+		p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{tc.path}}}
+		if _, err := ResolveGrants(p, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("AllowLiteral %q: error = %v, want %q", tc.path, err, tc.want)
+		}
+	}
+}
+
 func TestResolveGrantsWorkdirLevels(t *testing.T) {
 	wd := t.TempDir()
 	cases := map[string]func(*Grants) []string{

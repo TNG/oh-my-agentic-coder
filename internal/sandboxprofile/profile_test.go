@@ -650,6 +650,33 @@ func TestParseAndMergeDenyLiteralFlag(t *testing.T) {
 	}
 }
 
+// --allow-literal keeps the path as written and lands in AllowLiteral;
+// --for-opencode-desktop is a plain switch.
+func TestParseAndMergeDesktopFlags(t *testing.T) {
+	f, err := ParseFlags([]string{"--allow-literal", "/w/a$HOME", "--allow-literal=/w/b", "--for-opencode-desktop", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.ForOpenCodeDesktop {
+		t.Error("--for-opencode-desktop not set")
+	}
+	merged, _ := Merge(&Profile{}, f)
+	if got := merged.Filesystem.AllowLiteral; len(got) != 2 || got[0] != "/w/a$HOME" || got[1] != "/w/b" {
+		t.Fatalf("merged allow literal = %v", got)
+	}
+	if len(merged.Filesystem.Allow) != 0 {
+		t.Errorf("--allow-literal leaked into allow: %v", merged.Filesystem.Allow)
+	}
+	for _, c := range [][]string{
+		{"--for-opencode-desktop=1", "--", "true"},
+		{"--allow-literal"},
+	} {
+		if _, err := ParseFlags(c); err == nil {
+			t.Errorf("ParseFlags(%v) should fail", c)
+		}
+	}
+}
+
 func TestMergeAdditive(t *testing.T) {
 	p := &Profile{
 		Filesystem: Filesystem{Read: []string{"~/.gitconfig"}},

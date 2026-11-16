@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -667,20 +668,7 @@ func runServe(args []string, env *Env) int {
 		// folders opened for the first time during this session still
 		// need a restart (or --learn).
 		if forDesktop {
-			if len(desktopWorktrees) == 0 {
-				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
-			} else {
-				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(desktopWorktrees))
-				for _, wt := range desktopWorktrees {
-					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
-					argv = injectSandboxFlag(argv, "--allow-literal", wt)
-				}
-			}
-			argv = injectSandboxFlag(argv, "--for-opencode-desktop", "")
-			// Runtime state is separate from Desktop's trusted project store.
-			runtimeDir := filepath.Join(stateHome, "opencode")
-			fmt.Fprintf(env.Stderr, "  r+w %s (OpenCode runtime state)\n", runtimeDir)
-			argv = injectSandboxFlag(argv, "--allow-literal", runtimeDir)
+			argv = injectDesktopGrants(argv, env.Stderr, desktopWorktrees, stateHome)
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
 		// filesystem restrictions and records folder usage.
@@ -764,6 +752,28 @@ func desktopModeError(noSandbox, learn bool, plan sandboxPlan) string {
 		return fmt.Sprintf("--for-opencode-desktop: cannot load the sandbox policy %q (%v), so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Fix that policy, or drop --for-opencode-desktop.", plan.PolicyRef, plan.PolicyErr)
 	}
 	return ""
+}
+
+// injectDesktopGrants adds the --for-opencode-desktop grants to the
+// `omac sandbox run` argv: every Desktop project folder and the OpenCode
+// runtime dir <stateHome>/opencode, each read+write, plus the flag that
+// makes the sandbox protect Desktop's own stores. Paths are passed with
+// --allow-literal so a folder name containing "$" or "~" is not expanded.
+func injectDesktopGrants(argv []string, stderr io.Writer, worktrees []string, stateHome string) []string {
+	if len(worktrees) == 0 {
+		fmt.Fprintln(stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
+	} else {
+		fmt.Fprintf(stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(worktrees))
+		for _, wt := range worktrees {
+			fmt.Fprintf(stderr, "  r+w %s\n", wt)
+			argv = injectSandboxFlag(argv, "--allow-literal", wt)
+		}
+	}
+	argv = injectSandboxFlag(argv, "--for-opencode-desktop", "")
+	// Runtime state is separate from Desktop's trusted project store.
+	runtimeDir := filepath.Join(stateHome, "opencode")
+	fmt.Fprintf(stderr, "  r+w %s (OpenCode runtime state)\n", runtimeDir)
+	return injectSandboxFlag(argv, "--allow-literal", runtimeDir)
 }
 
 // desktopStateHome validates XDG_STATE_HOME for --for-opencode-desktop and

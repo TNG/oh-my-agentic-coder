@@ -59,6 +59,25 @@ func warnEmptyAllowVars(stderr io.Writer, allowVars []string) {
 	fmt.Fprintln(stderr, `  allow_vars: ["*"] is not recommended because it inherits every non-blocklisted var.`)
 }
 
+// resolveRunGrants turns the merged profile into the grants Run launches
+// with, including the checks that refuse an unsafe grant set (such as one
+// that lets the agent change OpenCode Desktop's project list).
+func resolveRunGrants(merged *sandboxprofile.Profile, flags *sandboxprofile.Flags, workdir string, notices io.Writer) (*Grants, error) {
+	grants, err := ResolveGrants(merged, workdir, notices)
+	if err != nil {
+		return nil, err
+	}
+	if err := grants.Validate(); err != nil {
+		return nil, err
+	}
+	if flags.ForOpenCodeDesktop {
+		if err := protectDesktopStores(grants, flags.Learn); err != nil {
+			return nil, err
+		}
+	}
+	return grants, nil
+}
+
 // Run is the `omac sandbox run` supervisor: resolve profile + flags,
 // start the filtering proxy, launch the sandboxed child, forward
 // signals, propagate the exit code, tear everything down. Returns the
@@ -98,17 +117,9 @@ func Run(opts Options) int {
 	}
 	warnEmptyAllowVars(stderr, merged.Environment.AllowVars)
 
-	grants, err := ResolveGrants(merged, opts.Workdir, diag.Writer())
+	grants, err := resolveRunGrants(merged, opts.Flags, opts.Workdir, diag.Writer())
 	if err != nil {
 		return fail("%v", err)
-	}
-	if err := grants.Validate(); err != nil {
-		return fail("%v", err)
-	}
-	if opts.Flags.ForOpenCodeDesktop {
-		if err := protectDesktopStores(grants, opts.Flags.Learn); err != nil {
-			return fail("%v", err)
-		}
 	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
