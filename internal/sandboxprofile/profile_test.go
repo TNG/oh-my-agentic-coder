@@ -321,19 +321,21 @@ func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
 			}
 		}
 	}
-	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup", "~/.local/share/uv"} {
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup", "~/.local/share/uv", "~/.local/share/uv/python"} {
 		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Write} {
 			if containsPath(paths, dir) {
 				t.Errorf("DefaultProfile grants write access to %q: %v", dir, paths)
 			}
 		}
 	}
-	for _, dir := range []string{"~/go", "~/.cargo"} {
+	// ~/.local/share/uv as a whole stays unreadable: uv can keep index
+	// credentials there (`uv auth login`). Only its python subfolder is read.
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.local/share/uv"} {
 		if containsPath(p.Filesystem.Read, dir) {
 			t.Errorf("DefaultProfile grants read access to %q: %v", dir, p.Filesystem.Read)
 		}
 	}
-	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin", "~/.local/share/uv"} {
+	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin", "~/.local/share/uv/python"} {
 		if !containsPath(p.Filesystem.Read, dir) {
 			t.Errorf("DefaultProfile.Filesystem.Read missing %q: %v", dir, p.Filesystem.Read)
 		}

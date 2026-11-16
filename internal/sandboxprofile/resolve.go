@@ -46,9 +46,12 @@ func DefaultProfile() *Profile {
 				"~/Library/pnpm",
 				// uv's managed Python interpreters. uv keeps them here by
 				// default; without the grant, a version installed on the
-				// host cannot be resolved. uv tool environments are
-				// redirected into the sandbox cache instead.
-				"~/.local/share/uv",
+				// host cannot be resolved. Only the python subfolder is
+				// granted: uv can store index credentials (`uv auth login`)
+				// elsewhere under ~/.local/share/uv, which the agent must not
+				// read. uv tool environments are redirected into the sandbox
+				// cache instead.
+				"~/.local/share/uv/python",
 				// Shared neutral skills base (agentskills.io). In scope for every
 				// harness via InScopeSkillsBases, so a guidance-only SKILL.md
 				// placed under the shared global root is readable inside the
