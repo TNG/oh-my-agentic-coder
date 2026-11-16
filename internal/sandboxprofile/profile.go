@@ -432,6 +432,15 @@ func (p *Profile) Validate() error {
 			return fmt.Errorf("sandbox: --deny-literal %q is not an absolute path", d)
 		}
 	}
+	// Same rule as filesystem.allow below; Clean also catches "//" and "/x/..".
+	for _, a := range p.Filesystem.AllowLiteral {
+		if !filepath.IsAbs(a) {
+			return fmt.Errorf("sandbox: --allow-literal %q is not an absolute path", a)
+		}
+		if filepath.Clean(a) == "/" {
+			return fmt.Errorf("sandbox: --allow-literal %q grants the whole filesystem: blanket root grant is not permitted", a)
+		}
+	}
 	if d := p.Denial; d != nil && d.MarkerDirName != "" {
 		if strings.ContainsAny(d.MarkerDirName, `/\`) || d.MarkerDirName == ".." || d.MarkerDirName == "." {
 			return fmt.Errorf("sandbox profile: denial.marker_dir_name %q must be a single path component", d.MarkerDirName)

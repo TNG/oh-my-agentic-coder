@@ -677,6 +677,29 @@ func TestParseAndMergeDesktopFlags(t *testing.T) {
 	}
 }
 
+// --allow-literal is held to the same rule as filesystem.allow: no grant
+// of the whole filesystem, however "/" is spelled, and no relative path.
+func TestValidateAllowLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		path, wantErr string
+	}{
+		{path: "/w/project"},
+		{path: "/", wantErr: "blanket root grant is not permitted"},
+		{path: "//", wantErr: "blanket root grant is not permitted"},
+		{path: "/tmp/..", wantErr: "blanket root grant is not permitted"},
+		{path: "relative/dir", wantErr: "is not an absolute path"},
+	} {
+		p := &Profile{Filesystem: Filesystem{AllowLiteral: []string{tc.path}}}
+		err := p.Validate()
+		if tc.wantErr == "" && err != nil {
+			t.Errorf("Validate(--allow-literal %q) = %v, want nil", tc.path, err)
+		}
+		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("Validate(--allow-literal %q) = %v, want %q", tc.path, err, tc.wantErr)
+		}
+	}
+}
+
 func TestMergeAdditive(t *testing.T) {
 	p := &Profile{
 		Filesystem: Filesystem{Read: []string{"~/.gitconfig"}},
