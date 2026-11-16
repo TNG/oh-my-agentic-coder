@@ -333,7 +333,7 @@ Known limits:
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
 
 Separate VMs for separate projects:
-- Each named VM (`omac vm up --name <name>`) has its own disk, Docker, images, copies and ports. A session gets the SSH port and key of its own VM only, so projects you put in different VMs cannot read each other's copies.
+- Each named VM (`omac vm up --name <name>`) has its own disk, Docker, images, copies and ports. The sandbox of a session opens only the SSH port of its own VM, so it cannot connect to another VM and cannot read the copies in it. On macOS a session can read the key copies of other running sessions, including those of other VMs (see the table above), but they are useless without a way to reach that VM's port, which holds unless your sandbox profile opens all loopback ports (`open_port: [0]`).
 - Projects in the same VM are not separated from each other. They log in as the same guest user and share one Docker, so they can read and change each other's copies, images and containers. Choose the VMs by what may see what.
 
 What `omac vm exec` shares with the VM:

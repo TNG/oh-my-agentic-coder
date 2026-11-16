@@ -177,7 +177,7 @@ func TestRunLaunchVMNeedsSandbox(t *testing.T) {
 func TestVMSandboxEnv(t *testing.T) {
 	tmp := t.TempDir()
 	key := testAgentKey(t)
-	got, err := vmSandboxEnv(vm.AttachInfo{Name: "work", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, tmp)
+	got, err := vmSandboxEnv(vm.AttachInfo{Name: "omac", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestVMSandboxEnv(t *testing.T) {
 		"OMAC_VM_SSH_PORT":   "31022",
 		"OMAC_VM_SSH_KEY":    filepath.Join(tmp, "vm", "agent_key"),
 		"OMAC_VM_USER":       "alice",
-		"OMAC_VM_NAME":       "work",
+		"OMAC_VM_NAME":       "omac",
 		"OMAC_VM_PORT_FIRST": "30200",
 		"OMAC_VM_PORT_LAST":  "30299",
 	}

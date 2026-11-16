@@ -233,7 +233,7 @@ omac vm reset                  # delete the VM and create it anew
 You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-Each VM has its own block of 100 ports. The VM created first gets 30000 to 30099, the next one 30100 to 30199, and so on up to 10 VMs (see [Several VMs](#several-vms-and-the-project-map)). `omac vm list` shows the block; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the block (for example `docker run -p 30000:5432 postgres:16` in the VM with block 30000 to 30099) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the range stay inside the VM; use `omac vm exec` to reach them from the VM side.
+Each VM has its own block of 100 ports. The VM created first gets 30000 to 30099, the next one 30100 to 30199, and so on up to 10 VMs (see [Several VMs](#several-vms-and-the-project-map)). `omac vm list` shows the block; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the block (for example `docker run -p 30000:5432 postgres:16` in the VM with block 30000 to 30099) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the block stay inside the VM; use `omac vm exec` to reach them from the VM side.
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
@@ -273,9 +273,9 @@ A session picks its VM in this order:
 2. The entry for the project in `vm-projects.yaml`.
 3. The default VM `omac`.
 
-A bare `--vm` skips step 1. `omac vm exec` without `--name` follows the same order, except inside a session, where it always uses the session's VM.
+A bare `--vm` skips step 1. `omac vm exec` follows the same order, with `--name <name>` as step 1, except inside a session, where it always uses the session's VM.
 
-omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. Keys must be absolute paths. A relative key, an invalid VM name or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
+omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. For such a worktree the key is the directory the command runs in, so a session or `omac vm exec` started in a subdirectory of the worktree does not match; use the worktree path itself. Keys must be absolute paths. A relative key, an invalid VM name or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 
 Projects in the same VM can read each other's copies, see [The omac VM](../security.md#the-omac-vm). Put projects that must not see each other into different VMs.
 

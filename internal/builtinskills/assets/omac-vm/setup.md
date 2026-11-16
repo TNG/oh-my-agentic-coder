@@ -7,11 +7,12 @@ and explain what each one does.
 
 ## 1. What the VM is for
 
-The omac VM is a Linux virtual machine that stays around between sessions. It runs Docker and builds that the sandbox cannot run, for
-example Testcontainers tests. It has no internet access by default, so the
-human brings in Docker images and build dependencies. A session started with
-`--vm` runs Docker and builds there through `omac vm exec`; the sandbox
-itself has no Docker.
+The omac VM is a Linux virtual machine that stays around between sessions.
+It runs Docker and builds that the sandbox cannot run, for example
+Testcontainers tests. It has no internet access by default, so the human
+brings in Docker images and build dependencies. A session started with `--vm`
+runs Docker and builds there through `omac vm exec`; the sandbox itself has
+no Docker.
 
 ## 2. Prerequisites
 
