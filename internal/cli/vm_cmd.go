@@ -37,7 +37,7 @@ var newVMManager = func(env *Env, name string) (vmManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return vm.NewManager(vm.NewLayout(root), vm.InstanceConfigPath(name), vm.RealDeps(), env.Stdout), nil
+	return vm.NewManager(vm.NewLayout(root), vm.InstanceConfigPath(name), vm.RealDeps(), vm.NameHintWriter(name, env.Stdout)), nil
 }
 
 // extractVMName removes --name <x> or --name=<x> from args wherever it sits
@@ -74,15 +74,13 @@ func runVM(args []string, env *Env) int {
 	}
 	verb, rest := args[0], args[1:]
 	name := vm.DefaultVMName
+	named := false
 	if verb != "exec" && verb != "help" && verb != "-h" && verb != "--help" {
-		given, named, left, err := extractVMName(rest)
+		given, hasName, left, err := extractVMName(rest)
 		if err != nil {
 			return vmMisuse(env, err.Error())
 		}
-		if named {
-			if verb == "list" {
-				return vmMisuse(env, "list takes no arguments")
-			}
+		if named = hasName; named && verb != "list" {
 			if err := vm.ValidateName(given); err != nil {
 				return vmMisuse(env, err.Error())
 			}
@@ -93,7 +91,7 @@ func runVM(args []string, env *Env) int {
 	var op vmOp
 	switch verb {
 	case "list":
-		if len(rest) > 0 {
+		if named || len(rest) > 0 {
 			return vmMisuse(env, "list takes no arguments")
 		}
 		rows, err := vm.ListInstances()
@@ -102,6 +100,11 @@ func runVM(args []string, env *Env) int {
 			return ExitIOError
 		}
 		writeVMList(env.Stdout, rows)
+		for _, r := range rows {
+			if r.Err != nil {
+				fmt.Fprintf(env.Stderr, "omac vm: %s: %v\n", r.Name, r.Err)
+			}
+		}
 		return ExitOK
 	case "up":
 		reprovision := false
@@ -142,7 +145,7 @@ func runVM(args []string, env *Env) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := op(ctx, m, env); err != nil {
-		fmt.Fprintln(env.Stderr, err)
+		fmt.Fprintln(env.Stderr, vm.WithNameHints(name, err))
 		if errors.Is(err, vm.ErrLimaMissing) {
 			fmt.Fprintln(env.Stderr, "omac vm: install Lima first, e.g. `brew install lima`")
 		}
@@ -179,7 +182,8 @@ var runVMExecFn = vm.Exec
 
 // vmExecArgs is a parsed `omac vm exec` invocation.
 type vmExecArgs struct {
-	name    string
+	name    string // empty unless named
+	named   bool   // --name was given
 	cwd     string
 	envs    []string
 	cmd     []string
@@ -193,7 +197,7 @@ type vmExecArgs struct {
 func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) {
 	fs := flag.NewFlagSet("omac vm exec", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&a.name, "name", vm.DefaultVMName, "")
+	fs.StringVar(&a.name, "name", "", "")
 	fs.StringVar(&a.cwd, "cwd", "", "")
 	fs.Func("env", "", func(s string) error {
 		a.envs = append(a.envs, s)
@@ -209,8 +213,11 @@ func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) 
 	if a.cmd = fs.Args(); len(a.cmd) == 0 {
 		return a, vmExecMisuse(env, "no command given"), false
 	}
-	if err := vm.ValidateName(a.name); err != nil {
-		return a, vmExecMisuse(env, err.Error()), false
+	fs.Visit(func(f *flag.Flag) { a.named = a.named || f.Name == "name" })
+	if a.named {
+		if err := vm.ValidateName(a.name); err != nil {
+			return a, vmExecMisuse(env, err.Error()), false
+		}
 	}
 	if err := vm.ValidateCwd(a.cwd); err != nil {
 		return a, vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: ")), false
@@ -229,8 +236,24 @@ func runVMExec(args []string, env *Env) int {
 	if err != nil {
 		return vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: "))
 	}
+	if !a.named {
+		a.name = vm.DefaultVMName
+		// Inside a --vm session the exported OMAC_VM_* variables decide the
+		// VM, so the project map does not apply there.
+		if os.Getenv(vm.EnvVMSSHPort) == "" {
+			mapped, ok, err := vm.MappedInstance(env.Workdir)
+			if err != nil {
+				fmt.Fprintln(env.Stderr, err)
+				return ExitConfigInvalid
+			}
+			if ok {
+				a.name = mapped
+			}
+		}
+	}
 	conn, err := resolveVMConn(env, a.name)
 	if err != nil {
+		err = vm.WithNameHints(a.name, err)
 		fmt.Fprintln(env.Stderr, err) // ErrNotCreated already says to run `omac vm up`
 		if errors.Is(err, vm.ErrNotCreated) {
 			return ExitPrerequisiteMissing
@@ -413,8 +436,9 @@ func printVMUsage(env *Env) {
 
 Every verb except list takes --name <x> to act on another VM than the default
 "omac". A name is a lowercase letter, then up to 15 lowercase letters, digits
-or '-'. Outside a session, vm exec uses --name; inside one it uses the VM the
-session is attached to.
+or '-'. Outside a session, vm exec uses --name, else the VM that
+vm-projects.yaml assigns to the project, else "omac"; inside a session it uses
+the VM the session is attached to.
 
 Usage:
   omac vm list                 Show every VM with its state and SSH port.

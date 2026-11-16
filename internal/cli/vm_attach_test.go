@@ -52,7 +52,7 @@ func TestVMAttachExitCode(t *testing.T) {
 func stubVMAttachFailure(t *testing.T, err error) {
 	t.Helper()
 	orig := prepareVMAttach
-	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, func(), error) {
+	prepareVMAttach = func(context.Context, *Env, string, string) (vm.AttachInfo, func(), error) {
 		return vm.AttachInfo{}, nil, err
 	}
 	t.Cleanup(func() { prepareVMAttach = orig })
@@ -293,6 +293,7 @@ func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, erro
 func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, string) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	root, err := vm.DefaultRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +307,7 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 
 func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 	fake, sessions := useAttachOrderManager(t, nil)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +322,7 @@ func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 
 func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, vm.ErrOnline)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
 	if !errors.Is(err, vm.ErrOnline) || release != nil {
 		t.Fatalf("prepareVMAttach = (release=%v, %v), want (nil, ErrOnline)", release != nil, err)
 	}
