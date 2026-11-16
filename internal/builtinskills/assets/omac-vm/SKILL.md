@@ -22,12 +22,30 @@ metadata:
 
 # omac-vm
 
-The omac VM is one long-lived Linux VM on the human's computer. In a session
+The omac VM is a long-lived Linux VM on the human's computer. In a session
 started with `--vm`, `omac vm exec` runs a command in the VM on a copy of the
 worktree. Docker exists only there: run `omac vm exec -- docker ps`, not
 `docker ps`. The VM has no network access. Only the human can import Docker
 images into it and fill its build caches ("priming"), from the host; you
 cannot do either.
+
+## Which VM, and which ports
+
+The human may run several VMs. Your session is attached to one, named in
+`OMAC_VM_NAME`; `omac vm exec` uses it without `--name`. In the `omac vm`
+commands you hand to the human for the host (`image add`, `online`, `offline`,
+`up --reprovision`), add `--name <the value of OMAC_VM_NAME>` unless it is
+`omac`.
+
+Containers in the VM are reachable from the host only on published ports in
+the range `OMAC_VM_PORT_FIRST` to `OMAC_VM_PORT_LAST`. Read both variables and
+publish inside that range, for example
+`omac vm exec -- docker run -d -p <port>:5432 postgres:16` with a `<port>` from
+it. Other ports work only inside the VM.
+
+If the project belongs in a different VM, ask the human to start a new session
+with `omac start --vm=<name>`, or to assign the project in
+`~/.config/omac/vm-projects.yaml`. You cannot switch VMs inside a session.
 
 ## Setting up the VM for the first time
 
@@ -157,12 +175,17 @@ module's directory, for example `api/target/surefire-reports/`.
   installation`; Maven: `release version 21 not supported` or
   `invalid target release: 21`), or a command is not found. Name it, for
   example `temurin-21`, and ask the human to add it to `jdks` or `packages`
-  in `~/.config/omac/vm.yaml`, end this session and run
-  `omac vm up --reprovision` on the host. Maven's `Cannot find matching
-  toolchain definitions` also needs an entry for that JDK in the VM's
-  `~/.m2/toolchains.xml`, with `jdkHome`
+  in `~/.config/omac/vm.yaml` (`~/.config/omac/vms/<name>.yaml` for a named
+  VM), end this session and run `omac vm up --reprovision` on the host.
+  Maven's `Cannot find matching toolchain definitions` also needs an entry
+  for that JDK in the VM's `~/.m2/toolchains.xml`, with `jdkHome`
   `/usr/lib/jvm/temurin-21-jdk-<arch>`. omac does not write this file, and
-  `omac vm reset` deletes it; ask the human to add it.
+  `omac vm reset` deletes it; ask the human to add it. For a tool that is no
+  package, such as a global Node package, they can add an install script as
+  `setup` in the same file. It runs as root,
+  with network, at provisioning, so it has to be safe to run again. Never
+  write it yourself into that file; you cannot, and it is the human's
+  decision.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig` or a file it includes.** The session cannot read that
   file, so every git command in it fails. Ask the human to grant it as

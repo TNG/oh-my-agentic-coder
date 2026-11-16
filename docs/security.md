@@ -318,7 +318,7 @@ A session started with `--vm` runs Docker, builds and tests in the omac VM throu
 These hold even if the agent became root inside the VM:
 - The VM cannot reach host files: omac mounts no host directory into it. Host files get into the VM only as the copies that `omac vm exec` makes, see below.
 - It holds no host credentials and no host sockets, such as your SSH agent or the host's Docker.
-- Traffic from the host into the VM goes only over the host's loopback interface and only to the VM's SSH port plus the VM's published range of 100 ports (30000 to 30099 for the first VM, 30100 to 30199 for the second, and so on). omac turns off Lima's forwarding of all other ports, so no process in the VM can take over a port on your host that a host tool expects to be local. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080; `docker run -p 30000:80` is reachable on your host's port 30000, and you know that whatever answers there runs in the VM.
+- Traffic from the host into the VM goes only over the host's loopback interface and only to the VM's SSH port plus the VM's block of 100 published ports (each VM has its own, starting at 30000, 30100 and so on; see [Several VMs](./usage/cli.md#several-vms-and-the-project-map)). omac turns off Lima's forwarding of all other ports, so no process in the VM can take over a port on your host that a host tool expects to be local. For example, a container started with `docker run -p 8080:80` is not reachable on your host's port 8080; in the VM with block 30000 to 30099, `docker run -p 30000:80` is reachable on your host's port 30000, and you know that whatever answers there runs in the VM.
 
 omac sets up Docker in the VM to listen only on its Unix socket, so neither the host nor the sandbox has a direct network path to the Docker API. The agent reaches Docker through its SSH login to the VM, which `omac vm exec` uses. Because the agent controls that Docker, it can still expose the API itself, for example on a port in the published range.
 
@@ -327,10 +327,14 @@ This holds only while the agent is not root inside the VM: the VM has no outboun
 Known limits:
 - A kernel exploit inside the VM gives the agent root there. Root can turn the firewall off and then reach the internet and services on your host's loopback interface through Lima's gateway.
 - On Linux, the grant for the VM's SSH port also lets the agent connect to that port number on any host, not only on loopback, because Landlock cannot scope a port to an address.
-- All sessions of one user share the VM, so one session can see and change the containers of another.
+- All sessions attached to the same VM share it, so one session can see and change the containers of another.
 - The grant for the VM's SSH port also allows listening on it. While the VM is stopped, a session could listen on that port and answer a session that attaches later.
 - On macOS another running session can also write this session's temp dir, for example replace the `known_hosts` copy there, so that this session's ssh accepts a server of that session's choice on the VM's SSH port.
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
+
+Separate VMs for separate projects:
+- Each named VM (`omac vm up --name <name>`) has its own disk, Docker, images, copies and ports. A session gets the SSH port and key of its own VM only, so projects you put in different VMs cannot read each other's copies.
+- Projects in the same VM are not separated from each other. They log in as the same guest user and share one Docker, so they can read and change each other's copies, images and containers. Choose the VMs by what may see what.
 
 What `omac vm exec` shares with the VM:
 - It copies the worktree (the git top level) into the VM. It skips `.git`, the `.env` files the sandbox hides, and the paths git ignores. Untracked files that git does not ignore are copied. Outside a git repository it copies the current directory, and only `.git` and the hidden `.env` files stay out. The copies stay in the VM until `omac vm reset`.
@@ -339,7 +343,9 @@ What `omac vm exec` shares with the VM:
 - A command run while the VM is online has network access. For example, a build that runs during priming can download dependencies, and it could also send data out.
 - A build run with `--env` while the VM is online, as for priming, also runs whatever earlier sessions left in the VM, including files in the copies, with network access and the token. Use a short-lived, read-only token, and run `omac vm reset` first if you do not trust every earlier session. That build can also store the token in the VM, where later sessions can read it; revoke the token after priming.
 
-The VM's state lives in `~/.local/state/omac/vm` (or `$XDG_STATE_HOME/omac/vm`) and includes the key for root access to the VM. The sandbox blocks this directory. omac's own sandbox also blocks it by its exact path on every launch, with or without `--vm`, so it stays blocked when the sandbox sees a different `XDG_STATE_HOME`, as an OpenCode v2 session does, and `filesystem.override_deny` cannot unblock it. omac refuses `--vm` when the sandbox profile cannot be loaded or unblocks this directory, and when the sandbox would run in learn mode.
+The `setup` script of a VM (see [Setup script](./configuration.md#setup-script)) runs as root in the VM, with network access, while the VM is provisioned. It comes only from your `vm.yaml` or `vms/<name>.yaml`, never from a repository or from the agent, and the sandbox cannot write `~/.config/omac`. Treat its content like a script you run on your own machine: whatever it downloads runs as root in the VM.
+
+The state of the default VM lives in `~/.local/state/omac/vm` (named VMs: `~/.local/state/omac/vms/<name>`; with `XDG_STATE_HOME` set, below `$XDG_STATE_HOME/omac`) and includes the key for root access to the VM. The sandbox blocks the default VM's directory. omac's own sandbox also blocks it by its exact path on every launch, with or without `--vm`, so it stays blocked when the sandbox sees a different `XDG_STATE_HOME`, as an OpenCode v2 session does, and `filesystem.override_deny` cannot unblock it. omac refuses `--vm` when the sandbox profile cannot be loaded or unblocks that directory, and when the sandbox would run in learn mode.
 
 ## Self-authored skills
 

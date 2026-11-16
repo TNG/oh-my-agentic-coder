@@ -33,7 +33,7 @@ omac start claude       # specific harness
 | `--ephemeral-cache` | false | Use a temporary cache deleted when the session ends. Use this for a clean build environment or when you do not want the agent's package downloads to persist. |
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
-| `--vm` | false | Attach this session to the omac VM (a long-lived Linux VM whose Docker runs without root rights, see [omac vm](#omac-vm)). Sets `OMAC_VM_HOST`, `OMAC_VM_SSH_PORT`, `OMAC_VM_SSH_KEY` and `OMAC_VM_USER` inside the sandbox, which give the agent an SSH login to the VM as an unprivileged user. Docker, Gradle and tests then run in the VM through `omac vm exec`; the sandbox itself gets no Docker endpoint. Requires `omac vm up` first. Refused together with `--no-sandbox`, and with launcher profiles that run a sandbox other than omac's own (`nono`, `no-sandbox-debug`, custom wrappers), because omac can open the VM's SSH port only in its own sandbox. Also refused with a launcher profile that runs omac's sandbox with `--learn`, which would expose the VM's admin key. Your own policy file under `sandbox-profiles/` is fine, unless it fails to load, its `environment.deny_vars` removes one of these variables, or its `filesystem.override_deny` unblocks the VM's state directory. |
+| `--vm[=<name>]` | false | Attach this session to an omac VM (a long-lived Linux VM whose Docker runs without root rights, see [omac vm](#omac-vm)). Bare `--vm` uses the VM that [`vm-projects.yaml`](#several-vms-and-the-project-map) assigns to the project, else the default VM `omac`; `--vm=<name>` picks that VM (write it with `=`, `--vm <name>` is not accepted). Sets `OMAC_VM_HOST`, `OMAC_VM_SSH_PORT`, `OMAC_VM_SSH_KEY`, `OMAC_VM_USER`, `OMAC_VM_NAME`, `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST` inside the sandbox, which give the agent an SSH login to the VM as an unprivileged user. Docker, Gradle and tests then run in the VM through `omac vm exec`; the sandbox itself gets no Docker endpoint. Requires `omac vm up` first. Refused together with `--no-sandbox`, and with launcher profiles that run a sandbox other than omac's own (`nono`, `no-sandbox-debug`, custom wrappers), because omac can open the VM's SSH port only in its own sandbox. Also refused with a launcher profile that runs omac's sandbox with `--learn`, which would expose the VM's admin key. Your own policy file under `sandbox-profiles/` is fine, unless it fails to load, its `environment.deny_vars` removes one of these variables, or its `filesystem.override_deny` unblocks the VM's state directory. |
 | `--no-audit` | false | Disable the security audit trail for this session. |
 
 For all flags: `omac start --help`.
@@ -51,7 +51,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
-| `--vm` | false | Attach to the omac VM, as with `omac start --vm`. Refused together with `--no-sandbox`, `--no-inner`, `--for-opencode-desktop` or `--learn`, and with launcher profiles that run a sandbox other than omac's own (see `omac start --vm`). |
+| `--vm[=<name>]` | false | Attach to an omac VM, as with `omac start --vm`. Refused together with `--no-sandbox`, `--no-inner`, `--for-opencode-desktop` or `--learn`, and with launcher profiles that run a sandbox other than omac's own (see `omac start --vm`). |
 
 | Environment variable | Description |
 |---|---|
@@ -85,11 +85,11 @@ omac continue              # most recent session
 omac continue -s <id>      # specific session by ID
 ```
 
-`omac continue` accepts `--vm`, as `omac start` does.
+`omac continue` accepts `--vm[=<name>]`, as `omac start` does.
 
 ### omac resume
 
-Use this when you want to choose from a list of past sessions. Shows a numbered picker of recent sessions for the active workdir. `omac resume` accepts `--vm`, as `omac start` does.
+Use this when you want to choose from a list of past sessions. Shows a numbered picker of recent sessions for the active workdir. `omac resume` accepts `--vm[=<name>]`, as `omac start` does.
 
 ---
 
@@ -214,7 +214,7 @@ omac cache clear --all  # remove all caches not currently in use
 
 ### omac vm
 
-The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` reaches that Docker through `omac vm exec`. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
+The omac VM is a long-lived Linux virtual machine, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it, and a session started with `--vm` reaches that Docker through `omac vm exec`. The VM does not mount your host files. Only `omac vm exec` copies the current worktree (the git top level) into it, and those copies stay in the VM. The VM has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
 omac vm up                     # create, provision and switch offline (needs network once); later: start the VM in its last mode
@@ -233,11 +233,51 @@ omac vm reset                  # delete the VM and create it anew
 You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-Each VM has its own range of 100 ports: 30000 to 30099 for the first, 30100 to 30199 for the second, up to 10 VMs. `omac vm list` shows the range; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the range (for example `docker run -p 30000:5432 postgres:16` in the first VM) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the range stay inside the VM; use `omac vm exec` to reach them from the VM side.
+Each VM has its own block of 100 ports. The VM created first gets 30000 to 30099, the next one 30100 to 30199, and so on up to 10 VMs (see [Several VMs](#several-vms-and-the-project-map)). `omac vm list` shows the block; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the block (for example `docker run -p 30000:5432 postgres:16` in the VM with block 30000 to 30099) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the range stay inside the VM; use `omac vm exec` to reach them from the VM side.
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages, Java versions and a setup script, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+
+#### Several VMs and the project map
+
+The VM called `omac` is the default. To keep projects apart, create more VMs, for example one per client or per team. The verbs `up`, `down`, `reset`, `status`, `online`, `offline`, `image` and `exec` take `--name <name>`; without it they act on the default VM. A name is a lowercase letter followed by up to 15 lowercase letters, digits or `-`. Each VM has its own state, images, build caches, copied worktrees and port block, and at most 10 VMs can exist.
+
+```bash
+omac vm up --name acme                  # create and provision a second VM
+omac vm image add --name acme postgres:16
+omac vm list                            # one line per VM
+omac start --vm=acme                    # attach this session to it
+```
+
+`omac vm list` prints a table with these columns:
+
+| Column | Meaning |
+|---|---|
+| `NAME` | The VM's name. |
+| `STATE` | `offline` or `online`; `not created` when the VM was never fully created; `error` when its state file cannot be read. |
+| `SSH PORT` | The loopback port of the VM's SSH, or `-` if the VM was never created. |
+| `PORTS` | The VM's block of published ports, for example `30100-30199`, or `-` if the VM was never created. |
+
+Instead of typing `--vm=acme` every time, assign projects to VMs in `~/.config/omac/vm-projects.yaml` (or under `$XDG_CONFIG_HOME/omac`). Each key is the absolute path of a project and each value the name of its VM:
+
+```yaml
+/Users/alex/work/acme-backend: acme
+/Users/alex/work/acme-frontend: acme
+/Users/alex/private/side-project: hobby
+```
+
+A session picks its VM in this order:
+
+1. `--vm=<name>` on the command line.
+2. The entry for the project in `vm-projects.yaml`.
+3. The default VM `omac`.
+
+A bare `--vm` skips step 1. `omac vm exec` without `--name` follows the same order, except inside a session, where it always uses the session's VM.
+
+omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. Keys must be absolute paths. A relative key, an invalid VM name or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
+
+Projects in the same VM can read each other's copies, see [The omac VM](../security.md#the-omac-vm). Put projects that must not see each other into different VMs.
 
 `omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) tells the agent in such a session how to use it and when to ask you for help.
 
