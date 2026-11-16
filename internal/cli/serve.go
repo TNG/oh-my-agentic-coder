@@ -305,12 +305,13 @@ func runServe(args []string, env *Env) int {
 	// Audit trail (persistent central path; NOT rtDir). Constructed before
 	// the inner command launches. In serve there is no set of pre-resolved
 	// secret values at this point (skills are brought up lazily), so the
-	// redactor's value-matching is seeded empty; secret NAMES are still
-	// always logged and never values, and namespaces are always hashed.
+	// redactor's value-matching is seeded only with the server password;
+	// secret NAMES are still always logged and never values, and
+	// namespaces are always hashed.
 	var auditFatal func(error) // assigned once sup/facade exist
-	auditCfg, auditMisuse := resolveAuditConfig(lc.Audit, auditFlags{
+	auditCfg, auditMisuse := serveAuditConfig(lc, auditFlags{
 		logPath: auditLog, disable: noAudit, strict: auditStrict,
-	}, audit.ModeServe, env.Version, []string{password}, func(err error) {
+	}, env.Version, password, func(err error) {
 		if auditFatal != nil {
 			auditFatal(err)
 		}
@@ -543,9 +544,7 @@ func runServe(args []string, env *Env) int {
 	// per-skill OMAC_G_*/OMAC_D_* vars are added on top by serve as routes
 	// come and go; the static globals are set here once.
 	extra := srv.baseEnv()
-	for key, value := range authExtra {
-		extra[key] = value
-	}
+	addServeAuthEnv(extra, authExtra)
 	if injectBriefing {
 		// Consumed by the OpenCode plugin; see start.go.
 		extra["OMAC_SANDBOX_BRIEFING"] = briefingText

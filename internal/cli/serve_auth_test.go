@@ -2,10 +2,12 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -43,8 +45,11 @@ func TestServePassword(t *testing.T) {
 			if extra["OPENCODE_SERVER_PASSWORD"] != tc.password {
 				t.Fatal("dedicated password missing or ambient password forwarded")
 			}
-			if got := serveAuthGetenv(h, plan, extra, tc.noSandbox)("OPENCODE_SERVER_PASSWORD"); !tc.noSandbox && got != tc.password {
-				t.Fatalf("warning sees password %q, want %q", got, tc.password)
+			// The hint must see what the server sees: in the sandbox the
+			// ambient value is filtered out, and with --no-sandbox the
+			// dedicated password takes precedence over it.
+			if got := serveAuthGetenv(h, plan, extra, tc.noSandbox)("OPENCODE_SERVER_PASSWORD"); got != tc.password {
+				t.Fatalf("hint sees password %q, want %q", got, tc.password)
 			}
 		})
 	}
@@ -95,6 +100,59 @@ func TestServePasswordErrorsNameTheSetting(t *testing.T) {
 				t.Fatalf("error = %v\nwant    %s", err, tc.want)
 			}
 		})
+	}
+}
+
+// The password must reach the environment runServe hands to the inner
+// server, together with the marker the supervisor checks.
+func TestServePasswordReachesInnerEnv(t *testing.T) {
+	h, ok := config.LookupHarness("opencode")
+	if !ok {
+		t.Fatal("opencode harness not found")
+	}
+	plan := sandboxPlan{Name: "builtin", Native: true, PolicyRef: "default", Policy: &sandboxprofile.Profile{}}
+	authExtra, err := prepareServeAuthEnv("serve-only", h, plan, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := map[string]string{"OMAC_BASE": "http://127.0.0.1:1/"}
+	addServeAuthEnv(extra, authExtra)
+	if extra["OPENCODE_SERVER_PASSWORD"] != "serve-only" {
+		t.Errorf("OPENCODE_SERVER_PASSWORD = %q, want the dedicated password", extra["OPENCODE_SERVER_PASSWORD"])
+	}
+	if extra[sandboxprofile.ServeAuthTargetEnv] != "OPENCODE_SERVER_PASSWORD" {
+		t.Errorf("%s = %q, want OPENCODE_SERVER_PASSWORD", sandboxprofile.ServeAuthTargetEnv, extra[sandboxprofile.ServeAuthTargetEnv])
+	}
+	if extra["OMAC_BASE"] == "" {
+		t.Error("base environment lost")
+	}
+}
+
+// The audit log must never contain the server password, even if it ends up
+// on a logged argv.
+func TestServeAuditRedactsPassword(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	cfg, misuse := serveAuditConfig(config.LauncherConfig{}, auditFlags{logPath: logPath}, "test", "serve-only-secret", nil)
+	if misuse != "" {
+		t.Fatal(misuse)
+	}
+	auditor, err := audit.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditor.Emit(audit.InnerExec([]string{"opencode", "serve", "--password", "serve-only-secret"}, "builtin", true))
+	if err := auditor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"opencode"`) {
+		t.Fatalf("argv not logged at all: %s", data)
+	}
+	if strings.Contains(string(data), "serve-only-secret") {
+		t.Errorf("password written to the audit log: %s", data)
 	}
 }
 

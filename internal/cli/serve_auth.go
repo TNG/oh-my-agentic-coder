@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -42,6 +44,19 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 		extra[sandboxprofile.ServeAuthTargetEnv] = target
 	}
 	return extra, nil
+}
+
+// addServeAuthEnv adds the variables from prepareServeAuthEnv (the server
+// password and the supervisor's marker) to the inner server's environment.
+func addServeAuthEnv(extra, authExtra map[string]string) {
+	maps.Copy(extra, authExtra)
+}
+
+// serveAuditConfig resolves the audit trail config for `omac serve`. It
+// seeds the redactor with the server password, so the log shows a
+// placeholder instead if the password ever appears on a logged argv.
+func serveAuditConfig(lc config.LauncherConfig, fl auditFlags, version, password string, fatal func(error)) (audit.Config, string) {
+	return resolveAuditConfig(lc.Audit, fl, audit.ModeServe, version, []string{password}, fatal)
 }
 
 // injectServeAuthAllow lets the auth variable that carries OMAC_SERVE_PASSWORD
