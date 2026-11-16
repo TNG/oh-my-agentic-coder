@@ -68,7 +68,8 @@ provision:
       # Lima sets a new cloud-init instance-id per boot, which would regenerate the SSH host keys omac pins.
       mkdir -p /etc/cloud/cloud.cfg.d
       printf 'ssh_deletekeys: false\n' > /etc/cloud/cloud.cfg.d/99-omac-keep-hostkeys.cfg
-      if [ -f /etc/sudoers.d/90-cloud-init-users ]; then mv /etc/sudoers.d/90-cloud-init-users /root/90-cloud-init-users.disabled; fi
+      printf '%s ALL=(ALL) !ALL\n' 'alice' > /etc/sudoers.d/99-omac-no-agent-sudo
+      chmod 0440 /etc/sudoers.d/99-omac-no-agent-sudo
       install -d -m 0700 /root/.ssh
       printf '%s\n' 'ssh-ed25519 AAAAadmin omac-vm-admin' > /root/.ssh/authorized_keys
       chmod 0600 /root/.ssh/authorized_keys

@@ -199,10 +199,12 @@ fi
 nft -f /etc/omac-vmguard.nft
 nft list table inet omac-vmguard >/dev/null`
 
-// systemScript runs as root on every boot. Moving cloud-init's sudoers
-// drop-in removes the agent user's sudo; root is reachable only over SSH
-// with admin_key. The offline firewall depends on this: an agent with root
-// could unload it.
+// systemScript runs as root on every boot. The 99-omac drop-in removes the
+// agent user's sudo; root is reachable only over SSH with admin_key. The
+// offline firewall depends on this: an agent with root could unload it.
+// cloud-init rewrites 90-cloud-init-users with NOPASSWD:ALL early in every
+// boot, before this script runs, so only a drop-in that stays in place and
+// sorts after it (the last matching sudoers rule wins) closes that window.
 const systemScript = `#!/bin/bash
 set -eu
 hn="$(hostname)"
@@ -210,7 +212,8 @@ grep -q "127.0.1.1 $hn" /etc/hosts || echo "127.0.1.1 $hn" >> /etc/hosts
 # Lima sets a new cloud-init instance-id per boot, which would regenerate the SSH host keys omac pins.
 mkdir -p /etc/cloud/cloud.cfg.d
 printf 'ssh_deletekeys: false\n' > /etc/cloud/cloud.cfg.d/99-omac-keep-hostkeys.cfg
-if [ -f /etc/sudoers.d/90-cloud-init-users ]; then mv /etc/sudoers.d/90-cloud-init-users /root/90-cloud-init-users.disabled; fi
+printf '%s ALL=(ALL) !ALL\n' '<AGENT_USER>' > /etc/sudoers.d/99-omac-no-agent-sudo
+chmod 0440 /etc/sudoers.d/99-omac-no-agent-sudo
 install -d -m 0700 /root/.ssh
 printf '%s\n' '<ADMIN_PUB_KEY>' > /root/.ssh/authorized_keys
 chmod 0600 /root/.ssh/authorized_keys
