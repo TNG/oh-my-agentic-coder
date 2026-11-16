@@ -19,12 +19,15 @@ const StateVersion = 1
 
 // State is state.json: what omac last set up in the VM.
 type State struct {
-	Version  int      `json:"version"`
-	SSHPort  int      `json:"ssh_port"`
-	Mode     string   `json:"mode"`
-	Images   []string `json:"images"`
-	JDKs     []string `json:"jdks"`
-	Packages []string `json:"packages"` // extra packages from the last provisioning
+	Version int `json:"version"`
+	SSHPort int `json:"ssh_port"`
+	// PortBlock selects the published host port range, see PortBlockRange;
+	// a state file without it means block 0.
+	PortBlock int      `json:"port_block"`
+	Mode      string   `json:"mode"`
+	Images    []string `json:"images"`
+	JDKs      []string `json:"jdks"`
+	Packages  []string `json:"packages"` // extra packages from the last provisioning
 }
 
 // LoadState reads state.json. A missing file yields nil, nil.

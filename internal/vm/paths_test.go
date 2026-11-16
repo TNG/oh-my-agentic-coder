@@ -119,7 +119,7 @@ func TestListInstances(t *testing.T) {
 		}
 	}
 	write("omac", &State{SSHPort: 42022, Mode: ModeOffline})
-	write("zed", &State{SSHPort: 42023, Mode: ModeOnline})
+	write("zed", &State{SSHPort: 42023, Mode: ModeOnline, PortBlock: 2})
 	write("abc", nil)
 	base, _ := stateBase()
 	if err := os.MkdirAll(filepath.Join(base, "vms", "Bad_Name"), 0o700); err != nil {
@@ -130,9 +130,9 @@ func TestListInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []InstanceRow{
-		{"omac", ModeOffline, 42022},
-		{"abc", "not created", 0},
-		{"zed", ModeOnline, 42023},
+		{Name: "omac", Mode: ModeOffline, SSHPort: 42022},
+		{Name: "abc", Mode: "not created"},
+		{Name: "zed", Mode: ModeOnline, SSHPort: 42023, PortBlock: 2},
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Errorf("rows = %+v, want %+v", rows, want)

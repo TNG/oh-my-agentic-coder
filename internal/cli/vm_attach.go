@@ -149,6 +149,7 @@ var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, *vmMar
 		markers.release()
 		return vm.AttachInfo{}, nil, err
 	}
+	info.Name = vm.DefaultVMName
 	return info, markers, nil
 }
 
@@ -169,7 +170,7 @@ func vmAttachExitCode(err error) int {
 }
 
 // vmEnvNames are the variables vmSandboxEnv sets.
-var vmEnvNames = []string{vm.EnvVMHost, vm.EnvVMSSHPort, vm.EnvVMSSHKey, vm.EnvVMUser}
+var vmEnvNames = []string{vm.EnvVMHost, vm.EnvVMSSHPort, vm.EnvVMSSHKey, vm.EnvVMUser, vm.EnvVMName, vm.EnvVMPortFirst, vm.EnvVMPortLast}
 
 // vmSandboxEnv creates <tmpDir>/vm with a copy of the agent key (the
 // original lives in host-only VM state) and the host's pinned known_hosts,
@@ -190,11 +191,15 @@ func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) 
 		return nil, err
 	}
 	dir := filepath.Join(tmpDir, "vm")
+	first, last := vm.PortBlockRange(info.PortBlock)
 	return map[string]string{
-		vm.EnvVMHost:    "127.0.0.1",
-		vm.EnvVMSSHPort: strconv.Itoa(info.SSHPort),
-		vm.EnvVMSSHKey:  filepath.Join(dir, "agent_key"),
-		vm.EnvVMUser:    info.User,
+		vm.EnvVMHost:      "127.0.0.1",
+		vm.EnvVMSSHPort:   strconv.Itoa(info.SSHPort),
+		vm.EnvVMSSHKey:    filepath.Join(dir, "agent_key"),
+		vm.EnvVMUser:      info.User,
+		vm.EnvVMName:      info.Name,
+		vm.EnvVMPortFirst: strconv.Itoa(first),
+		vm.EnvVMPortLast:  strconv.Itoa(last),
 	}, nil
 }
 

@@ -2,8 +2,44 @@ package vm
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
+
+func TestPortBlockRange(t *testing.T) {
+	for block, want := range map[int][2]int{0: {30000, 30099}, 1: {30100, 30199}, 9: {30900, 30999}} {
+		first, last := PortBlockRange(block)
+		if first != want[0] || last != want[1] {
+			t.Errorf("block %d = %d..%d, want %d..%d", block, first, last, want[0], want[1])
+		}
+	}
+}
+
+func TestPickPortBlock(t *testing.T) {
+	cases := []struct {
+		name string
+		used []int
+		want int
+	}{
+		{"none used", nil, 0},
+		{"first used", []int{0}, 1},
+		{"gap is filled", []int{0, 2}, 1},
+		{"last free", []int{0, 1, 2, 3, 4, 5, 6, 7, 8}, 9},
+	}
+	for _, c := range cases {
+		got, err := PickPortBlock(c.used)
+		if err != nil || got != c.want {
+			t.Errorf("%s: got %d, %v, want %d", c.name, got, err, c.want)
+		}
+	}
+}
+
+func TestPickPortBlockExhausted(t *testing.T) {
+	_, err := PickPortBlock([]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
+	if err == nil || !strings.Contains(err.Error(), "10") {
+		t.Fatalf("err = %v, want an error naming the limit of 10 VMs", err)
+	}
+}
 
 func TestPickSSHPortDefault(t *testing.T) {
 	ssh, err := PickSSHPort(func(int) bool { return true })

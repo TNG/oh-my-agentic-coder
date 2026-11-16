@@ -11,13 +11,6 @@ import (
 // Fixed locations and names inside the VM. The provisioning scripts below
 // spell these paths out literally; limaconfig_test.go checks they agree.
 const (
-	// PublishedPortFirst..PublishedPortLast is the only range of guest
-	// ports that Lima forwards to the same ports on the host loopback.
-	// A container published there (`docker run -p 30000:5432 …`) is
-	// reachable from host tools; every other guest listener stays inside
-	// the VM.
-	PublishedPortFirst = 30000
-	PublishedPortLast  = 30099
 	// ModeFile holds "online" or "offline"; absent means offline once the
 	// VM is provisioned. Root-owned, read by the boot script.
 	ModeFile = "/etc/omac-vm/mode"
@@ -42,6 +35,7 @@ const heredocEnd = "OMACVMGUARD"
 type LimaInputs struct {
 	Resources   Resources
 	SSHPort     int
+	PortBlock   int      // 0..MaxVMs-1, see PortBlockRange
 	AgentUser   string   // Lima user name, see AgentUserName
 	AdminPubKey string   // content of admin_key.pub (one line)
 	AgentPubKey string   // content of agent_key.pub
@@ -72,7 +66,8 @@ func RenderLimaConfig(in LimaInputs) (string, error) {
 	b.WriteString("mounts: []\n")
 	b.WriteString("ssh:\n  localPort: " + strconv.Itoa(in.SSHPort) + "\n")
 	b.WriteString("portForwards:\n")
-	published := "[" + strconv.Itoa(PublishedPortFirst) + ", " + strconv.Itoa(PublishedPortLast) + "]"
+	first, last := PortBlockRange(in.PortBlock)
+	published := "[" + strconv.Itoa(first) + ", " + strconv.Itoa(last) + "]"
 	b.WriteString("  - guestIP: 127.0.0.1\n")
 	b.WriteString("    guestPortRange: " + published + "\n")
 	b.WriteString("    hostIP: 127.0.0.1\n")
@@ -131,6 +126,9 @@ func validateLimaInputs(in LimaInputs) error {
 	}
 	if in.SSHPort <= 0 || in.SSHPort > 65535 {
 		errs = append(errs, fmt.Errorf("ssh port %d out of range", in.SSHPort))
+	}
+	if in.PortBlock < 0 || in.PortBlock >= MaxVMs {
+		errs = append(errs, fmt.Errorf("port block %d out of range 0..%d", in.PortBlock, MaxVMs-1))
 	}
 	if !agentUserPattern.MatchString(in.AgentUser) {
 		errs = append(errs, fmt.Errorf("agent user %q is not a valid user name", in.AgentUser))

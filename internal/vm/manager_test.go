@@ -653,6 +653,78 @@ func TestUpReplacesUnloadableLeftoverState(t *testing.T) {
 	}
 }
 
+func writePeerState(t *testing.T, name string, st *State) {
+	t.Helper()
+	root, err := InstanceRoot(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(NewLayout(root).StatePath, st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A stopped or never-started peer still owns its ports: its state.json is
+// the record, not whether the port is bindable right now. A state file from
+// before port blocks existed has no port_block and means block 0.
+func TestNewInstanceAvoidsStoredPeerPorts(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	writePeerState(t, "omac", &State{SSHPort: 42022, Mode: ModeOffline})
+	mustUp(t, m)
+	st := mustState(t, m)
+	if st.PortBlock != 1 {
+		t.Errorf("port block = %d, want 1", st.PortBlock)
+	}
+	if st.SSHPort != 42023 {
+		t.Errorf("ssh port = %d, want 42023 (42022 is stored for omac)", st.SSHPort)
+	}
+}
+
+func TestNewInstanceFillsLowestFreeBlock(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	writePeerState(t, "omac", &State{SSHPort: 42022})
+	writePeerState(t, "b", &State{SSHPort: 42023, PortBlock: 2})
+	mustUp(t, m)
+	if st := mustState(t, m); st.PortBlock != 1 {
+		t.Errorf("port block = %d, want 1", st.PortBlock)
+	}
+}
+
+func TestNewInstanceRendersItsBlock(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	writePeerState(t, "omac", &State{SSHPort: 42022})
+	mustUp(t, m)
+	raw, err := os.ReadFile(m.Layout.LimaYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "hostPortRange: [30100, 30199]") {
+		t.Errorf("lima.yaml lacks the block 1 range:\n%s", raw)
+	}
+}
+
+func TestEleventhInstanceIsRefused(t *testing.T) {
+	m, lima, _ := newTestManager(t)
+	for i := 0; i < 10; i++ {
+		writePeerState(t, fmt.Sprintf("vm%d", i), &State{SSHPort: 42022 + i, PortBlock: i})
+	}
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "10") {
+		t.Fatalf("Up = %v, want an error naming the limit of 10 VMs", err)
+	}
+	if slices.Contains(lima.verbs(), "create") {
+		t.Error("limactl create ran despite the refusal")
+	}
+}
+
+func TestFirstInstanceGetsBlockZero(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	mustUp(t, m)
+	if st := mustState(t, m); st.PortBlock != 0 || st.SSHPort != 42022 {
+		t.Errorf("state = %+v, want block 0 and ssh port 42022", st)
+	}
+}
+
 func TestUpMissingLimactl(t *testing.T) {
 	m, lima, _ := newTestManager(t)
 	m.Deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }

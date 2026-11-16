@@ -202,11 +202,30 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if err == nil && st != nil && m.Deps.PortFree(st.SSHPort) {
 		return st, nil
 	}
-	sshPort, err := PickSSHPort(m.Deps.PortFree)
+	// A stopped VM keeps its ports, so peers count by what they stored, not
+	// by whether the port is bindable now.
+	peers, err := ListInstances()
 	if err != nil {
 		return nil, err
 	}
-	st = &State{Version: StateVersion, SSHPort: sshPort, Mode: ModeOffline, Packages: cfg.Packages}
+	var usedBlocks, usedSSH []int
+	for _, p := range peers {
+		if p.SSHPort > 0 {
+			usedBlocks = append(usedBlocks, p.PortBlock)
+			usedSSH = append(usedSSH, p.SSHPort)
+		}
+	}
+	block, err := PickPortBlock(usedBlocks)
+	if err != nil {
+		return nil, err
+	}
+	sshPort, err := PickSSHPort(func(p int) bool {
+		return !slices.Contains(usedSSH, p) && m.Deps.PortFree(p)
+	})
+	if err != nil {
+		return nil, err
+	}
+	st = &State{Version: StateVersion, SSHPort: sshPort, PortBlock: block, Mode: ModeOffline, Packages: cfg.Packages}
 	return st, SaveState(m.Layout.StatePath, st)
 }
 
@@ -222,6 +241,7 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	yaml, err := RenderLimaConfig(LimaInputs{
 		Resources:   res,
 		SSHPort:     st.SSHPort,
+		PortBlock:   st.PortBlock,
 		AgentUser:   AgentUserName(m.Deps.HostUser),
 		AdminPubKey: adminPub,
 		AgentPubKey: agentPub,
@@ -616,7 +636,9 @@ func (m *Manager) refuseAttached() error {
 
 // AttachInfo is what a session needs to reach the VM over ssh.
 type AttachInfo struct {
+	Name               string // the VM's name; PrepareAttach leaves it for the caller, which chose the VM
 	SSHPort            int
+	PortBlock          int
 	AgentKeyPath, User string
 	Docker             DockerVersion
 }
@@ -643,6 +665,7 @@ func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 	}
 	return AttachInfo{
 		SSHPort:      st.SSHPort,
+		PortBlock:    st.PortBlock,
 		AgentKeyPath: m.Layout.AgentKey,
 		User:         AgentUserName(m.Deps.HostUser),
 		Docker:       v,
