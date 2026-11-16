@@ -172,3 +172,17 @@ func TestRunServeRejectsPasswordWithNoInner(t *testing.T) {
 		t.Errorf("stderr = %q, want %q", got, want)
 	}
 }
+
+// An empty OMAC_SERVE_PASSWORD (e.g. from a failed keychain lookup) must not
+// silently fall back to a random password.
+func TestRunServeRejectsEmptyPassword(t *testing.T) {
+	t.Setenv(sandboxprofile.ServePasswordEnv, "")
+	env, stderr := launchTestEnv(t, t.TempDir())
+	if code := runServe([]string{"opencode", "--no-sandbox"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+	}
+	want := "omac serve: OMAC_SERVE_PASSWORD is set but empty; set a password or unset it."
+	if got := stderr(); !strings.Contains(got, want) {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}

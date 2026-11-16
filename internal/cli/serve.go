@@ -156,7 +156,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 // without OpenCode). When --workdir is given, that one directory is
 // auto-activated at cold start (§5.5).
 func runServe(args []string, env *Env) int {
-	password := os.Getenv(sandboxprofile.ServePasswordEnv)
+	password, passwordSet := os.LookupEnv(sandboxprofile.ServePasswordEnv)
 	if err := os.Unsetenv(sandboxprofile.ServePasswordEnv); err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: consume password:", err)
 		return ExitIOError
@@ -185,6 +185,15 @@ func runServe(args []string, env *Env) int {
 	auditStrict := parsed.auditStrict
 	roots := parsed.roots
 	openPorts := parsed.openPorts
+
+	// An empty value usually means a failed lookup, e.g. a missing keychain
+	// item in OMAC_SERVE_PASSWORD="$(security …)". Falling back to a random
+	// password would hide that from the user.
+	if passwordSet && password == "" {
+		fmt.Fprintf(env.Stderr, "omac serve: %s is set but empty; set a password or unset it.\n",
+			sandboxprofile.ServePasswordEnv)
+		return ExitMisuse
+	}
 
 	// Without an inner server the password would be dropped silently, and a
 	// user running their own server might believe it is protected by it.
