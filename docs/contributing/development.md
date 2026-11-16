@@ -80,3 +80,34 @@ CI (`.github/workflows/ci.yml`) gates every PR on `gofmt`, `go vet`, `staticchec
 ```bash
 scripts/install-hooks.sh
 ```
+
+### Automated code review
+
+The separate **OCR review** workflow uses OpenCodeReview 1.13.10 to add English
+inline findings and update one summary comment. It reviews non-draft PRs from
+branches in this repository targeting `main` when they are opened, updated,
+reopened, or marked ready for review. Fork PRs are skipped.
+
+Reviews use high effort and the existing `SKAINET_INTERNAL` (gateway base URL)
+and `SKAINET_TOKEN` repository secrets. The model follows the OpenCode pin in
+`internal/e2e/versions.go`, verified by `scripts/probe-model.sh` before each run.
+No separate GitHub token is needed. Each push can incur LLM costs; successful
+complete reviews record a checkpoint so later pushes review only new changes.
+If the checkpoint is no longer valid, OCR reviews the whole PR again. Existing
+inline findings are filtered to reduce duplicates.
+
+To force a full review, add the `ocr-full-review` label, then push a commit or
+reopen the PR. Adding the label alone does not start a run. Remove it afterwards
+to restore incremental reviews. Retrying a failed run is available under
+Actions → OCR review → the run → Re-run jobs; a successful run retried at the
+same commit normally has nothing new to review.
+
+This workflow becomes active after it is merged to `main`. It uses the trusted
+base checkout and fetches PR commits only as review input; it does not execute PR
+scripts or install their dependencies. Runs stop after 30 minutes, and a newer
+run cancels the previous run for that PR.
+
+Reviews are advisory: **do not add OCR review to required status checks or
+required workflows** in branch protection or repository rulesets. Findings do
+not fail the job; technical errors remain visible as a failed OCR run, separate
+from the existing CI checks.
