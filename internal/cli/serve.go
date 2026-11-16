@@ -186,6 +186,14 @@ func runServe(args []string, env *Env) int {
 	roots := parsed.roots
 	openPorts := parsed.openPorts
 
+	// Without an inner server the password would be dropped silently, and a
+	// user running their own server might believe it is protected by it.
+	if password != "" && noInner {
+		fmt.Fprintf(env.Stderr, "omac serve: %s has no effect with --no-inner (omac starts no server); unset it or drop --no-inner.\n",
+			sandboxprofile.ServePasswordEnv)
+		return ExitMisuse
+	}
+
 	lc, cfgPath, err := config.LoadLauncher(env.Workdir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)

@@ -64,3 +64,15 @@ func TestServeAuthRespectsExplicitAllowance(t *testing.T) {
 		t.Fatal("incorrect child environment")
 	}
 }
+
+func TestRunServeRejectsPasswordWithNoInner(t *testing.T) {
+	t.Setenv(sandboxprofile.ServePasswordEnv, "serve-only")
+	env, stderr := launchTestEnv(t, t.TempDir())
+	if code := runServe([]string{"opencode", "--no-inner", "--no-sandbox"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want ExitMisuse (%d)", code, ExitMisuse)
+	}
+	want := "omac serve: OMAC_SERVE_PASSWORD has no effect with --no-inner (omac starts no server); unset it or drop --no-inner."
+	if got := stderr(); !strings.Contains(got, want) {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}
