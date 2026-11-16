@@ -88,7 +88,7 @@ omac start --skip-unregistered
 ### Skill folder not detected: ignoring skill folder
 
 ```
-omac start: ignoring skill folder "My_Skill": skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit; rename the folder
+omac start: ignoring skill folder "My_Skill": skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit. Rename the folder and the name in its omac.yaml and SKILL.md, then run omac register.
 ```
 
 Cause: the folder has an `omac.yaml`, but its name is not a valid skill name.

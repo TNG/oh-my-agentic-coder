@@ -346,7 +346,7 @@ type Skipped struct {
 
 // invalidNameReason explains the skill name grammar enforced by
 // config.ValidSkillName.
-const invalidNameReason = `skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit; rename the folder`
+const invalidNameReason = `skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit. Rename the folder and the name in its omac.yaml and SKILL.md, then run omac register.`
 
 // Discover returns every in-scope skill (for the active harness) found across
 // every source, with duplicates resolved by precedence (workdir wins, own-base

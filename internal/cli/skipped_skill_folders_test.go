@@ -34,7 +34,7 @@ func TestStartReportsSkippedSkillFolders(t *testing.T) {
 	if code != ExitPrerequisiteMissing || !strings.Contains(out, "other — register with") {
 		t.Fatalf("control: start did not stop at the unregistered-skills check: code=%d stderr=%q", code, out)
 	}
-	if !strings.Contains(out, `omac start: ignoring skill folder "My_Skill[2J": skill names may only contain lowercase letters`) {
+	if !strings.Contains(out, `omac start: ignoring skill folder "My_Skill[2J": skill names may only contain lowercase letters, digits and "-", and must start with a letter or digit. Rename the folder and the name in its omac.yaml and SKILL.md, then run omac register.`) {
 		t.Errorf("skipped folder not reported: %q", out)
 	}
 	if strings.ContainsRune(out, 0x1b) {
