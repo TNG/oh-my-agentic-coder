@@ -259,11 +259,45 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
+	if err := m.runSetup(ctx, st, cfg.Setup); err != nil {
+		return fmt.Errorf("%w; %s", err, retryUpHint)
+	}
 	if err := m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout); err != nil {
 		return err
 	}
 	st.JDKs = cfg.JDKs
 	return SaveState(m.Layout.StatePath, st)
+}
+
+// setupCmd reads the setup script from stdin, so its content never passes
+// through a shell command line.
+const setupCmd = "bash -s"
+
+const maxSetupOutput = 4096
+
+// capOutput keeps the end of s, where a failing script says why.
+func capOutput(s string) string {
+	if len(s) <= maxSetupOutput {
+		return s
+	}
+	return "…" + s[len(s)-maxSetupOutput:]
+}
+
+// runSetup runs the user's setup script as root. On failure it removes the
+// provisioned marker, so the next `omac vm up` provisions again, and
+// returns the script's output.
+func (m *Manager) runSetup(ctx context.Context, st *State, script string) error {
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	fmt.Fprintln(m.Out, "omac vm: running setup…")
+	var out bytes.Buffer
+	err := m.ssh(ctx, m.rootTarget(st), strings.NewReader(script), &out, setupCmd)
+	if err == nil {
+		return nil
+	}
+	_ = m.ssh(ctx, m.rootTarget(st), nil, nil, "rm -f "+ProvisionedMarker)
+	return fmt.Errorf("omac vm: setup failed: %w\n%s", err, capOutput(strings.TrimSpace(out.String())))
 }
 
 const retryUpHint = "run `omac vm up` again (or `omac vm up --reprovision`)"
@@ -343,6 +377,9 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ap
 	}
 	if err := m.switchMode(ctx, st, ModeOnline, true, m.Deps.ProvisionTimeout); err != nil {
 		return err
+	}
+	if err := m.runSetup(ctx, st, cfg.Setup); err != nil {
+		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	st.Packages, st.JDKs = cfg.Packages, cfg.JDKs
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
