@@ -298,7 +298,9 @@ func envVarAllowed(key string, allowVars []string) bool {
 }
 
 // FilterEnv builds the child environment from scratch:
-//  1. drop the hardcoded danger blocklist,
+//  1. drop the hardcoded danger blocklist and the serve-password handoff
+//     variables (ServePasswordEnv, ServeAuthTargetEnv), even under
+//     allow_vars ["*"] and when injected,
 //  2. apply the optional allow_vars allowlist,
 //  3. overlay injected vars (which win over inherited values),
 //  4. LAST, drop everything matching denyVars.
