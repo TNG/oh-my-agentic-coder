@@ -137,23 +137,31 @@ func vmAttachExitCode(err error) int {
 	}
 }
 
-// vmSandboxEnv prepares <scopeDir>/vm, a directory the sandbox may write,
-// and returns the variables that point the agent at the VM. The agent key is
-// copied there because the original lives in host-only VM state.
+// vmSandboxEnv prepares <scopeDir>/vm (<scopeDir>/vm/<name> for a VM other
+// than the default), a directory the sandbox may write, and returns the
+// variables that point the agent at the VM. The agent key is copied there
+// because the original lives in host-only VM state. Sessions on different
+// VMs can share scopeDir, so each VM needs its own directory.
 func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error) {
-	dir := filepath.Join(scopeDir, "vm")
-	// The sandbox can write scopeDir; refuse a planted symlink or file
-	// instead of following it with the key copy or chmod.
-	if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
-		return nil, fmt.Errorf("%s exists but is not a directory", dir)
-	} else if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	dirs := []string{filepath.Join(scopeDir, "vm")}
+	if info.Name != "" && info.Name != vm.DefaultVMName {
+		dirs = append(dirs, filepath.Join(dirs[0], info.Name))
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
-		return nil, err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, err
+	dir := dirs[len(dirs)-1]
+	for _, d := range dirs {
+		// The sandbox can write scopeDir; refuse a planted symlink or file
+		// instead of following it with the key copy or chmod.
+		if fi, err := os.Lstat(d); err == nil && !fi.IsDir() {
+			return nil, fmt.Errorf("%s exists but is not a directory", d)
+		} else if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := os.Mkdir(d, 0o700); err != nil && !os.IsExist(err) {
+			return nil, err
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	key, err := os.ReadFile(info.AgentKeyPath)
 	if err != nil {

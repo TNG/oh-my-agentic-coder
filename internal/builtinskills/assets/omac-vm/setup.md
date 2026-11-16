@@ -7,10 +7,11 @@ and explain what each one does.
 
 ## 1. What the VM is for
 
-The omac VM is a Linux virtual machine that stays around between sessions. It runs Docker and builds that the sandbox cannot run, for
-example Testcontainers tests. It has no internet access by default, so the
-human brings in Docker images and build dependencies. A session started with
-`--vm` can then use it.
+The omac VM is a Linux virtual machine that stays around between sessions.
+It runs Docker and builds that the sandbox cannot run, for example
+Testcontainers tests. It has no internet access by default, so the human
+brings in Docker images and build dependencies. A session started with `--vm`
+can then use it.
 
 ## 2. Prerequisites
 
@@ -132,10 +133,10 @@ omac start --vm
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. A bare
 `--vm` uses the VM that `~/.config/omac/vm-projects.yaml` assigns to the
 project (a line such as `/home/alex/work/acme: acme`), else `omac`;
-`--vm=<name>` picks one. omac
-refuses `--vm` while the VM is online, with `--no-sandbox`, and with launcher
-profiles that use a sandbox other than omac's own. Once the human has started
-the session, offer to check the connection with `omac vm exec -- true`.
+`--vm=<name>` picks one. omac refuses `--vm` while the VM is online, with
+`--no-sandbox`, and with launcher profiles that use a sandbox other than
+omac's own. Once the human has started the session, offer to check the
+connection with `omac vm exec -- true`.
 
 ## 9. Day-to-day
 

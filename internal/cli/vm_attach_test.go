@@ -180,7 +180,7 @@ func TestVMSandboxEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scope, "vm", "agent_key"), []byte("OLD OLD OLD OLD\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := vmSandboxEnv(vm.AttachInfo{Name: "work", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, scope)
+	got, err := vmSandboxEnv(vm.AttachInfo{Name: "omac", SSHPort: 31022, PortBlock: 2, User: "alice", AgentKeyPath: key}, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestVMSandboxEnv(t *testing.T) {
 		"OMAC_VM_SSH_PORT":   "31022",
 		"OMAC_VM_SSH_KEY":    filepath.Join(scope, "vm", "agent_key"),
 		"OMAC_VM_USER":       "alice",
-		"OMAC_VM_NAME":       "work",
+		"OMAC_VM_NAME":       "omac",
 		"OMAC_VM_PORT_FIRST": "30200",
 		"OMAC_VM_PORT_LAST":  "30299",
 	}
@@ -249,6 +249,36 @@ func TestVMSandboxEnvWithoutKnownHosts(t *testing.T) {
 func TestVMSandboxEnvMissingKey(t *testing.T) {
 	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: filepath.Join(t.TempDir(), "nope")}, t.TempDir()); err == nil {
 		t.Fatal("vmSandboxEnv succeeded without an agent key")
+	}
+}
+
+// Sessions on different VMs can share one cache scope; each VM's key copy
+// needs its own place, or the later attach redirects the earlier session.
+func TestVMSandboxEnvKeepsInstancesApart(t *testing.T) {
+	scope := t.TempDir()
+	keyA, keyB := testAgentKey(t), testAgentKey(t)
+	if err := os.WriteFile(keyB, []byte("OTHER KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := vmSandboxEnv(vm.AttachInfo{Name: "work", AgentKeyPath: keyA}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := vmSandboxEnv(vm.AttachInfo{Name: "other", AgentKeyPath: keyB}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(scope, "vm", "work", "agent_key"); a["OMAC_VM_SSH_KEY"] != want {
+		t.Errorf("work key path = %q, want %q", a["OMAC_VM_SSH_KEY"], want)
+	}
+	if a["OMAC_VM_SSH_KEY"] == b["OMAC_VM_SSH_KEY"] {
+		t.Fatalf("both instances use %q", a["OMAC_VM_SSH_KEY"])
+	}
+	if got, _ := os.ReadFile(a["OMAC_VM_SSH_KEY"]); string(got) != "PRIVATE KEY\n" {
+		t.Errorf("work key copy = %q, overwritten by the other instance", got)
+	}
+	if got, _ := os.ReadFile(b["OMAC_VM_SSH_KEY"]); string(got) != "OTHER KEY\n" {
+		t.Errorf("other key copy = %q", got)
 	}
 }
 
