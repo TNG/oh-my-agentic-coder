@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -50,5 +51,43 @@ func TestWarnSkippedSkillFoldersFiltersByKind(t *testing.T) {
 	warnSkippedSkillFolders(&buf, "omac serve", skipped, "user-global")
 	if got, want := buf.String(), "omac serve: ignoring skill folder \"Global_One\": r\n"; got != want {
 		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
+// TestServeRediscoverReportsNewSkippedFolderOnce checks that a skill folder
+// with an invalid name created while omac serve runs is reported, and that
+// rediscovery on later agent turns does not repeat the warning.
+func TestServeRediscoverReportsNewSkippedFolderOnce(t *testing.T) {
+	s := newServeServerForTest(t)
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	s.env.Stderr = f
+
+	wd := t.TempDir()
+	if _, err := s.activate(wd); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	skillDir := filepath.Join(wd, ".opencode", "skills", "My_Skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "omac.yaml"), []byte("name: My_Skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := s.dirs[wd]
+	s.rediscover(d)
+	s.rediscover(d)
+
+	raw, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(raw)
+	if n := strings.Count(out, `omac serve: ignoring skill folder "My_Skill"`); n != 1 {
+		t.Errorf("warning printed %d times, want 1: %q", n, out)
 	}
 }
