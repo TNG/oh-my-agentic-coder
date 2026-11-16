@@ -15,25 +15,15 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 	"github.com/TNG/oh-my-agentic-coder/internal/manifest"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 )
 
-// Each forbidden rune is supplied, not merely searched for in the output.
-func displayForbiddenRunes() []rune {
-	runes := []rune{'\u061c', '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\u2028', '\u2029', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2060', '\u2066', '\u2067', '\u2068', '\u2069', '\ufeff'}
-	for r := rune(0); r <= 0x9f; r++ {
-		if r < 0x20 || r >= 0x7f {
-			runes = append(runes, r)
-		}
-	}
-	return runes
-}
-
 func TestSkillRefusalForbiddenRunesAndInputIdentity(t *testing.T) {
 	for _, kind := range []skillstate.ProblemKind{skillstate.MetaBroken, skillstate.BundleDrift, skillstate.MissingSecret, skillstate.InvalidSecret, skillstate.InvalidConfig, skillstate.KeychainUnavailable, skillstate.MissingField} {
-		for _, r := range displayForbiddenRunes() {
+		for _, r := range displaytext.UnsafeRunes() {
 			t.Run(fmt.Sprintf("%s/U+%04X", kind, r), func(t *testing.T) {
 				payload := "café 東京 عربي left" + string(r) + "right"
 				cause := errors.New(payload)
@@ -65,7 +55,7 @@ func invalidDisplayEnumMeta(r rune) string {
 }
 
 func TestSkillMetadataToRefusalUnicode(t *testing.T) {
-	for _, r := range displayForbiddenRunes() {
+	for _, r := range displaytext.UnsafeRunes() {
 		t.Run(fmt.Sprintf("U+%04X", r), func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, config.MetaFileName), []byte(invalidDisplayEnumMeta(r)), 0600); err != nil {
@@ -114,7 +104,7 @@ func TestSkillStartRefusalUnicode(t *testing.T) {
 func TestSkillMetadataToActivationBridges(t *testing.T) {
 	s := newServeServerForTest(t)
 	wd := t.TempDir()
-	for i, r := range displayForbiddenRunes() {
+	for i, r := range displaytext.UnsafeRunes() {
 		dir := filepath.Join(wd, ".opencode", "skills", fmt.Sprintf("benign-%d", i))
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
@@ -140,10 +130,10 @@ func TestSkillMetadataToActivationBridges(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Skills) != len(displayForbiddenRunes()) {
+	if len(response.Skills) != len(displaytext.UnsafeRunes()) {
 		t.Fatal("activation lost broken skills")
 	}
-	for _, r := range displayForbiddenRunes() {
+	for _, r := range displaytext.UnsafeRunes() {
 		found := false
 		for _, sk := range response.Skills {
 			found = found || strings.Contains(sk.Detail, "left"+string(r)+"right")
@@ -157,7 +147,7 @@ func TestSkillMetadataToActivationBridges(t *testing.T) {
 		if strings.Count(text, "— BROKEN:") != len(response.Skills) || !strings.Contains(text, "café 東京 عربي leftright") {
 			t.Fatalf("missing manifest rows/content: %q", text)
 		}
-		for _, r := range displayForbiddenRunes() {
+		for _, r := range displaytext.UnsafeRunes() {
 			if strings.Contains(text, "left"+string(r)+"right") {
 				t.Errorf("U+%04X survived live sink", r)
 			}

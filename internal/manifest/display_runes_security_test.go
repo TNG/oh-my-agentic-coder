@@ -5,16 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 func TestManifestEveryForbiddenRune(t *testing.T) {
-	runes := []rune{'\u061c', '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\u2028', '\u2029', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2060', '\u2066', '\u2067', '\u2068', '\u2069', '\ufeff'}
-	for r := rune(0); r <= 0x9f; r++ {
-		if r < 0x20 || r >= 0x7f {
-			runes = append(runes, r)
-		}
-	}
-	for _, r := range runes {
+	for _, r := range displaytext.UnsafeRunes() {
 		t.Run(fmt.Sprintf("U+%04X", r), func(t *testing.T) {
 			payload := "café 東京 عربي left" + string(r) + "right"
 			raw, err := json.Marshal(activateResponse{Dir: "/work", Skills: []skill{

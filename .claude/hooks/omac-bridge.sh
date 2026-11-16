@@ -81,6 +81,7 @@ render_manifest() {
   local skills_dir="${OMAC_HARNESS_SKILLS_DIR:-.claude/skills}"
   printf '%s' "$manifest" | jq -r --arg skillsdir "$skills_dir" '
     def skillsarr: (.skills // []);
+    # Keep the character class in sync with internal/displaytext (TestBridgeCopiesMatch).
     def sanitize_field: gsub("[\\n\\r]"; " ") | gsub("\\*"; "") | gsub("[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]"; "");
     def safe_secrets_hint(name; missing):
       if (name | test("^[a-z0-9][a-z0-9-]*$"))

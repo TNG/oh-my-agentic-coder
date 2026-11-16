@@ -3,7 +3,7 @@ package plugin
 // multiDirSHA256 is the SHA-256 of the embedded plugin (assets/omac-multidir.ts).
 // TestMultiDirHashesUpToDate fails when the plugin changes and this is not
 // updated, as a reminder to also move the old value into previousMultiDirSHA256.
-const multiDirSHA256 = "3bc80bd53bece4eb49cf430a552f2de0677290062fbffe5366c98cb1a8f6ffc9"
+const multiDirSHA256 = "3dfb08cb6e805a4ad4d54858a5670e9897e12afa927ebb1e09dc3081e0ba4b84"
 
 // previousMultiDirSHA256 lists the SHA-256 of every earlier omac-multidir.ts
 // committed to this repo. A plugin file matching one of them is an unedited
@@ -18,6 +18,7 @@ var previousMultiDirSHA256 = map[string]bool{
 	"01834d4eac45fd5c3ea68cd832a36dfa61fa4fb3ec7711583f5765195aae8844": true,
 	"2d8c29c80b7b4afc1820150e673af333eae5669059ad73af7c3cd64531fb0783": true,
 	"336341b54e105bef411a166a6d2e9129d290c9a09030d73e7e1e19d3b920e2cd": true,
+	"3bc80bd53bece4eb49cf430a552f2de0677290062fbffe5366c98cb1a8f6ffc9": true,
 	"436e85e2cdfb3dddbbaa3f75d84d6095c29d5852bc4a5c96d119e6322111515a": true,
 	"4ad168184f0d623f69afa46cf28c9de6d0ef1f0a6df0cc050008d000b1ed9965": true,
 	"5d8a4e502a5b7f426c8878c5a8765e004e098be72ab9c4f0241c0bb0d6d88a3b": true,

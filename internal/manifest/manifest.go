@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 // skill mirrors the fields from the activate response's skills array.
@@ -121,18 +122,7 @@ func sanitizeField(s string) string {
 		if r == '*' {
 			return -1
 		}
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		// Bidi overrides, isolates and directional marks forge or invert
-		// text direction; line/paragraph separators split the markdown;
-		// zero-width runes can hide or smuggle structure. Strip them all.
-		switch r {
-		case '\u2028', '\u2029', // line / paragraph separators
-			'\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', // zero-width
-			'\u061c', '\u200e', '\u200f', // directional marks
-			'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // bidi overrides
-			'\u2066', '\u2067', '\u2068', '\u2069': // bidi isolates
+		if displaytext.Unsafe(r) {
 			return -1
 		}
 		return r

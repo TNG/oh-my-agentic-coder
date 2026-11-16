@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 // ANSI SGR codes. Kept as small constants so the styler can assemble
@@ -152,22 +154,10 @@ func boxPad(cell string, inner, pad int) string {
 }
 
 // stripControlChars removes C0/C1 controls, Unicode line separators, zero-width
-// characters and bidi controls from display text. Never use it for lookup keys.
+// characters and bidi controls from display text (see displaytext.Unsafe).
+// Never use it for lookup keys.
 func stripControlChars(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
-			return -1
-		}
-		switch r {
-		case '\u2028', '\u2029', // line / paragraph separators
-			'\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', // zero-width
-			'\u061c', '\u200e', '\u200f', // directional marks
-			'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // bidi overrides
-			'\u2066', '\u2067', '\u2068', '\u2069': // bidi isolates
-			return -1
-		}
-		return r
-	}, s)
+	return displaytext.Strip(s)
 }
 
 // oneLine prepares text that is printed on a single line, such as a

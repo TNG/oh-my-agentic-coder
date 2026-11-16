@@ -219,6 +219,7 @@ async function createBridge(
 
   // Collapse newlines and strip markdown bold markers from a skill-supplied
   // field so it cannot inject new blocks or forged structure into the manifest.
+  // Keep the character class in sync with internal/displaytext (TestBridgeCopiesMatch).
   function sanitizeField(s: string): string {
     return s.replace(/[\n\r]/g, " ").replace(/\*/g, "").replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/g, "")
   }
