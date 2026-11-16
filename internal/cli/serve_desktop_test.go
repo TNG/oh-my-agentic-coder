@@ -15,7 +15,7 @@ func TestDesktopStateHome(t *testing.T) {
 		{raw: "/home/a/.local/state/", want: "/home/a/.local/state"},
 		{raw: "/home/a/x/../state", want: "/home/a/state"},
 		{raw: "relative/dir", wantErr: `XDG_STATE_HOME="relative/dir" must be an absolute path`},
-		{raw: "", wantErr: `XDG_STATE_HOME="" must be an absolute path`},
+		{raw: "", wantErr: `because HOME is not set. Set HOME, or export XDG_STATE_HOME`},
 	} {
 		got, err := desktopStateHome(tc.raw)
 		if tc.wantErr != "" {

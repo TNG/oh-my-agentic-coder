@@ -780,8 +780,13 @@ func injectDesktopGrants(argv []string, stderr io.Writer, worktrees []string, st
 }
 
 // desktopStateHome validates XDG_STATE_HOME for --for-opencode-desktop and
-// returns it cleaned (e.g. without a trailing slash).
+// returns it cleaned (e.g. without a trailing slash). raw is empty only
+// when resolveDesktopStateDir found no Desktop directory to default it to,
+// which happens when the home directory is unknown.
 func desktopStateHome(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("--for-opencode-desktop: cannot find OpenCode Desktop's data directory because HOME is not set. Set HOME, or export XDG_STATE_HOME as an absolute path (for example /home/you/.local/state)")
+	}
 	if !filepath.IsAbs(raw) {
 		return "", fmt.Errorf("--for-opencode-desktop: XDG_STATE_HOME=%q must be an absolute path (for example /home/you/.local/state)", raw)
 	}
