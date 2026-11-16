@@ -12,31 +12,32 @@ import (
 // directory defeats that approach on Linux. Keep the entire route read-only.
 func protectDesktopStores(g *Grants, learn bool) error {
 	if learn {
-		return fmt.Errorf("--for-opencode-desktop cannot protect Desktop stores in --learn mode")
+		return fmt.Errorf("--for-opencode-desktop cannot be combined with --learn: learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
 	}
-	writes := append(append([]string{}, g.AllowPaths...), g.WritePaths...)
-	for i, w := range writes {
+	grants := append(append([]string{}, g.AllowPaths...), g.WritePaths...)
+	writes := make([]string, len(grants))
+	for i, w := range grants {
 		writes[i] = canonicalPath(w)
 		if writes[i] == "" {
-			return fmt.Errorf("cannot resolve Desktop write grant %q", w)
+			return fmt.Errorf("cannot resolve the write grant %q, so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Remove that grant or fix its path", w)
 		}
 	}
 	paths := opencodestate.DesktopStorePaths()
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
-			return fmt.Errorf("Desktop store paths must be absolute")
+			return fmt.Errorf("the OpenCode Desktop project store path %q is not absolute. Set HOME, XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME to absolute paths", path)
 		}
 		for p := path; ; p = filepath.Dir(p) {
 			fi, err := os.Lstat(p)
 			if err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("inspect Desktop store path %q: %w", p, err)
+				return fmt.Errorf("inspect OpenCode Desktop project store path %q: %w", p, err)
 			}
 			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("Desktop store routing uses symlink %q; use real directories for trusted Desktop state", p)
+				return fmt.Errorf("cannot protect the OpenCode Desktop project store %q because its path goes through the symlink %q, and omac protects Desktop's project list only on paths without symlinks. Point HOME, XDG_CONFIG_HOME, XDG_DATA_HOME and XDG_STATE_HOME at the real directories, or run without --for-opencode-desktop", path, p)
 			}
-			for _, w := range writes {
+			for i, w := range writes {
 				if isUnder(p, w) {
-					return fmt.Errorf("Desktop store %q is mutable through write grant %q; grant project folders and only the Desktop opencode runtime subtree", path, w)
+					return fmt.Errorf("the OpenCode Desktop project store %q would be writable by the agent through the write grant %q. Narrow that grant (sandbox profile, --allow or --write) to your project folders", path, grants[i])
 				}
 			}
 			if p == filepath.Dir(p) {
