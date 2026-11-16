@@ -324,7 +324,7 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	root, err := vm.DefaultRoot()
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
 	if err != nil {
 		t.Fatal(err)
 	}

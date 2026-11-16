@@ -51,9 +51,6 @@ func stateBase() (string, error) {
 	return filepath.Join(home, ".local", "state", "omac"), nil
 }
 
-// DefaultRoot resolves the state directory of the default VM.
-func DefaultRoot() (string, error) { return InstanceRoot(DefaultVMName) }
-
 // InstanceRoot resolves the state directory of the named VM: the default VM
 // keeps <state>/vm, every other one gets <state>/vms/<name>.
 func InstanceRoot(name string) (string, error) {
@@ -83,10 +80,6 @@ func NewLayout(root string) Layout {
 		LimaYAML:    filepath.Join(root, "omac.yaml"),
 	}
 }
-
-// UserConfigPath is ~/.config/omac/vm.yaml (honoring $XDG_CONFIG_HOME), or
-// "" when no global config directory resolves.
-func UserConfigPath() string { return InstanceConfigPath(DefaultVMName) }
 
 // InstanceConfigPath is the config file of the named VM: vm.yaml for the
 // default VM, vms/<name>.yaml next to it for the others. "" when no global

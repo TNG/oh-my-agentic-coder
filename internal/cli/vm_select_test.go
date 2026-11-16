@@ -345,7 +345,7 @@ func TestVMExecInSessionIgnoresNameAndMapping(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"exec", "--", "true"},
-		{"exec", "--name", "x", "--", "true"},
+		{"exec", "--name", "session-vm", "--", "true"},
 	} {
 		var got []vm.ExecOpts
 		runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
@@ -409,4 +409,63 @@ type failingManager struct {
 
 func (f *failingManager) Status(context.Context) (vm.StatusReport, error) {
 	return vm.StatusReport{}, f.err
+}
+
+func TestVMExecInSessionRejectsOtherName(t *testing.T) {
+	t.Setenv(vm.EnvVMSSHPort, "43022")
+	t.Setenv(vm.EnvVMSSHKey, filepath.Join(t.TempDir(), "agent_key"))
+	t.Setenv(vm.EnvVMUser, "agent")
+	t.Setenv(vm.EnvVMName, "session-vm")
+	calls := useFakeVMExec(t, nil, 0, nil)
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--name", "x", "--", "true"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+	}
+	for _, want := range []string{"session-vm", "--vm=x"} {
+		if !strings.Contains(stderr(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr())
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("exec ran despite the misuse")
+	}
+}
+
+// The sandbox blocks ~/.config/omac, so the project map cannot be read in a
+// session without --vm; exec must then give ConnInfo's hint, not fail on it.
+func TestVMExecUnreadableMapFallsThrough(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	_, worktree := selectionFixture(t)
+	path := writeVMProjectMap(t, "x: y\n")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	useFakeVMExec(t, nil, 0, nil)
+	var resolved []string
+	resolveVMConn = func(_ *Env, name string) (vm.ConnInfo, error) {
+		resolved = append(resolved, name)
+		return vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}}, nil
+	}
+	env, _, stderr := vmTestEnv(t)
+	env.Workdir = worktree
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
+	}
+	if len(resolved) != 1 || resolved[0] != vm.DefaultVMName {
+		t.Errorf("resolved = %v, want [omac]", resolved)
+	}
+}
+
+func TestVMExecErrorNamesInstance(t *testing.T) {
+	useFakeVMExec(t, nil, 0, errors.New("omac vm exec: connection lost (is the VM running? `omac vm status`)"))
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--name", "yarp3", "--", "true"}, env); code != ExitIOError {
+		t.Fatalf("exit = %d, want %d", code, ExitIOError)
+	}
+	if !strings.Contains(stderr(), "`omac vm status --name yarp3`") {
+		t.Errorf("stderr does not name the instance:\n%s", stderr())
+	}
 }

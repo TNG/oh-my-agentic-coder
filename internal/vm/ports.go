@@ -37,7 +37,7 @@ func PickPortBlock(used []int) (int, error) {
 			return b, nil
 		}
 	}
-	return 0, fmt.Errorf("omac vm: all %d port blocks are taken; at most %d VMs can exist, delete one with `omac vm reset --name <x>` first", MaxVMs, MaxVMs)
+	return 0, fmt.Errorf("omac vm: all %d port blocks are taken; at most %d VMs can exist, to free one, delete a VM you no longer need: run LIMA_HOME=~/.local/state/omac/vms/<name>/lima limactl delete -f omac, then remove the directory ~/.local/state/omac/vms/<name>", MaxVMs, MaxVMs)
 }
 
 // PortFree reports whether 127.0.0.1:port can be bound right now.

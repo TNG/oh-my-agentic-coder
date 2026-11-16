@@ -38,8 +38,9 @@ packages: [jq]
 
 `jdks` takes `temurin-<version>`; `packages` are Ubuntu package names. A
 `setup` field holds a shell script for anything else, for example
-`npm install --global pnpm`. It runs once as root with network access while
-the VM is provisioned, so it must be safe to run again.
+`npm install --global pnpm`. It runs as root with network access at
+provisioning (the first `omac vm up` and every `--reprovision`), so it must be
+safe to run again.
 
 Projects that must not see each other belong in separate VMs. Each extra VM
 has its own name and its own file `~/.config/omac/vms/<name>.yaml`; the human
