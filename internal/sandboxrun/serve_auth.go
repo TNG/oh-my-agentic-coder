@@ -15,18 +15,28 @@ import (
 // policy profile reference, or "" when unknown.
 func filterServeAuthEnv(environ []string, policy sandboxprofile.Environment, injected map[string]string, profile string) ([]string, error) {
 	filtered := sandboxprofile.FilterEnv(environ, sandboxprofile.EffectiveAllowVars(policy.AllowVars), policy.DenyVars, injected)
-	values := map[string]string{}
-	for _, kv := range environ {
-		key, value, _ := strings.Cut(kv, "=")
-		values[key] = value
+	target := lookupEnv(environ, sandboxprofile.ServeAuthTargetEnv)
+	if target == "" {
+		return filtered, nil
 	}
-	if target := values[sandboxprofile.ServeAuthTargetEnv]; target != "" {
-		if sandboxprofile.EnvVarMatches(target, policy.DenyVars) {
-			return nil, sandboxprofile.ServeAuthDeniedError(target, profile)
-		}
-		if values[target] == "" || !slices.Contains(filtered, target+"="+values[target]) {
-			return nil, fmt.Errorf("%s cannot reach the server: %s is missing from the sandbox environment", sandboxprofile.ServePasswordEnv, target)
-		}
+	if sandboxprofile.EnvDenied(target, policy.DenyVars) {
+		return nil, sandboxprofile.ServeAuthDeniedError(target, profile)
+	}
+	// Not denied, but allow_vars (or a missing --allow-env) may still drop it.
+	if value := lookupEnv(environ, target); value == "" || !slices.Contains(filtered, target+"="+value) {
+		return nil, fmt.Errorf("%s cannot reach the server: %s is missing from the sandbox environment", sandboxprofile.ServePasswordEnv, target)
 	}
 	return filtered, nil
+}
+
+// lookupEnv returns the value of key in a "KEY=VALUE" list, or "" when
+// absent. Like the process environment, a later entry wins.
+func lookupEnv(environ []string, key string) string {
+	value := ""
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+			value = v
+		}
+	}
+	return value
 }

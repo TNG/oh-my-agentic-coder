@@ -35,7 +35,7 @@ func prepareServeAuthEnv(password string, h config.Harness, plan sandboxPlan, no
 			return nil, fmt.Errorf("%s needs the sandbox policy %q to check its environment.deny_vars, but it could not be loaded: %v. "+
 				"Fix that profile or unset %s.", sandboxprofile.ServePasswordEnv, plan.PolicyRef, plan.PolicyErr, sandboxprofile.ServePasswordEnv)
 		}
-		if len(sandboxprofile.FilterEnv(nil, nil, plan.Policy.Environment.DenyVars, extra)) != 1 {
+		if sandboxprofile.EnvDenied(target, plan.Policy.Environment.DenyVars) {
 			return nil, sandboxprofile.ServeAuthDeniedError(target, plan.PolicyRef)
 		}
 		// The supervisor rechecks the final policy, then removes this marker.

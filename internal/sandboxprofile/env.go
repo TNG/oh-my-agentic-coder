@@ -250,6 +250,14 @@ func EnvVarMatches(key string, pats []string) bool {
 	return false
 }
 
+// EnvDenied reports whether a profile's environment.deny_vars removes the
+// variable name from the child environment. FilterEnv applies deny_vars last,
+// over inherited and injected variables alike, so a denied name never
+// reaches the child whatever allow_vars says.
+func EnvDenied(name string, denyVars []string) bool {
+	return EnvVarMatches(name, denyVars)
+}
+
 // patternsOverlap reports whether two allow/deny patterns can match a
 // common key. Used by DeniedBaseVars to detect a deny that shadows a
 // base entry even when either side is a trailing-* prefix.
@@ -328,7 +336,7 @@ func FilterEnv(environ []string, allowVars, denyVars []string, injected map[stri
 	kept := out[:0]
 	for _, kv := range out {
 		eq := strings.IndexByte(kv, '=')
-		if eq > 0 && EnvVarMatches(kv[:eq], denyVars) {
+		if eq > 0 && EnvDenied(kv[:eq], denyVars) {
 			continue
 		}
 		kept = append(kept, kv)
