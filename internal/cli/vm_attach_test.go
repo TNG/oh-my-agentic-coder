@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -52,7 +55,7 @@ func TestVMAttachExitCode(t *testing.T) {
 func stubVMAttachFailure(t *testing.T, err error) {
 	t.Helper()
 	orig := prepareVMAttach
-	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, func(), error) {
+	prepareVMAttach = func(context.Context, *Env) (vm.AttachInfo, *vmMarkers, error) {
 		return vm.AttachInfo{}, nil, err
 	}
 	t.Cleanup(func() { prepareVMAttach = orig })
@@ -155,7 +158,7 @@ func TestRunLaunchWithoutVMAddsNothing(t *testing.T) {
 		t.Fatalf("runLaunch code = %d\nstderr:\n%s", code, stderr())
 	}
 	raw, _ := os.ReadFile(dump)
-	for _, bad := range []string{"OMAC_VM_", "--vm"} {
+	for _, bad := range []string{"OMAC_VM_", "--vm", filepath.Join("vm", "docker"), filepath.Join("vm", "agent_key")} {
 		if strings.Contains(string(raw), bad) {
 			t.Errorf("dump contains %q without --vm:\n%s", bad, raw)
 		}
@@ -171,25 +174,18 @@ func TestRunLaunchVMNeedsSandbox(t *testing.T) {
 }
 
 func TestVMSandboxEnv(t *testing.T) {
-	scope := t.TempDir()
+	tmp := t.TempDir()
 	key := testAgentKey(t)
-	// A stale copy is overwritten, never appended to or kept.
-	if err := os.MkdirAll(filepath.Join(scope, "vm"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scope, "vm", "agent_key"), []byte("OLD OLD OLD OLD\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := vmSandboxEnv(vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope)
+	got, err := vmSandboxEnv(vm.AttachInfo{DockerPort: 31234, SSHPort: 31022, User: "alice", AgentKeyPath: key}, tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
 		"DOCKER_HOST":      "tcp://127.0.0.1:31234",
-		"DOCKER_CONFIG":    filepath.Join(scope, "vm", "docker"),
+		"DOCKER_CONFIG":    filepath.Join(tmp, "vm", "docker"),
 		"OMAC_VM_HOST":     "127.0.0.1",
 		"OMAC_VM_SSH_PORT": "31022",
-		"OMAC_VM_SSH_KEY":  filepath.Join(scope, "vm", "agent_key"),
+		"OMAC_VM_SSH_KEY":  filepath.Join(tmp, "vm", "agent_key"),
 		"OMAC_VM_USER":     "alice",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -203,10 +199,14 @@ func TestVMSandboxEnv(t *testing.T) {
 	if b, _ := os.ReadFile(want["OMAC_VM_SSH_KEY"]); string(b) != "PRIVATE KEY\n" {
 		t.Errorf("key copy content = %q", b)
 	}
-	for _, d := range []string{filepath.Join(scope, "vm"), want["DOCKER_CONFIG"]} {
+	for _, d := range []string{filepath.Join(tmp, "vm"), want["DOCKER_CONFIG"]} {
 		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
 			t.Errorf("%s: %v, want a 0700 dir", d, err)
 		}
+	}
+	names := slices.Sorted(maps.Keys(got))
+	if !slices.Equal(names, slices.Sorted(slices.Values(vmEnvNames))) {
+		t.Errorf("vmSandboxEnv sets %v, but vmEnvNames (checked against deny_vars) is %v", names, vmEnvNames)
 	}
 }
 
@@ -216,27 +216,73 @@ func TestVMSandboxEnvMissingKey(t *testing.T) {
 	}
 }
 
-// A sandboxed session can write the cache dir, so it could plant a symlink
-// that redirects the key copy or DOCKER_CONFIG anywhere the host user writes.
-func TestVMSandboxEnvRefusesSymlinks(t *testing.T) {
+// The key copy must land in a directory omac just created, never in one that
+// already exists: an existing one may be a symlink planted by a sandbox.
+func TestVMSandboxEnvRefusesExistingDir(t *testing.T) {
 	key := testAgentKey(t)
-	for _, planted := range []string{"vm", filepath.Join("vm", "docker")} {
-		t.Run(planted, func(t *testing.T) {
-			scope, target := t.TempDir(), t.TempDir()
-			if err := os.MkdirAll(filepath.Dir(filepath.Join(scope, planted)), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(target, filepath.Join(scope, planted)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, scope); err == nil {
-				t.Fatalf("vmSandboxEnv accepted a symlinked %s", planted)
-			}
-			if entries, _ := os.ReadDir(target); len(entries) != 0 {
-				t.Errorf("symlink target was written: %v", entries)
-			}
-		})
+	tmp, target := t.TempDir(), t.TempDir()
+	if err := os.Symlink(target, filepath.Join(tmp, "vm")); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, tmp); err == nil {
+		t.Fatal("vmSandboxEnv accepted an existing vm directory")
+	}
+	if entries, _ := os.ReadDir(target); len(entries) != 0 {
+		t.Errorf("symlink target was written: %v", entries)
+	}
+}
+
+func TestVMProfileMisuse(t *testing.T) {
+	denies := func(pats ...string) *sandboxprofile.Profile {
+		return &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: pats}}
+	}
+	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: denies("AWS_*")}); msg != "" {
+		t.Errorf("unrelated deny_vars refused: %s", msg)
+	}
+	if msg := vmProfileMisuse(sandboxPlan{Name: "nono"}); !strings.Contains(msg, "--vm needs omac's own sandbox") {
+		t.Errorf("non-native plan: %q", msg)
+	}
+	for _, pat := range []string{"DOCKER_*", "DOCKER_CONFIG", "OMAC_VM_*", "*"} {
+		msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "strict", Policy: denies(pat)})
+		if !strings.Contains(msg, `"strict"`) || !strings.Contains(msg, "deny_vars") {
+			t.Errorf("deny_vars %q: %q, want a refusal naming the profile", pat, msg)
+		}
+	}
+}
+
+func TestVMSessionTracksChildUntilRelease(t *testing.T) {
+	layout := vm.NewLayout(t.TempDir())
+	markers := &vmMarkers{layout: layout}
+	if err := markers.add(os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	s := &vmSession{markers: markers, stderr: io.Discard}
+	s.trackChild(4242)
+	if _, err := os.Stat(filepath.Join(layout.SessionsDir, "4242")); err != nil {
+		t.Fatalf("child marker missing: %v", err)
+	}
+	s.release()
+	if entries, _ := os.ReadDir(layout.SessionsDir); len(entries) != 0 {
+		t.Errorf("markers left after release: %v", entries)
+	}
+	// onReady runs in a goroutine and may fire after the child exited.
+	s.trackChild(4243)
+	if entries, _ := os.ReadDir(layout.SessionsDir); len(entries) != 0 {
+		t.Errorf("marker written after release: %v", entries)
+	}
+}
+
+func TestVMSessionNilIsNoOp(t *testing.T) {
+	var s *vmSession
+	argv := []string{"omac", "sandbox", "run", "--", "x"}
+	if got := s.grant(argv, sandboxPlan{Native: true}); !slices.Equal(got, argv) {
+		t.Errorf("nil grant changed argv: %q", got)
+	}
+	if s.sandboxEnv() != nil {
+		t.Error("nil session has env")
+	}
+	s.trackChild(1)
+	s.release()
 }
 
 // attachOrderManager checks, inside PrepareAttach, that this process's
@@ -270,14 +316,14 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 
 func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 	fake, sessions := useAttachOrderManager(t, nil)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !fake.sawMarker {
 		t.Error("PrepareAttach ran before the session marker was written")
 	}
-	release()
+	markers.release()
 	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
 		t.Errorf("markers left after release: %v", entries)
 	}
@@ -285,18 +331,19 @@ func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 
 func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, vm.ErrOnline)
-	_, release, err := prepareVMAttach(context.Background(), devnullEnv(t))
-	if !errors.Is(err, vm.ErrOnline) || release != nil {
-		t.Fatalf("prepareVMAttach = (release=%v, %v), want (nil, ErrOnline)", release != nil, err)
+	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t))
+	if !errors.Is(err, vm.ErrOnline) || markers != nil {
+		t.Fatalf("prepareVMAttach = (markers=%v, %v), want (nil, ErrOnline)", markers != nil, err)
 	}
 	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
 		t.Errorf("markers left after a failed attach: %v", entries)
 	}
 }
 
-func TestInjectVMGrants(t *testing.T) {
+func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
-	got := injectVMGrants(argv, vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, sandboxPlan{Native: true})
+	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}
+	got := s.grant(argv, sandboxPlan{Native: true})
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
 		"--open-port", "31234", "--open-port", "31022",
 		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",

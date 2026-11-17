@@ -16,7 +16,7 @@ type Layout struct {
 	Root        string // the state directory itself
 	LimaHome    string // LIMA_HOME; short, because <LimaHome>/omac/ssh.sock.* must stay under the 104-byte socket-path limit
 	AdminKey    string // root access, host only
-	AgentKey    string // agent user, copied into the session cache scope at attach
+	AgentKey    string // agent user, copied into the session temp dir at attach
 	StatePath   string // state.json
 	KnownHosts  string // ssh known_hosts for 127.0.0.1:<port>
 	SessionsDir string // one marker file per attached session, named by pid

@@ -4,19 +4,122 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
+
+// vmSession is a session attached to the omac VM (--vm). A nil *vmSession
+// means no --vm, and every method is then a no-op.
+type vmSession struct {
+	info    vm.AttachInfo
+	env     map[string]string
+	markers *vmMarkers
+	stderr  io.Writer
+}
+
+// attachVM registers the session with the VM, checks that the VM can take
+// it, and prepares the agent's files in <tmpDir>/vm. tmpDir must be the
+// session's private temp dir, which is removed when the session ends: it
+// holds a copy of the agent's SSH key. The VM is never booted or stopped
+// here; it outlives every session.
+func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) {
+	info, markers, err := prepareVMAttach(ctx, env)
+	if err != nil {
+		return nil, err
+	}
+	vmEnv, err := vmSandboxEnv(info, tmpDir)
+	if err != nil {
+		markers.release()
+		return nil, err
+	}
+	return &vmSession{info: info, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
+}
+
+// grant opens the VM's Docker and SSH ports for the sandbox and lets
+// DOCKER_HOST and DOCKER_CONFIG through its env filter.
+func (s *vmSession) grant(argv []string, plan sandboxPlan) []string {
+	if s == nil {
+		return argv
+	}
+	argv = injectOpenPort(argv, strconv.Itoa(s.info.DockerPort))
+	argv = injectOpenPort(argv, strconv.Itoa(s.info.SSHPort))
+	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)
+}
+
+func (s *vmSession) sandboxEnv() map[string]string {
+	if s == nil {
+		return nil
+	}
+	return s.env
+}
+
+// trackChild registers the sandboxed command, which keeps using the VM if
+// omac dies without cleaning up (SIGKILL, os.Exit): its marker keeps
+// `omac vm online` refused until that process is gone too. Use it as the
+// ready hook of sandbox.ExecWithReadyPID.
+func (s *vmSession) trackChild(pid int) {
+	if s == nil {
+		return
+	}
+	if err := s.markers.add(pid); err != nil {
+		fmt.Fprintln(s.stderr, "omac: --vm: cannot register the sandboxed command with the VM:", err)
+	}
+}
+
+// release removes every marker. Call it only once the sandboxed command
+// has exited; on an os.Exit path leave the markers to be reaped.
+func (s *vmSession) release() {
+	if s == nil {
+		return
+	}
+	s.markers.release()
+}
+
+// vmMarkers are the session markers of one attach, one per process.
+type vmMarkers struct {
+	layout   vm.Layout
+	mu       sync.Mutex
+	released bool
+	removes  []func()
+}
+
+// add registers pid. After release it does nothing, because the ready hook
+// can run after the child has already exited.
+func (m *vmMarkers) add(pid int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.released {
+		return nil
+	}
+	remove, err := vm.RegisterSession(m.layout, pid)
+	if err != nil {
+		return err
+	}
+	m.removes = append(m.removes, remove)
+	return nil
+}
+
+func (m *vmMarkers) release() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.released = true
+	for _, remove := range m.removes {
+		remove()
+	}
+	m.removes = nil
+}
 
 // prepareVMAttach registers this process as attached, then checks that the
 // omac VM can take a session. Registering first means `omac vm online`, which
 // re-checks the markers after marking itself online, either sees this session
-// or makes the check below fail. The returned func removes the registration;
-// it never stops the VM, which outlives every session. Tests replace it.
-var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func(), error) {
+// or makes the check below fail. Tests replace it.
+var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, *vmMarkers, error) {
 	m, err := newVMManager(env)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
@@ -25,16 +128,16 @@ var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, func()
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
-	release, err := vm.RegisterSession(vm.NewLayout(root), os.Getpid())
-	if err != nil {
+	markers := &vmMarkers{layout: vm.NewLayout(root)}
+	if err := markers.add(os.Getpid()); err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
 	info, err := m.PrepareAttach(ctx)
 	if err != nil {
-		release()
+		markers.release()
 		return vm.AttachInfo{}, nil, err
 	}
-	return info, release, nil
+	return info, markers, nil
 }
 
 // vmAttachExitCode maps an attach failure to an exit code. Every VM state
@@ -53,24 +156,18 @@ func vmAttachExitCode(err error) int {
 	}
 }
 
-// vmSandboxEnv prepares <scopeDir>/vm, a directory the sandbox may write,
-// and returns the variables that point the agent at the VM. The agent key is
-// copied there because the original lives in host-only VM state.
-func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error) {
-	dir := filepath.Join(scopeDir, "vm")
+// vmEnvNames are the variables vmSandboxEnv sets.
+var vmEnvNames = []string{"DOCKER_HOST", "DOCKER_CONFIG", "OMAC_VM_HOST", "OMAC_VM_SSH_PORT", "OMAC_VM_SSH_KEY", "OMAC_VM_USER"}
+
+// vmSandboxEnv creates <tmpDir>/vm with a copy of the agent key (the
+// original lives in host-only VM state) and an empty DOCKER_CONFIG, and
+// returns the variables that point the agent at the VM. Mkdir, not MkdirAll:
+// an existing directory, possibly a planted symlink, is refused.
+func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) {
+	dir := filepath.Join(tmpDir, "vm")
 	dockerDir := filepath.Join(dir, "docker")
 	for _, d := range []string{dir, dockerDir} {
-		// The sandbox can write scopeDir; refuse a planted symlink or file
-		// instead of following it with the key copy or chmod.
-		if fi, err := os.Lstat(d); err == nil && !fi.IsDir() {
-			return nil, fmt.Errorf("%s exists but is not a directory", d)
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		if err := os.Mkdir(d, 0o700); err != nil && !os.IsExist(err) {
-			return nil, err
-		}
-		if err := os.Chmod(d, 0o700); err != nil {
+		if err := os.Mkdir(d, 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -79,7 +176,7 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 		return nil, fmt.Errorf("agent key: %w", err)
 	}
 	keyPath := filepath.Join(dir, "agent_key")
-	if err := writeVMFileAtomic(keyPath, key, 0o600); err != nil {
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
 		return nil, fmt.Errorf("agent key copy: %w", err)
 	}
 	return map[string]string{
@@ -92,40 +189,21 @@ func vmSandboxEnv(info vm.AttachInfo, scopeDir string) (map[string]string, error
 	}, nil
 }
 
-// writeVMFileAtomic replaces path via rename, so a concurrent session sharing
-// the cache directory never reads a half-written key.
-func writeVMFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
-// vmProfileMisuse is the usage error for --vm on a launcher profile that
-// runs a sandbox other than omac's own: only that backend can open the
-// VM's ports. A custom policy file for omac's sandbox is fine.
+// vmProfileMisuse returns why plan cannot carry a --vm session, or "".
+// Only omac's own sandbox can open the VM's ports, and its
+// environment.deny_vars must not strip the VM variables: FilterEnv applies
+// deny_vars after every grant.
 func vmProfileMisuse(plan sandboxPlan) string {
-	return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
-}
-
-// injectVMGrants opens the VM's Docker and SSH ports for the sandbox and
-// lets DOCKER_HOST and DOCKER_CONFIG through its env filter. Callers refuse
-// --vm on non-native plans first (vmProfileMisuse).
-func injectVMGrants(argv []string, info vm.AttachInfo, plan sandboxPlan) []string {
-	argv = injectOpenPort(argv, strconv.Itoa(info.DockerPort))
-	argv = injectOpenPort(argv, strconv.Itoa(info.SSHPort))
-	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)
+	if !plan.Native {
+		return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
+	}
+	if plan.Policy == nil {
+		return ""
+	}
+	for _, name := range vmEnvNames {
+		if sandboxprofile.EnvDenied(name, plan.Policy.Environment.DenyVars) {
+			return fmt.Sprintf("--vm: sandbox profile %q denies %s in environment.deny_vars, so the agent would not see the VM; remove the matching entry", plan.PolicyRef, name)
+		}
+	}
+	return ""
 }

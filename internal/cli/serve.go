@@ -34,7 +34,6 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
-	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // serveParse is the parsed `omac serve` command line. Extracted so tests can
@@ -225,9 +224,11 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve:", planErr)
 		return ExitConfigInvalid
 	}
-	if parsed.vm && !plan.Native {
-		fmt.Fprintln(env.Stderr, "omac serve: "+vmProfileMisuse(plan))
-		return ExitMisuse
+	if parsed.vm {
+		if msg := vmProfileMisuse(plan); msg != "" {
+			fmt.Fprintln(env.Stderr, "omac serve: "+msg)
+			return ExitMisuse
+		}
 	}
 	profName := plan.Name
 	prof := plan.Launcher
@@ -365,29 +366,17 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// omac VM (--vm): attach only, as in `omac start`; the VM outlives serve.
-	var vmInfo vm.AttachInfo
-	var vmEnv map[string]string
-	releaseVM := func() {}
+	// omac VM (--vm): attach only, as in `omac start`.
+	var vmSess *vmSession
 	if parsed.vm {
-		info, release, aerr := prepareVMAttach(ctx, env)
-		if aerr != nil {
-			fmt.Fprintln(env.Stderr, "omac serve: --vm:", aerr)
-			return vmAttachExitCode(aerr)
-		}
-		releaseVM = release
-		defer releaseVM()
-		vmInfo = info
-		scopeDir := sandboxTmp
-		if cacheScope != nil {
-			scopeDir = cacheScope.Dir
-		}
-		if vmEnv, err = vmSandboxEnv(info, scopeDir); err != nil {
+		vmSess, err = attachVM(ctx, env, sandboxTmp)
+		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
-			return ExitIOError
+			return vmAttachExitCode(err)
 		}
+		defer vmSess.release()
 		if verbose {
-			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", info.Docker.Version, info.Docker.APIVersion, info.SSHPort)
+			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", vmSess.info.Docker.Version, vmSess.info.Docker.APIVersion, vmSess.info.SSHPort)
 		}
 	}
 
@@ -446,7 +435,7 @@ func runServe(args []string, env *Env) int {
 			"OMAC_CACHE_MODE": string(cacheScope.Mode),
 		}
 	}
-	srv.vmEnv = vmEnv
+	srv.vmEnv = vmSess.sandboxEnv()
 	// Trust-on-first-upgrade (see skill_approval.go): grandfather the skills
 	// KNOWN at cold start — the user-global registry plus the launch workdir —
 	// so a pre-existing setup keeps working, then close the window. Skills
@@ -665,9 +654,7 @@ func runServe(args []string, env *Env) int {
 			}
 		}
 		argv = injectUserOpenPorts(env, argv, openPorts, prof)
-		if parsed.vm {
-			argv = injectVMGrants(argv, vmInfo, plan)
-		}
+		argv = vmSess.grant(argv, plan)
 		// Pass the resolved audit path to `omac sandbox run` so its
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -732,17 +719,15 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// Run the inner command (opencode serve) in the sandbox, with the
-	// control plane already serving. ExecWithReady blocks until the child
+	// control plane already serving. ExecWithReadyPID blocks until the child
 	// exits; the deferred facade/supervisor/control teardown then runs
-	// (§5.3). The onReady hook is where any post-launch work would go; the
-	// control plane is already up, so it's a no-op marker here.
+	// (§5.3).
 	// Wire the strict-mode fatal handler now that sup/facade/control exist.
 	auditFatal = func(ferr error) {
 		fmt.Fprintln(env.Stderr, "omac serve: audit (strict) write failed, aborting:", ferr)
 		sup.ShutdownAll(5 * time.Second)
 		_ = f.Close()
 		httpSrv.Close()
-		releaseVM() // os.Exit skips the deferred release
 		os.Exit(ExitIOError)
 	}
 	sandboxed := !noSandbox && !noInner
@@ -753,7 +738,8 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	code, err := sandbox.ExecWithReady(argv, extra, func() {
+	code, err := sandbox.ExecWithReadyPID(argv, extra, func(pid int) {
+		vmSess.trackChild(pid)
 		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}
@@ -1173,7 +1159,7 @@ type serveServer struct {
 	verbose           bool
 	roots             []string // §5.4 Option B; empty = allow any directory
 	cacheEnv          map[string]string
-	vmEnv             map[string]string // --vm: DOCKER_HOST and the OMAC_VM_* vars
+	vmEnv             map[string]string // --vm: see vmSandboxEnv
 
 	mu      sync.RWMutex
 	dirs    map[string]*dirState   // abs dir -> state

@@ -28,7 +28,6 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
-	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // launchOpts carries everything runLaunch needs: the resolved harness, the
@@ -275,9 +274,11 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+":", planErr)
 		return ExitConfigInvalid
 	}
-	if opts.vm && !plan.Native {
-		fmt.Fprintln(env.Stderr, prefix+": "+vmProfileMisuse(plan))
-		return ExitMisuse
+	if opts.vm {
+		if msg := vmProfileMisuse(plan); msg != "" {
+			fmt.Fprintln(env.Stderr, prefix+": "+msg)
+			return ExitMisuse
+		}
 	}
 	profName := plan.Name
 	prof := plan.Launcher
@@ -784,31 +785,17 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintf(env.Stderr, "[verbose] control plane: %s\n", controlURL)
 	}
 
-	// 7b. omac VM (--vm): attach only. The VM must already run offline; it is
-	//     never booted or stopped here and outlives the session.
-	var vmInfo vm.AttachInfo
-	var vmEnv map[string]string
-	releaseVM := func() {}
+	// 7b. omac VM (--vm): attach only. The VM must already run offline.
+	var vmSess *vmSession
 	if opts.vm {
-		info, release, aerr := prepareVMAttach(ctx, env)
-		if aerr != nil {
-			fmt.Fprintln(env.Stderr, prefix+": --vm:", aerr)
-			return vmAttachExitCode(aerr)
-		}
-		releaseVM = release
-		defer releaseVM()
-		vmInfo = info
-		scopeDir := sandboxTmp
-		if cacheScope != nil {
-			scopeDir = cacheScope.Dir
-		}
-		vmEnv, err = vmSandboxEnv(info, scopeDir)
+		vmSess, err = attachVM(ctx, env, sandboxTmp)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": --vm:", err)
-			return ExitIOError
+			return vmAttachExitCode(err)
 		}
+		defer vmSess.release()
 		if verbose {
-			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", info.Docker.Version, info.Docker.APIVersion, info.SSHPort)
+			fmt.Fprintf(env.Stderr, "[verbose] omac vm: docker %s api %s, ssh 127.0.0.1:%d\n", vmSess.info.Docker.Version, vmSess.info.Docker.APIVersion, vmSess.info.SSHPort)
 		}
 	}
 
@@ -899,9 +886,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
-		if opts.vm {
-			argv = injectVMGrants(argv, vmInfo, plan)
-		}
+		argv = vmSess.grant(argv, plan)
 		// Pass the resolved audit path down to `omac sandbox run` so the
 		// network-filter subprocess appends net.decision events to the
 		// same persistent log. Inherit the parent's run_id + mode so the
@@ -959,7 +944,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// Config home carries the pinned port; state home keeps the sandboxed registration off the host's.
 		ocPin.apply(extra)
 	}
-	for k, v := range vmEnv {
+	for k, v := range vmSess.sandboxEnv() {
 		extra[k] = v
 	}
 	if !noSandbox {
@@ -1027,7 +1012,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		_ = f.Close()
 		closeControl()
-		releaseVM() // os.Exit skips the deferred release
 		os.Exit(ExitIOError)
 	}
 
@@ -1073,6 +1057,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
+	if vmSess != nil {
+		ready := onReady
+		onReady = func(pid int) {
+			vmSess.trackChild(pid)
+			if ready != nil {
+				ready(pid)
+			}
+		}
+	}
 	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	if ocPin != nil {
