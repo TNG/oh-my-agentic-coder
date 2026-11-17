@@ -260,6 +260,12 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	if o.Stdout == nil {
+		o.Stdout = io.Discard
+	}
+	if o.Stderr == nil {
+		o.Stderr = io.Discard
+	}
 	if !filepath.IsAbs(o.Workdir) || strings.ContainsAny(o.Workdir, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: workdir %q must be an absolute path without newlines", o.Workdir)
 	}
@@ -289,7 +295,10 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 			return 1, err
 		}
 	} else {
-		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and .env files\n", root)
+		if containsHome(root) {
+			return 1, fmt.Errorf("omac vm exec: %s is not a git work tree and contains your home directory, which holds credentials; run it from a project directory", root)
+		}
+		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and the files the sandbox protects, such as .env\n", root)
 	}
 	if strings.ContainsAny(root, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
@@ -336,6 +345,17 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, sshError("run command", err)
 	}
 	return 0, nil
+}
+
+// containsHome reports whether dir is the user's home directory or one of
+// its parents.
+func containsHome(dir string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(dir, filepath.Clean(home))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 const connectionHint = "connection lost or remote command killed (is the VM running? `omac vm status`)"

@@ -517,7 +517,35 @@ func TestExecFromSubdirOfRealRepo(t *testing.T) {
 	}
 }
 
-func TestExecWarnsOutsideRepoWithoutVerbose(t *testing.T) {
+func TestExecRefusesToCopyHomeOutsideRepo(t *testing.T) {
+	t.Setenv("HOME", "/w/home/alice")
+	for _, workdir := range []string{"/w/home/alice", "/w/home/alice/", "/w/home", "/"} {
+		f := &execFakes{notRepo: exitErr(t, 128)}
+		_, err := Exec(context.Background(), f.opts(workdir, io.Discard))
+		if err == nil || !strings.Contains(err.Error(), "home directory") {
+			t.Errorf("Exec from %s = %v, want a refusal naming the home directory", workdir, err)
+		}
+		if f.rsync != nil || len(f.remotes) != 0 {
+			t.Errorf("Exec from %s copied: rsync=%q ssh=%q", workdir, f.rsync, f.remotes)
+		}
+	}
+	// A repository at the home directory is copied as git sees it.
+	f := &execFakes{}
+	if _, err := Exec(context.Background(), f.opts("/w/home/alice", io.Discard)); err != nil {
+		t.Errorf("Exec from a repository at home = %v, want nil", err)
+	}
+}
+
+func TestExecAllowsNilWriters(t *testing.T) {
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	o := f.opts("/w/plain", nil)
+	o.Stderr = nil
+	if _, err := Exec(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecWarnsOutsideRepo(t *testing.T) {
 	f := &execFakes{notRepo: exitErr(t, 128)}
 	var stderr bytes.Buffer
 	o := f.opts("/w/plain", io.Discard)
