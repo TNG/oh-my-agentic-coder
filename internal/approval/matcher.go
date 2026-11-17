@@ -51,19 +51,35 @@ func Compile(entries []Entry) (*Set, error) {
 // method is the upper-case request method; segs comes from CleanPath. ok is
 // false when nothing is declared for the request: the caller treats it as
 // `approval: required`, so an unlisted route asks.
+//
+// Many sidecars route without regard to case (Express does by default), so
+// "/files/SECRET" may run the handler of "/files/secret". When the best match
+// says `none` but a `required` entry matches the path ignoring case, the
+// request asks.
 func (s *Set) Lookup(method string, segs []string) (Entry, bool) {
+	best := s.mostSpecific(method, segs, Pattern.matches)
+	if best == nil {
+		return Entry{}, false
+	}
+	if best.entry.Approval == None {
+		if strict := s.mostSpecific(method, segs, Pattern.matchesIgnoringCase); strict != nil && strict.entry.Approval == Required {
+			return strict.entry, true
+		}
+	}
+	return best.entry, true
+}
+
+// mostSpecific returns the most specific entry that match admits, or nil.
+func (s *Set) mostSpecific(method string, segs []string, match func(Pattern, string, []string) bool) *compiled {
 	var best *compiled
 	for i := range s.items {
 		c := &s.items[i]
-		if !c.pat.matches(method, segs) {
+		if !match(c.pat, method, segs) {
 			continue
 		}
 		if best == nil || c.pat.moreSpecific(best.pat) {
 			best = c
 		}
 	}
-	if best == nil {
-		return Entry{}, false
-	}
-	return best.entry, true
+	return best
 }

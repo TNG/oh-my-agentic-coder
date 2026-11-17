@@ -106,6 +106,16 @@ func (p Pattern) IsCatchAll() bool {
 // matches reports whether the pattern admits the request's method and
 // segments. segs is the output of CleanPath.
 func (p Pattern) matches(method string, segs []string) bool {
+	return p.match(method, segs, func(a, b string) bool { return a == b })
+}
+
+// matchesIgnoringCase is matches with literal segments compared regardless
+// of case.
+func (p Pattern) matchesIgnoringCase(method string, segs []string) bool {
+	return p.match(method, segs, strings.EqualFold)
+}
+
+func (p Pattern) match(method string, segs []string, sameLiteral func(a, b string) bool) bool {
 	if p.Method != MethodAny && p.Method != method {
 		return false
 	}
@@ -118,7 +128,7 @@ func (p Pattern) matches(method string, segs []string) bool {
 		}
 		switch ps.kind {
 		case segLiteral:
-			if segs[i] != ps.lit {
+			if !sameLiteral(segs[i], ps.lit) {
 				return false
 			}
 		case segParam:

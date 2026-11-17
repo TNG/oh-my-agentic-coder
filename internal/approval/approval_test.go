@@ -181,7 +181,6 @@ func TestCleanPathForwardMatchesMatched(t *testing.T) {
 		"/a/b/../c":     {[]string{"a", "c"}, "/a/c"},
 		"/a//b":         {[]string{"a", "b"}, "/a/b"},
 		"/caf%C3%A9/":   {[]string{"café", ""}, "/caf%C3%A9/"},
-		"/a;x=1/b":      {[]string{"a;x=1", "b"}, "/a;x=1/b"},
 	}
 	for raw, want := range cases {
 		segs, fwd, err := CleanPath(raw)
@@ -214,5 +213,43 @@ func TestStripOverrideHeaders(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(got, ","), "X-HTTP-Method-Override") {
 		t.Errorf("names = %v", got)
+	}
+}
+
+func TestCleanPathRejectsSemicolon(t *testing.T) {
+	for _, raw := range []string{"/files/secret;x", "/files/secret%3Bx", "/a/..;/b"} {
+		if _, _, err := CleanPath(raw); err == nil {
+			t.Errorf("CleanPath(%q) accepted", raw)
+		}
+	}
+}
+
+func TestCaseVariantOfRequiredLiteralAsks(t *testing.T) {
+	s := mustSet(t,
+		Entry{Match: "GET /files/{name}", Approval: None},
+		Entry{Match: "GET /files/secret", Approval: Required},
+	)
+	for raw, want := range map[string]Mode{
+		"/files/secret": Required,
+		"/files/SECRET": Required,
+		"/files/Secret": Required,
+		"/files/report": None,
+	} {
+		if e, ok := lookup(t, s, "GET", raw); !ok || e.Approval != want {
+			t.Errorf("%s: got %q (ok=%v), want %q", raw, e.Approval, ok, want)
+		}
+	}
+}
+
+func TestCaseVariantOfNoneLiteralStaysNone(t *testing.T) {
+	s := mustSet(t,
+		Entry{Match: "GET /a/{x}", Approval: Required},
+		Entry{Match: "GET /a/b", Approval: None},
+	)
+	if e, _ := lookup(t, s, "GET", "/a/b"); e.Approval != None {
+		t.Errorf("/a/b: got %q, want none", e.Approval)
+	}
+	if e, _ := lookup(t, s, "GET", "/a/B"); e.Approval != Required {
+		t.Errorf("/a/B: got %q, want required", e.Approval)
 	}
 }

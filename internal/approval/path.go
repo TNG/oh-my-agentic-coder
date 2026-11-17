@@ -19,8 +19,11 @@ import (
 // "." and ".." segments are resolved (never above the root) and empty middle
 // segments ("//") collapse. A path that cannot be normalized unambiguously
 // is an error and the caller rejects the request: an encoded slash (%2F), a
-// backslash (raw or %5C), a NUL or control character, or invalid
-// percent-encoding. A second layer of encoding (%252e) stays literal text.
+// backslash (raw or %5C), a semicolon (raw or %3B), a NUL or control
+// character, or invalid percent-encoding. A second layer of encoding (%252e)
+// stays literal text. Servers such as Tomcat and Spring drop a ";param" from
+// a segment, so "/files/secret;x" would reach the handler of "/files/secret"
+// while omac matched a different entry.
 func CleanPath(rawPath string) (segs []string, forward string, err error) {
 	if rawPath == "" {
 		rawPath = "/"
@@ -38,6 +41,9 @@ func CleanPath(rawPath string) (segs []string, forward string, err error) {
 		}
 		if strings.ContainsAny(dec, "/\\") {
 			return nil, "", fmt.Errorf("encoded slash or backslash in path")
+		}
+		if strings.Contains(dec, ";") {
+			return nil, "", fmt.Errorf("semicolon in path")
 		}
 		for _, r := range dec {
 			if r < 0x20 || r == 0x7f {
