@@ -239,7 +239,7 @@ The VM is either `offline` (the default) or `online`. Sessions attach only while
 
 `omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
-`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`.
+`omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) tells the agent in such a session how to use it and when to ask you for help.
 
 ```bash
 omac vm exec -- ./gradlew test --offline
@@ -267,9 +267,11 @@ The copy goes one way only:
 - Files you delete on the host are not removed from the copy in the VM. If a stale file gets in the way, run `omac vm exec -- rm -rf <path>` or `omac vm reset`.
 - Nothing is copied back from the VM. Build output stays there, so read it with another `omac vm exec`.
 
-`omac vm status` lists the worktrees copied so far. It runs only on your host, because the sandbox blocks the VM's state; inside a session, `omac vm exec -- true` checks that the VM is reachable. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) tells the agent in a `--vm` session how to use `omac vm exec` and when to ask you for help.
+`omac vm status` lists the worktrees copied so far. It runs only on your host, because the sandbox blocks the VM's state; inside a session, `omac vm exec -- true` checks that the VM is reachable.
 
 Since the VM is offline, a build that downloads dependencies has to fill its caches once while the VM is online. Run this from your host. omac accepts `--env` only there and only while the VM is online, which also means no session is attached. `--env` passes a token the build needs for its downloads.
+
+The priming build runs the VM's copy of your project online and with the token. That copy can hold files an agent wrote only in the VM, or deleted on your host after they were copied, so `git status` on your host does not show everything. Prime from a fresh clone of a commit you trust, in a folder no session has used: the VM keeps a separate copy for each folder. That commit must contain the build change that needs the new dependency, so review the change, commit it, for example on a branch, and clone that commit.
 
 ```bash
 omac vm online
@@ -279,7 +281,7 @@ omac vm offline
 
 After that, `./gradlew test --offline` finds its dependencies in the VM. If the build fails, still run `omac vm offline`: omac refuses `--vm` sessions while the VM is online. Prime with the task that runs all the checks you need, not only `test`: Gradle downloads the tools behind tasks such as Checkstyle or Spotless only when those tasks run.
 
-The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. The copy can also hold files an agent wrote only in the VM, or deleted on your host after they were copied, so `git status` on your host does not show everything. Prime from a fresh clone of a commit you trust, in a folder no session has used: the VM keeps a separate copy for each folder. Use a short-lived, read-only token, because anything a session left behind runs online with it. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. If a session you do not trust used the VM since your last `omac vm reset`, run `omac vm reset` before priming. Each time you use `--env`, `omac vm exec` reminds you of this and names the variables the build can read. When stdin and stderr are a terminal, it then waits before it copies anything: Enter on an empty line continues. Anything else, such as typing `n` before Enter, Ctrl-C or Ctrl-D on an empty line, stops it with exit code 130.
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. If you do not trust every earlier session, run `omac vm reset` first and import the images again. Use a short-lived, read-only token, because anything a session left behind runs online with it. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. If a session you do not trust used the VM since your last `omac vm reset`, run `omac vm reset` before priming. Each time you use `--env`, `omac vm exec` reminds you of this and names the variables the build can read. When stdin and stderr are a terminal, it then waits before it copies anything: Enter on an empty line continues. Anything else, such as typing `n` before Enter, Ctrl-C or Ctrl-D on an empty line, stops it with exit code 130.
 
 ### omac provenance
 

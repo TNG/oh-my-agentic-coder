@@ -62,11 +62,13 @@ You can prepare that list. Search the project for image names, for example
 `DockerImageName.parse(`, `new PostgreSQLContainer(`, `GenericContainer(`,
 `image:` lines in docker-compose files and image strings in test
 configuration. Then give the human one `omac vm image add <image>` line per
-image, with the full name and tag. Testcontainers also starts its own helper image
-`testcontainers/ryuk:<version>`; the version depends on the Testcontainers
-library, and a failed test names the exact tag. Images that need a registry
-login work if `docker login` was done on the host. The host pulls with that
-login, so the human should check each image name before importing it.
+image, with the full name and tag. Testcontainers also starts its own helper
+image `testcontainers/ryuk:<version>`; the version depends on the
+Testcontainers library, and a failed test names the exact tag. Images that
+need a registry login work if `docker login` was done on the host. The host
+pulls with that login, and once an image is in the VM the agent can read all
+of its files. So the human imports a private image only if the project's
+tests use it.
 
 ## 6. Prime the build caches
 
@@ -79,8 +81,14 @@ token. That copy can hold files an agent wrote only in the VM, or deleted on
 the host after they were copied, so `git status` on the host does not show
 everything. Prime from a fresh clone of a commit the human trusts, in a
 folder no session has used: the VM keeps a separate copy for each folder.
-Files a session left in the VM user's home, such as a Gradle init script, go
-away only with `omac vm reset`.
+That commit must contain the build change that needs the new dependency, so
+the human reviews the change, commits it, for example on a branch, and
+clones that commit.
+
+Files a session left in the VM user's home, such as a Gradle init script or
+a service that starts with the VM, also run while the VM is online, and go
+away only with `omac vm reset`. If the human does not trust every earlier
+session, they run `omac vm reset` first and import the images again.
 
 ```sh
 omac vm online
@@ -105,9 +113,9 @@ omac vm offline
 The session must be able to read `~/.gitconfig` and every file it includes
 (`[include]`, `[includeIf]`), otherwise `omac vm exec` fails at
 `git rev-parse` with an error that names the file. The default grants cover
-`~/.gitconfig` only. If it is a symlink or includes other files, the human
-adds the symlink target and every included file to `filesystem.read` in the
-sandbox grants file `~/.config/omac/sandbox-profiles/default.json`. The
+`~/.gitconfig` only. If it includes other files, the human adds them to
+`filesystem.read` in the sandbox grants file
+`~/.config/omac/sandbox-profiles/default.json`. The
 agent can read every granted file, so tokens must be moved out of them
 first, for example a token in a `url.<base>.insteadOf` URL, an
 `http.<url>.extraHeader` or an inline credential helper.
@@ -121,12 +129,13 @@ omac start --vm
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
 refuses `--vm` while the VM is online, with `--no-sandbox`, with
 `omac serve --no-inner`, and with launcher profiles that use a sandbox other
-than omac's own. Once the human has started
-the session, offer to check the connection with `omac vm exec -- true`.
+than omac's own. Once the human has started the session, offer to check the
+connection with `omac vm exec -- true`.
 
 ## 9. Day-to-day
 
-- New dependency in the build: end the session and prime again, see "Prime the build caches" above.
+- New dependency in the build: end the session and prime again, see
+  "Prime the build caches" above.
 - New image: `omac vm image add <image>`; this works while sessions run.
 - New JDK or package: add it to `vm.yaml`, end the session, run
   `omac vm up --reprovision`.
