@@ -230,6 +230,19 @@ func TestVMSandboxEnvRefusesExistingDir(t *testing.T) {
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
 		t.Errorf("symlink target was written: %v", entries)
 	}
+
+	// A real directory planted by another session must not be reused either:
+	// its docker/config.json would configure this session's docker.
+	planted := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(planted, "vm", "docker"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planted, "vm", "docker", "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, planted); err == nil {
+		t.Error("vmSandboxEnv reused a planted vm directory")
+	}
 }
 
 func TestVMProfileMisuse(t *testing.T) {
