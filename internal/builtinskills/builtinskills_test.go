@@ -5,9 +5,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestNamesIncludesBuiltins(t *testing.T) {
@@ -19,22 +20,32 @@ func TestNamesIncludesBuiltins(t *testing.T) {
 }
 
 // Harnesses match a skill by the frontmatter name, and `omac setup` refreshes
-// only directories that carry the marker.
+// only directories that carry the marker. A Windows checkout embeds CRLF.
 func TestBundlesNameMatchesDirAndCarryMarker(t *testing.T) {
 	for _, name := range Names() {
-		b, err := fs.ReadFile(assetsFS, assetsRoot+"/"+name+"/SKILL.md")
+		raw, err := fs.ReadFile(assetsFS, assetsRoot+"/"+name+"/SKILL.md")
 		if err != nil {
 			t.Fatal(err)
 		}
-		fm, ok := frontmatter(b)
-		if !ok {
-			t.Fatalf("%s: SKILL.md has no frontmatter", name)
-		}
-		if !regexp.MustCompile(`(?m)^name: ` + regexp.QuoteMeta(name) + `$`).Match(fm) {
-			t.Errorf("%s: frontmatter name does not match the directory", name)
-		}
-		if !markerRe.Match(fm) {
-			t.Errorf("%s: frontmatter lacks %s: \"true\"", name, MarkerKey)
+		lf := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+		variants := map[string][]byte{"LF": lf, "CRLF": bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))}
+		for eol, b := range variants {
+			fm, ok := frontmatter(b)
+			if !ok {
+				t.Fatalf("%s (%s): SKILL.md has no frontmatter", name, eol)
+			}
+			var meta struct {
+				Name string `yaml:"name"`
+			}
+			if err := yaml.Unmarshal(fm, &meta); err != nil {
+				t.Fatalf("%s (%s): frontmatter: %v", name, eol, err)
+			}
+			if meta.Name != name {
+				t.Errorf("%s (%s): frontmatter name = %q, want the directory name", name, eol, meta.Name)
+			}
+			if !markerRe.Match(fm) {
+				t.Errorf("%s (%s): frontmatter lacks %s: \"true\"", name, eol, MarkerKey)
+			}
 		}
 	}
 }
