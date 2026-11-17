@@ -25,8 +25,16 @@ type ImagePuller func(ctx context.Context, ref, tarPath string) error
 //
 // Multi-arch images resolve to linux/runtime.GOARCH because the Lima guest
 // runs with the host's architecture; crane would otherwise pick linux/amd64.
+//
+// ref must be the fully qualified tag that ValidateImageRef returns: crane
+// records it as the image name, and that is the name docker load applies
+// inside the guest.
 func CranePull(ctx context.Context, ref, tarPath string) error {
-	img, err := crane.Pull(ref,
+	qualified, err := ValidateImageRef(ref)
+	if err != nil {
+		return err
+	}
+	img, err := crane.Pull(qualified,
 		crane.WithContext(ctx),
 		crane.WithAuthFromKeychain(authn.DefaultKeychain),
 		crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}),
@@ -35,13 +43,13 @@ func CranePull(ctx context.Context, ref, tarPath string) error {
 		return fmt.Errorf("pull %s: %w", ref, err)
 	}
 	part := tarPath + ".part"
-	if err := crane.Save(img, ref, part); err != nil {
+	if err := crane.Save(img, qualified, part); err != nil {
 		_ = os.Remove(part)
 		return fmt.Errorf("save %s: %w", ref, err)
 	}
 	if err := os.Rename(part, tarPath); err != nil {
 		_ = os.Remove(part)
-		return fmt.Errorf("save %s: %w", ref, err)
+		return fmt.Errorf("rename %s to %s: %w", part, tarPath, err)
 	}
 	return nil
 }

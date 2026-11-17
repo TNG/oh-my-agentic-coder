@@ -52,6 +52,11 @@ func TestShellJoin(t *testing.T) {
 	if got, want := ShellJoin([]string{"a b", "c"}), `'a b' c`; got != want {
 		t.Errorf("ShellJoin = %s, want %s", got, want)
 	}
+	// A bare name=value in command position would be a variable assignment,
+	// not the command.
+	if got, want := ShellJoin([]string{"a=b", "c"}), `'a=b' c`; got != want {
+		t.Errorf("ShellJoin = %s, want %s", got, want)
+	}
 }
 
 func TestDefaultSSHBuildsCommand(t *testing.T) {

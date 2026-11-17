@@ -127,3 +127,15 @@ func TestWaitForDockerHonorsDeadline(t *testing.T) {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
 }
+
+// time.NewTicker panics on a non-positive interval; the seam must return an
+// error instead, because the interval comes from configuration later.
+func TestWaitForDockerRejectsNonPositiveInterval(t *testing.T) {
+	probe := func(context.Context, int) (DockerVersion, error) {
+		t.Error("probe called with a non-positive interval")
+		return DockerVersion{}, nil
+	}
+	if _, err := WaitForDocker(context.Background(), 1, 0, probe); err == nil {
+		t.Fatal("WaitForDocker with interval 0 returned nil")
+	}
+}

@@ -63,11 +63,12 @@ func ShellJoin(args []string) string {
 }
 
 // needsQuote reports runes outside the set a POSIX shell passes through
-// unchanged in a bare word.
+// unchanged in a bare word. '=' is quoted too: as the first word of a command
+// line, a bare name=value would be read as a variable assignment.
 func needsQuote(r rune) bool {
 	switch {
 	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		return false
 	}
-	return !strings.ContainsRune("-_./=:,+@%", r)
+	return !strings.ContainsRune("-_./:,+@%", r)
 }

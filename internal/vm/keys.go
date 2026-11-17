@@ -40,14 +40,45 @@ func EnsureKeys(ctx context.Context, l Layout, run CommandRunner) error {
 		{l.AgentKey, "omac-vm-agent"},
 	}
 	for _, k := range keys {
-		if _, err := os.Stat(k.path); err == nil {
+		complete, err := keyPairExists(k.path)
+		if err != nil {
+			return err
+		}
+		if complete {
 			continue
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("omac vm: stat %s: %w", k.path, err)
+		}
+		// ssh-keygen writes the private key first and the .pub second, so an
+		// interrupted run leaves half a pair. Remove it: ssh-keygen would
+		// otherwise ask whether to overwrite an existing private key.
+		if err := removeKeyPair(k.path); err != nil {
+			return err
 		}
 		args := []string{"-q", "-t", "ed25519", "-N", "", "-C", k.comment, "-f", k.path}
 		if err := run(ctx, "ssh-keygen", args, nil, nil, os.Stderr); err != nil {
+			_ = removeKeyPair(k.path)
 			return fmt.Errorf("omac vm: ssh-keygen %s: %w", k.path, err)
+		}
+	}
+	return nil
+}
+
+// keyPairExists reports whether both the private key and its .pub file exist.
+func keyPairExists(path string) (bool, error) {
+	for _, p := range []string{path, path + ".pub"} {
+		if _, err := os.Stat(p); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return false, nil
+			}
+			return false, fmt.Errorf("omac vm: stat %s: %w", p, err)
+		}
+	}
+	return true, nil
+}
+
+func removeKeyPair(path string) error {
+	for _, p := range []string{path, path + ".pub"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("omac vm: remove key file %s: %w", p, err)
 		}
 	}
 	return nil

@@ -55,6 +55,9 @@ func DefaultDockerProbe(ctx context.Context, port int) (DockerVersion, error) {
 // ErrNotDocker stops the wait at once: a wrong service is answering, and
 // waiting longer will not change that.
 func WaitForDocker(ctx context.Context, port int, interval time.Duration, probe DockerProbe) (DockerVersion, error) {
+	if interval <= 0 {
+		return DockerVersion{}, fmt.Errorf("omac vm: probe interval must be positive, got %v", interval)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -67,7 +70,7 @@ func WaitForDocker(ctx context.Context, port int, interval time.Duration, probe 
 		}
 		select {
 		case <-ctx.Done():
-			return DockerVersion{}, fmt.Errorf("omac vm: docker on port %d not ready (last error: %v): %w", port, err, ctx.Err())
+			return DockerVersion{}, fmt.Errorf("omac vm: docker on port %d not ready (last error: %w): %w", port, err, ctx.Err())
 		case <-ticker.C:
 		}
 	}

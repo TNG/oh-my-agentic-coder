@@ -2,7 +2,9 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -86,6 +88,56 @@ func TestEnsureKeysPropagatesRunnerError(t *testing.T) {
 	}
 	if err := EnsureKeys(context.Background(), l, failing); err == nil {
 		t.Fatal("EnsureKeys with failing runner returned nil")
+	}
+}
+
+// ssh-keygen writes the private key before the .pub file. A run that was
+// killed in between must not leave a pair that looks complete to a later run.
+func TestEnsureKeysRepairsPartialPair(t *testing.T) {
+	l := NewLayout(filepath.Join(t.TempDir(), "vm"))
+	fake := &fakeKeygen{}
+	if err := EnsureKeys(context.Background(), l, fake.run); err != nil {
+		t.Fatalf("EnsureKeys: %v", err)
+	}
+	if err := os.Remove(l.AdminKey + ".pub"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureKeys(context.Background(), l, fake.run); err != nil {
+		t.Fatalf("second EnsureKeys: %v", err)
+	}
+	if len(fake.calls) != 3 {
+		t.Fatalf("calls = %d, want 3 (one repair): %v", len(fake.calls), fake.calls)
+	}
+	if v, _ := argAfter(fake.calls[2][1:], "-f"); v != l.AdminKey {
+		t.Errorf("repaired %q, want %q", v, l.AdminKey)
+	}
+	for _, p := range []string{l.AdminKey, l.AdminKey + ".pub"} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s missing after repair: %v", p, err)
+		}
+	}
+}
+
+// A failed ssh-keygen must not leave a private key behind, or the next run
+// would skip generation and every SSH connection would fail.
+func TestEnsureKeysRemovesPartialPairOnFailure(t *testing.T) {
+	l := NewLayout(filepath.Join(t.TempDir(), "vm"))
+	half := func(_ context.Context, _ string, args []string, _ io.Reader, _, _ io.Writer) error {
+		if path, ok := argAfter(args, "-f"); ok {
+			if err := os.WriteFile(path, []byte("PRIVATE\n"), 0o600); err != nil {
+				return err
+			}
+		}
+		return errors.New("ssh-keygen was killed")
+	}
+	if err := EnsureKeys(context.Background(), l, half); err == nil {
+		t.Fatal("EnsureKeys with killed ssh-keygen returned nil")
+	}
+	for _, p := range []string{l.AdminKey, l.AdminKey + ".pub"} {
+		if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s exists after a failed run (stat err = %v)", p, err)
+		}
 	}
 }
 
