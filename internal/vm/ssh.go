@@ -44,11 +44,12 @@ func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stder
 }
 
 // SSHArgs are the ssh options shared by every connection: only the given
-// key, a dedicated known_hosts file, and no interactive prompts; plus -t
-// when t.TTY is set.
+// key, a dedicated known_hosts file, no interactive prompts, and no user or
+// system ssh config; plus -t when t.TTY is set. Host config such as
+// ProxyCommand must not redirect VM connections, and root-owned system
+// config fails ssh's ownership check in Linux user namespaces.
 func SSHArgs(t SSHTarget) []string {
 	args := []string{
-		// System config includes can fail ownership checks in Linux user namespaces.
 		"-F", "/dev/null",
 		"-i", t.KeyPath,
 		"-p", strconv.Itoa(t.Port),
