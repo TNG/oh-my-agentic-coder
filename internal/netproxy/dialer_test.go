@@ -488,11 +488,53 @@ func TestHostMatchesNoProxy(t *testing.T) {
 		{"a.b.example", []string{"*"}, true},
 		{"example.com", []string{"."}, false},
 		{"example.com", []string{"*."}, false},
+		{"10.1.2.3", []string{"10.1.2.3"}, true},
+		{"::1", []string{"::1"}, true},
 	}
 	for _, c := range cases {
 		got := hostMatchesNoProxy(c.host, c.entries)
 		if got != c.want {
 			t.Errorf("hostMatchesNoProxy(%q, %v) = %v, want %v", c.host, c.entries, got, c.want)
+		}
+	}
+}
+
+// TestNoProxyEntryIgnoreReason pins which entries are flagged as never
+// matching, and checks that flagged entries really match none of a set
+// of typical hosts, so a usable entry is never dropped by mistake.
+func TestNoProxyEntryIgnoreReason(t *testing.T) {
+	usable := []string{
+		"", "*", "example.com", ".example.com", "*.example.com", " EXAMPLE.com ",
+		"localhost", "my_host.corp", "10.1.2.3", "::1", "fe80::1", "bücher.de",
+	}
+	for _, e := range usable {
+		if r := NoProxyEntryIgnoreReason(e); r != "" {
+			t.Errorf("NoProxyEntryIgnoreReason(%q) = %q, want \"\" (entry can match)", e, r)
+		}
+	}
+
+	ignored := map[string]string{
+		"10.0.0.0/8":       "IP ranges",
+		"fd00::/8":         "IP ranges",
+		"example.com:8443": "port",
+		"10.1.2.3:80":      "port",
+		"[::1]:443":        "port",
+		".":                "no domain",
+		"*.":               "no domain",
+		"<local>":          "not a host name",
+		"[::1]":            "not a host name",
+		"*example.com":     "not a host name",
+	}
+	hosts := []string{"example.com", "sub.example.com", "localhost", "10.0.0.1", "10.1.2.3", "::1", "local"}
+	for e, want := range ignored {
+		r := NoProxyEntryIgnoreReason(e)
+		if !strings.Contains(r, want) {
+			t.Errorf("NoProxyEntryIgnoreReason(%q) = %q, want it to mention %q", e, r, want)
+		}
+		for _, h := range hosts {
+			if hostMatchesNoProxy(h, []string{e}) {
+				t.Errorf("entry %q is flagged as never matching but matches host %q", e, h)
+			}
 		}
 	}
 }

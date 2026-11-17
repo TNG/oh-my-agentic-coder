@@ -135,21 +135,21 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 // hostMatchesNoProxy reports whether host matches any entry in noProxy.
 // All domain forms are equivalent: "example.com", ".example.com", and
 // "*.example.com" each match the domain itself and any subdomain, and
-// "*" matches every host. CIDR ranges and "<local>" are not supported:
-// matching happens on the unresolved hostname, so an address-based
-// entry could not be evaluated here.
+// "*" matches every host. An IP address entry matches that literal host.
+// IP ranges, ports and "<local>" are not supported: matching happens on
+// the unresolved hostname, so an address-based entry could not be
+// evaluated here. NoProxyEntryIgnoreReason flags such entries.
 func hostMatchesNoProxy(host string, entries []string) bool {
 	h := NormalizeHost(host)
 	for _, e := range entries {
 		entry := strings.TrimSpace(e)
-		// Check "*" before NormalizeHost: it trims trailing dots, which
-		// would turn the malformed entry "*." into a match-all "*".
+		// Check "*" before normalizing: NormalizeHost trims trailing
+		// dots, which would turn the malformed entry "*." into a
+		// match-all "*".
 		if entry == "*" {
 			return true
 		}
-		entry = strings.TrimPrefix(entry, "*.")
-		entry = strings.TrimPrefix(entry, ".")
-		entry = NormalizeHost(entry)
+		entry = normalizeNoProxyEntry(entry)
 		if entry == "" {
 			continue
 		}
@@ -161,6 +161,52 @@ func hostMatchesNoProxy(host string, entries []string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeNoProxyEntry strips the ".domain" / "*.domain" prefix and
+// normalizes the rest like a host, so that all domain forms compare
+// equal. The input must already be trimmed and must not be "*".
+func normalizeNoProxyEntry(entry string) string {
+	entry = strings.TrimPrefix(entry, "*.")
+	entry = strings.TrimPrefix(entry, ".")
+	return NormalizeHost(entry)
+}
+
+// NoProxyEntryIgnoreReason reports why a NO_PROXY entry can never match
+// any host in hostMatchesNoProxy, or "" if the entry is usable (or
+// empty: empty entries are skipped and handled by the callers).
+// Hosts reach the matcher as a bare hostname or IP address, never with
+// a port or brackets. Examples:
+//
+//	"10.0.0.0/8"       -> IP ranges are not supported
+//	"example.com:8443" -> ports are not supported
+//	".", "*."          -> no domain left after the prefix
+//	"<local>", "[::1]" -> not a host name or IP address
+//	"::1", "10.1.2.3"  -> "" (matches that literal address)
+func NoProxyEntryIgnoreReason(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" || entry == "*" {
+		return ""
+	}
+	if strings.Contains(entry, "/") {
+		return "IP ranges are not supported, omac matches on the host name before resolving it"
+	}
+	if _, port, err := net.SplitHostPort(entry); err == nil && port != "" {
+		return "entries with a port are not supported"
+	}
+	d := normalizeNoProxyEntry(entry)
+	if d == "" {
+		return "it names no domain"
+	}
+	if _, err := netip.ParseAddr(d); err == nil {
+		return ""
+	}
+	for _, c := range d {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c >= 0x80) {
+			return "it is not a host name or IP address"
+		}
+	}
+	return ""
 }
 
 // ProxyAuthHeader returns the upstream proxy's Proxy-Authorization
