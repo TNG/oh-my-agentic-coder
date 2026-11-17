@@ -48,6 +48,7 @@ func TestDockerVersionFailures(t *testing.T) {
 		"ssh fails":    {err: errors.New("exit status 1: Cannot connect to the Docker daemon")},
 		"empty output": {out: "\n"},
 		"extra lines":  {out: "1.47 27.3.1\nomac vm: injected\n"},
+		"escape codes": {out: "1.47 27.3.1\x1b[1A\x1b[2K\n"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

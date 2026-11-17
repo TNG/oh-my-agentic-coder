@@ -39,7 +39,7 @@ func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, 
 		return DockerVersion{}, err
 	}
 	fields := strings.Fields(out.String())
-	if len(fields) != 2 {
+	if len(fields) != 2 || printable(fields[0]+fields[1]) != fields[0]+fields[1] {
 		return DockerVersion{}, fmt.Errorf("docker version printed %q, want \"<api version> <version>\"", out.String())
 	}
 	return DockerVersion{APIVersion: fields[0], Version: fields[1]}, nil
