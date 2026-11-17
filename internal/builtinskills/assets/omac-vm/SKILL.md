@@ -81,7 +81,8 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
   `docker build` refer to the VM, so use paths inside the worktree copy:
   `omac vm exec -- docker build -t app .`, or
   `omac vm exec -- sh -c 'docker run --rm -v "$PWD":/src -w /src <image> ls'`,
-  where `$PWD` is the worktree copy.
+  where `$PWD` is the directory the command runs in: the place in the copy
+  that matches your current directory or `--cwd`.
 - Keep runs short: run focused tests (`--tests 'com.example.FooTest'`), do not
   run `clean`, and let the Gradle daemon keep running between runs.
 

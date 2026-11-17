@@ -124,11 +124,12 @@ omac vm offline
   property names (without values) and picks the token:
 
   ```sh
-  cut -d= -f1 ~/.gradle/gradle.properties | grep -iE 'token|password|secret|key'
+  grep -oE '^[[:space:]]*[^#![:space:]=:]+' ~/.gradle/gradle.properties | grep -iE 'token|password|secret|key'
   ```
 
   Gradle reads a property `foo` also from `ORG_GRADLE_PROJECT_foo`, so for
-  `foo` they run:
+  `foo` they run the commands below. This does not work for names with a
+  dot, such as `gpr.key`, because a shell variable name cannot contain one.
 
   ```sh
   export ORG_GRADLE_PROJECT_foo="$(sed -n 's/^foo[[:space:]]*[=:][[:space:]]*//p' ~/.gradle/gradle.properties)"
