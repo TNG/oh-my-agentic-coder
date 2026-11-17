@@ -97,9 +97,11 @@ func TestRepoRoot(t *testing.T) {
 
 func TestGitRunsWithCLocale(t *testing.T) {
 	var envs [][]string
-	run := func(ctx context.Context, _ string, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+	run := func(ctx context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
 		envs = append(envs, commandEnv(ctx))
-		_, _ = io.WriteString(stdout, "/w/repo\n\n")
+		if slices.Contains(args, "rev-parse") {
+			_, _ = io.WriteString(stdout, "/w/repo\n\n")
+		}
 		return nil
 	}
 	if _, _, _, err := RepoRoot(context.Background(), run, "/w/repo"); err != nil {
@@ -163,27 +165,43 @@ func TestIgnoredPathsUsesGit(t *testing.T) {
 	}
 }
 
-func TestIgnoredPathsIncludesSubmodules(t *testing.T) {
+func TestIgnoredPathsIncludesNestedRepositories(t *testing.T) {
+	nested := newRepo(t, map[string]string{".gitignore": "gen/\n", "n.go": "package n"})
+	git(t, nested, "add", ".")
+	git(t, nested, "commit", "-qm", "init")
 	lib := newRepo(t, map[string]string{".gitignore": "out/\n", "lib.go": "package lib"})
+	git(t, lib, "submodule", "add", "-q", nested, "deps/nested")
 	git(t, lib, "add", ".")
 	git(t, lib, "commit", "-qm", "init")
-	top := newRepo(t, map[string]string{".gitignore": "build/\n", "build/x": "x"})
+	top := newRepo(t, map[string]string{
+		".gitignore":   "build/\n",
+		"build/x":      "x",
+		"src/a.go":     "package a",
+		"vendor/x/v.c": "x", // a cloned repository that is not a submodule
+	})
 	git(t, top, "submodule", "add", "-q", lib, "libs/lib")
-	writeFiles(t, top, map[string]string{"libs/lib/out/o.class": "x"})
+	git(t, top, "submodule", "update", "-q", "--init", "--recursive")
+	git(t, filepath.Join(top, "vendor/x"), "init", "-q")
+	writeFiles(t, top, map[string]string{
+		"libs/lib/out/o.class":          "x",
+		"libs/lib/deps/nested/gen/g.go": "x",
+		"vendor/x/.gitignore":           "obj/\n",
+		"vendor/x/obj/v.o":              "x",
+	})
 
 	got, err := IgnoredPaths(context.Background(), ExecRunner, top)
 	if err != nil {
 		t.Fatal(err)
 	}
 	slices.Sort(got)
-	if want := []string{"build/", "libs/lib/out/"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"build/", "libs/lib/deps/nested/gen/", "libs/lib/out/", "vendor/x/obj/"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ignored = %q, want %q", got, want)
 	}
 }
 
 func TestIgnoredPathsDropsBareDot(t *testing.T) {
 	run := func(_ context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
-		if slices.Contains(args, "ls-files") {
+		if slices.Contains(args, "--ignored") {
 			_, _ = io.WriteString(stdout, "./\x00build/\x00")
 		}
 		return nil
@@ -374,7 +392,7 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 				top = args[1] // git -C <dir>
 			}
 			_, _ = io.WriteString(stdout, top+"\n"+f.prefix+"\n")
-		case slices.Contains(args, "ls-files"):
+		case slices.Contains(args, "--ignored"):
 			// One ignored directory, in the top level only.
 			if args[1] == f.top || f.top == "" {
 				_, _ = io.WriteString(stdout, "build/\x00")
