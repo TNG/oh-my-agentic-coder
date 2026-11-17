@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode"
@@ -712,8 +713,71 @@ func TestEleventhInstanceIsRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "10") {
 		t.Fatalf("Up = %v, want an error naming the limit of 10 VMs", err)
 	}
+	base, _ := stateBase()
+	if want := filepath.Join(base, "vms", "<name>", "lima"); !strings.Contains(err.Error(), want) {
+		t.Errorf("Up = %v, want the delete hint to name %s", err, want)
+	}
 	if slices.Contains(lima.verbs(), "create") {
 		t.Error("limactl create ran despite the refusal")
+	}
+}
+
+// A leftover state.json whose SSH port is taken is the VM's own record, not
+// a peer's, so its block stays free for it.
+func TestUpLeftoverStateDoesNotBlockItsOwnPorts(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	if err := SaveState(m.Layout.StatePath, &State{Version: StateVersion, SSHPort: 42022, Mode: ModeOffline}); err != nil {
+		t.Fatal(err)
+	}
+	m.Deps.PortFree = func(p int) bool { return p != 42022 }
+	mustUp(t, m)
+	if st := mustState(t, m); st.PortBlock != 0 || st.SSHPort != 42023 {
+		t.Errorf("state = %+v, want block 0 and ssh port 42023", st)
+	}
+}
+
+// A host process listening inside a block makes the block unusable: Lima
+// could not forward that port.
+func TestNewInstanceSkipsOccupiedBlock(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	first, last := PortBlockRange(0)
+	m.Deps.PortFree = func(p int) bool { return p != (first+last)/2 }
+	mustUp(t, m)
+	if st := mustState(t, m); st.PortBlock != 1 {
+		t.Errorf("port block = %d, want 1 (block 0 has a busy port)", st.PortBlock)
+	}
+}
+
+// Two `omac vm up` for different new VMs must not both take the lowest free
+// block before either has saved its state.
+func TestConcurrentNewInstancesGetDistinctPorts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	const n = 6
+	var wg sync.WaitGroup
+	states := make([]*State, n)
+	errs := make([]error, n)
+	for i := range n {
+		root, err := InstanceRoot(fmt.Sprintf("vm%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := NewManager(NewLayout(root), "", Deps{PortFree: func(int) bool { return true }}, io.Discard)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			states[i], errs[i] = m.loadOrInitState(UserConfig{}, false)
+		}()
+	}
+	wg.Wait()
+	blocks, ports := map[int]bool{}, map[int]bool{}
+	for i, st := range states {
+		if errs[i] != nil {
+			t.Fatalf("vm%d: %v", i, errs[i])
+		}
+		if blocks[st.PortBlock] || ports[st.SSHPort] {
+			t.Errorf("vm%d got block %d / ssh port %d already taken", i, st.PortBlock, st.SSHPort)
+		}
+		blocks[st.PortBlock], ports[st.SSHPort] = true, true
 	}
 }
 

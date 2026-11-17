@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 )
@@ -92,6 +93,42 @@ func InstanceRoot(name string) (string, error) {
 		return filepath.Join(base, "vm"), nil
 	}
 	return filepath.Join(base, "vms", name), nil
+}
+
+// deleteVMHint tells how to delete a VM by hand, with the real state paths.
+func deleteVMHint() string {
+	base, err := stateBase()
+	if err != nil {
+		return "delete a VM you no longer need"
+	}
+	dir := filepath.Join(base, "vms", "<name>")
+	return fmt.Sprintf("to delete a VM you no longer need (see `omac vm list`), run `LIMA_HOME=%s limactl delete -f %s`, then remove %s (for the VM omac: %s)",
+		filepath.Join(dir, "lima"), InstanceName, dir, filepath.Join(base, "vm"))
+}
+
+// lockPortPick holds an exclusive lock, shared by every omac process, until
+// unlock is called, so two new VMs never pick the same ports.
+func lockPortPick() (unlock func(), err error) {
+	base, err := stateBase()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(base, "vms")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("omac vm: lock port pick: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, ".ports.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("omac vm: lock port pick: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("omac vm: lock port pick: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
 
 // NewLayout derives all paths from root.

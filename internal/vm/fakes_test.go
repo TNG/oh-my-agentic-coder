@@ -319,8 +319,13 @@ func dockerDown(remote string) error {
 
 func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH) {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "vm")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// The VM under test lives where ListInstances finds it, so port picking
+	// sees it among its peers as in production.
+	root, err := InstanceRoot("under-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	lima := &fakeLimaCtl{failOn: map[string]error{}}
 	ssh := &fakeSSH{lima: lima}
 	lima.onStart = ssh.boot

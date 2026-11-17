@@ -30,14 +30,25 @@ func PortBlockRange(block int) (first, last int) {
 	return first, first + PortBlockSize - 1
 }
 
-// PickPortBlock returns the lowest block not in used.
-func PickPortBlock(used []int) (int, error) {
+// PickPortBlock returns the lowest block not in used whose ports are all
+// free on the host.
+func PickPortBlock(used []int, free func(int) bool) (int, error) {
 	for b := 0; b < MaxVMs; b++ {
-		if !slices.Contains(used, b) {
+		if !slices.Contains(used, b) && blockFree(b, free) {
 			return b, nil
 		}
 	}
-	return 0, fmt.Errorf("omac vm: all %d port blocks are taken; at most %d VMs can exist, to free one, delete a VM you no longer need: run LIMA_HOME=~/.local/state/omac/vms/<name>/lima limactl delete -f omac, then remove the directory ~/.local/state/omac/vms/<name>", MaxVMs, MaxVMs)
+	return 0, fmt.Errorf("omac vm: no free port block; at most %d VMs can exist, and host processes may occupy a block", MaxVMs)
+}
+
+func blockFree(block int, free func(int) bool) bool {
+	first, last := PortBlockRange(block)
+	for p := first; p <= last; p++ {
+		if !free(p) {
+			return false
+		}
+	}
+	return true
 }
 
 // PortFree reports whether 127.0.0.1:port can be bound right now.

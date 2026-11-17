@@ -202,6 +202,11 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if err == nil && st != nil && m.Deps.PortFree(st.SSHPort) {
 		return st, nil
 	}
+	unlock, err := lockPortPick()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	// A stopped VM keeps its ports, so peers count by what they stored, not
 	// by whether the port is bindable now.
 	peers, err := ListInstances()
@@ -210,6 +215,9 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	}
 	var usedBlocks, usedSSH []int
 	for _, p := range peers {
+		if root, _ := InstanceRoot(p.Name); root == m.Layout.Root {
+			continue
+		}
 		if p.Err != nil {
 			return nil, fmt.Errorf("omac vm: cannot pick ports while the state of VM %q is unreadable: %w", p.Name, p.Err)
 		}
@@ -218,9 +226,9 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 			usedSSH = append(usedSSH, p.SSHPort)
 		}
 	}
-	block, err := PickPortBlock(usedBlocks)
+	block, err := PickPortBlock(usedBlocks, m.Deps.PortFree)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s", err, deleteVMHint())
 	}
 	sshPort, err := PickSSHPort(func(p int) bool {
 		return !slices.Contains(usedSSH, p) && m.Deps.PortFree(p)
