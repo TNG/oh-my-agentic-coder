@@ -66,8 +66,6 @@ func TestShellJoin(t *testing.T) {
 	}
 }
 
-// A killed ssh -t leaves the local terminal in raw mode; on SIGTERM it
-// restores it first.
 func TestDefaultSSHTerminatesOnCancel(t *testing.T) {
 	dir := t.TempDir()
 	script := "#!/bin/sh\ntrap 'echo term > \"$OMAC_TEST_MARK\"; exit 143' TERM\n" +

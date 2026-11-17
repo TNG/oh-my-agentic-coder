@@ -256,7 +256,6 @@ func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 	}
 }
 
-// A failed git call must fail the copy: skipping it would copy ignored files.
 func TestIgnoredPathsFailsOnGitError(t *testing.T) {
 	for _, failing := range []string{"ls-files", "submodule"} {
 		run := func(_ context.Context, _ string, args []string, _ io.Reader, _, _ io.Writer) error {
@@ -628,7 +627,7 @@ func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := filepath.Join(base, "home")
-	writeFiles(t, home, map[string]string{".ssh/id_ed25519": "x", "proj/a.go": "package a"})
+	writeFiles(t, home, map[string]string{".ssh/id_ed25519": "x", ".ssh/keys/k": "x", "proj/a.go": "package a"})
 	t.Setenv("HOME", home)
 	link := filepath.Join(base, "link")
 	if err := os.Symlink(home, link); err != nil {
@@ -643,6 +642,7 @@ func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
 		"home as a repository": {home, true},
 		"parent of home":       {base, false},
 		"protected directory":  {filepath.Join(home, ".ssh"), false},
+		"inside protected":     {filepath.Join(home, ".ssh", "keys"), false},
 		"symlink to home":      {link, false},
 	}
 	if upper := strings.ToUpper(home); upper != home {
@@ -673,11 +673,54 @@ func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
 	}
 }
 
+func TestExecRefusesProtectedPathLinkedIntoRoot(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, dotfiles := filepath.Join(base, "home"), filepath.Join(base, "dotfiles")
+	writeFiles(t, dotfiles, map[string]string{"ssh/id_ed25519": "x"})
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "ssh"), filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	if _, err := Exec(context.Background(), f.opts(dotfiles, io.Discard)); err == nil || f.rsync != nil {
+		t.Fatalf("Exec from the target of ~/.ssh = %v, rsync %q; want a refusal", err, f.rsync)
+	}
+}
+
+// Inside the sandbox, stat on a protected path fails; the check must still
+// see that the copy root contains it.
+func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permissions")
+	}
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "home")
+	writeFiles(t, home, map[string]string{".ssh/id_ed25519": "x"})
+	if err := os.Chmod(home, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
+	t.Setenv("HOME", home)
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	if _, err := Exec(context.Background(), f.opts(home, io.Discard)); err == nil || f.rsync != nil {
+		t.Fatalf("Exec from a home whose ~/.ssh cannot be read = %v, rsync %q; want a refusal", err, f.rsync)
+	}
+}
+
 func TestExecRefusesWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	f := &execFakes{notRepo: exitErr(t, 128)}
-	if _, err := Exec(context.Background(), f.opts("/w/plain", io.Discard)); err == nil {
-		t.Fatal("Exec without a home directory = nil, want an error")
+	if _, err := Exec(context.Background(), f.opts("/w/plain", io.Discard)); err == nil || !strings.Contains(err.Error(), "protects") {
+		t.Fatalf("Exec without a home directory = %v, want a refusal about protected paths", err)
 	}
 	if f.rsync != nil {
 		t.Fatalf("copied without knowing the protected paths: %q", f.rsync)
@@ -760,7 +803,7 @@ func TestExecRsyncConnectionFailure(t *testing.T) {
 func TestExecInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Ctrl-C cancels the context; the killed ssh then reports exit -1.
+	// Ctrl-C cancels the context; the stopped ssh then has no exit code.
 	f := &execFakes{onCmd: cancel, cmdErr: errors.New("signal: killed")}
 	code, err := Exec(ctx, f.opts("/w/repo", io.Discard))
 	if code != 130 || !errors.Is(err, ErrInterrupted) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -341,14 +342,15 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
 			return 1, err
 		}
-	} else {
-		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and the files the sandbox protects, such as .env\n", root)
 	}
 	if strings.ContainsAny(root, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
 	}
 	if err := refuseProtectedOverlap(root); err != nil {
 		return 1, err
+	}
+	if !isRepo {
+		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git, .envrc and the .env files\n", root)
 	}
 	slug := WorktreeSlug(root)
 	remoteDir := RemoteDir(slug)
@@ -397,21 +399,40 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 // refuseProtectedOverlap fails when root contains or lies in a path the
 // sandbox protects, such as ~/.ssh or the VM's admin key: every --vm
 // session can read the copy. Paths are compared by file identity, so a
-// symlink or another spelling of the same directory counts too.
+// symlink or another spelling of the same directory counts too. A protected
+// path that cannot be stat'ed, as inside the sandbox, is still found
+// through its parents.
 func refuseProtectedOverlap(root string) error {
-	if _, err := os.UserHomeDir(); err != nil {
-		return fmt.Errorf("omac vm exec: cannot tell which paths the sandbox protects: %w", err)
+	protected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
+	for _, p := range protected {
+		if !filepath.IsAbs(p) { // "~/.ssh" left unexpanded: no home directory
+			return fmt.Errorf("omac vm exec: cannot tell which paths the sandbox protects: %q does not expand", p)
+		}
 	}
 	rootInfo, err := os.Stat(root)
-	if err != nil {
-		return nil // nothing there to copy; rsync reports it
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // nothing to copy; rsync reports the missing directory
 	}
-	for _, p := range sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil) {
-		pInfo, err := os.Stat(p)
-		if err != nil {
-			continue
+	if err != nil {
+		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	for _, p := range protected {
+		forms := []string{p}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			forms = append(forms, real)
 		}
-		if hasAncestor(p, rootInfo) || hasAncestor(root, pInfo) {
+		overlaps := false
+		for _, f := range forms {
+			overlaps = overlaps || hasAncestor(f, rootInfo)
+		}
+		if pInfo, err := os.Stat(p); err == nil {
+			overlaps = overlaps || hasAncestor(root, pInfo) || hasAncestor(realRoot, pInfo)
+		}
+		if overlaps {
 			return fmt.Errorf("omac vm exec: %s overlaps %s, which the sandbox protects; run it from a project directory", root, p)
 		}
 	}
