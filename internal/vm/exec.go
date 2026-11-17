@@ -232,9 +232,10 @@ func RemoteCommand(remoteDir, cwd string, envs []string, cmd []string) (string, 
 	return b.String(), nil
 }
 
-// ResolveEnv expands each spec: "NAME" takes the value from getenv and
-// must be set; "NAME=VALUE" is passed through.
-func ResolveEnv(specs []string, getenv func(string) string) ([]string, error) {
+// ResolveEnv expands each spec: "NAME" takes the value from lookupEnv, such
+// as os.LookupEnv, and must be set, possibly to ""; "NAME=VALUE" is passed
+// through.
+func ResolveEnv(specs []string, lookupEnv func(string) (string, bool)) ([]string, error) {
 	out := make([]string, 0, len(specs))
 	for _, s := range specs {
 		name, _, hasValue := strings.Cut(s, "=")
@@ -245,8 +246,8 @@ func ResolveEnv(specs []string, getenv func(string) string) ([]string, error) {
 			out = append(out, s)
 			continue
 		}
-		v := getenv(name)
-		if v == "" {
+		v, ok := lookupEnv(name)
+		if !ok {
 			return nil, fmt.Errorf("omac vm exec: environment variable %s is not set", name)
 		}
 		out = append(out, name+"="+v)

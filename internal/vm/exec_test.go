@@ -334,12 +334,13 @@ func TestRemoteCommand(t *testing.T) {
 }
 
 func TestResolveEnv(t *testing.T) {
-	getenv := envMap(map[string]string{"A": "1"})
-	got, err := ResolveEnv([]string{"A", "B=2"}, getenv)
+	env := map[string]string{"A": "1", "EMPTY": ""}
+	getenv := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+	got, err := ResolveEnv([]string{"A", "B=2", "EMPTY"}, getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"A=1", "B=2"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"A=1", "B=2", "EMPTY="}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	if _, err := ResolveEnv([]string{"C"}, getenv); err == nil || !strings.Contains(err.Error(), "not set") {
