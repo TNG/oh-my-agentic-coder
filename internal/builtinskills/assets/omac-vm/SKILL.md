@@ -33,9 +33,9 @@ cannot do either.
 
 The human may run several VMs. Your session is attached to one, named in
 `OMAC_VM_NAME`; `omac vm exec` uses it without `--name`. In the `omac vm`
-commands you hand to the human for the host (`image add`, `online`, `offline`,
-`exec`, `up --reprovision`), add `--name <the value of OMAC_VM_NAME>` unless
-it is `omac`. On the host, `omac vm exec` without `--name` may pick another
+commands you hand to the human for the host, such as `up`, `image add`,
+`online`, `offline` and `exec`, add `--name <the value of OMAC_VM_NAME>`
+unless it is `omac`. On the host, `omac vm exec` without `--name` may pick another
 VM.
 
 Containers in the VM are reachable from the host only on published ports in
@@ -64,7 +64,8 @@ The first run copies the whole worktree and can take a while. Do not use
 `omac vm status`: it needs files the sandbox blocks, so it always fails
 inside a session. If `omac vm exec` says to start the session with `--vm`,
 that the VM is not created, or that the connection failed, stop and ask the
-human to start the session with `--vm` or the VM with `omac vm up`. Never
+human to start the session with `--vm` or the VM with `omac vm up` (with
+`--name`, see above). Never
 run `omac vm up` yourself.
 
 ## Run a build

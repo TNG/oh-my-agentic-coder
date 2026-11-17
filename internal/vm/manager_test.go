@@ -714,8 +714,10 @@ func TestEleventhInstanceIsRefused(t *testing.T) {
 		t.Fatalf("Up = %v, want an error naming the limit of 10 VMs", err)
 	}
 	base, _ := stateBase()
-	if want := filepath.Join(base, "vms", "<name>", "lima"); !strings.Contains(err.Error(), want) {
-		t.Errorf("Up = %v, want the delete hint to name %s", err, want)
+	for _, want := range []string{filepath.Join(base, "vms", "<name>"), filepath.Join(base, "vm") + " for the VM omac"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Up = %v, want the delete hint to name %s", err, want)
+		}
 	}
 	if slices.Contains(lima.verbs(), "create") {
 		t.Error("limactl create ran despite the refusal")

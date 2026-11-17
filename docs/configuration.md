@@ -205,7 +205,7 @@ The 12GiB cap for the default memory comes from testing with a large Java projec
 
 When omac creates the VM or reprovisions it, each `jdks` entry installs the matching Adoptium package: `temurin-25` installs `temurin-25-jdk`. An entry is either `temurin-<version>`, where the version has no leading zero, or the package name itself, such as `temurin-25-jdk`. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
-omac applies this file only when it creates the VM or reprovisions it. After changing `packages`, `jdks` or `setup`, run `omac vm up --reprovision` (add `--name <name>` for a VM configured in `vms/<name>.yaml`). After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
+omac applies this file only when it creates the VM or reprovisions it. After changing `packages`, `jdks` or `setup`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`; add `--name <name>` to either for a VM configured in `vms/<name>.yaml`. `omac vm reset` deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
 
 ### Setup script
 

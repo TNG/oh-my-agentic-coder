@@ -295,7 +295,7 @@ LIMA_HOME=~/.local/state/omac/vms/acme/lima limactl delete -f omac
 rm -rf ~/.local/state/omac/vms/acme ~/.config/omac/vms/acme.yaml
 ```
 
-If `XDG_STATE_HOME` is set, the state directory is `$XDG_STATE_HOME/omac/vms/acme` instead. The default VM `omac` keeps its state in `~/.local/state/omac/vm`. Remove the VM's entries from `vm-projects.yaml` too.
+If `XDG_STATE_HOME` is set, the state directory is `$XDG_STATE_HOME/omac/vms/acme` instead. The default VM `omac` keeps its state in `~/.local/state/omac/vm`, so its Lima home is `~/.local/state/omac/vm/lima`. Remove the VM's entries from `vm-projects.yaml` too.
 
 `omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) tells the agent in such a session how to use it and when to ask you for help.
 

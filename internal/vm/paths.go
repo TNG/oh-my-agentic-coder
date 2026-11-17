@@ -102,9 +102,8 @@ func deleteVMHint() string {
 	if err != nil {
 		return "delete a VM you no longer need"
 	}
-	dir := filepath.Join(base, "vms", "<name>")
-	return fmt.Sprintf("to delete a VM you no longer need (see `omac vm list`), run `LIMA_HOME=%s limactl delete -f %s`, then remove %s (for the VM omac: %s)",
-		filepath.Join(dir, "lima"), InstanceName, dir, filepath.Join(base, "vm"))
+	return fmt.Sprintf("to delete a VM you no longer need (see `omac vm list`), run `LIMA_HOME=<dir>/lima limactl delete -f %s`, then remove <dir>, where <dir> is %s, or %s for the VM omac",
+		InstanceName, filepath.Join(base, "vms", "<name>"), filepath.Join(base, "vm"))
 }
 
 // lockPortPick holds an exclusive lock, shared by every omac process, until
