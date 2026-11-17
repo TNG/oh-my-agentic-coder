@@ -13,13 +13,12 @@ import (
 )
 
 // fakeVMManager records every call; err (if set) is returned by all methods.
-// built counts how often useFakeVM's factory handed it out.
 type fakeVMManager struct {
-	built  int
-	calls  []string
-	err    error
-	report vm.StatusReport
-	images []string
+	factoryCalls int
+	calls        []string
+	err          error
+	report       vm.StatusReport
+	images       []string
 }
 
 func (f *fakeVMManager) record(s string) error { f.calls = append(f.calls, s); return f.err }
@@ -52,7 +51,7 @@ func (f *fakeVMManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 func useFakeVM(t *testing.T, fake *fakeVMManager) {
 	t.Helper()
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { fake.built++; return fake, nil }
+	newVMManager = func(*Env) (vmManager, error) { fake.factoryCalls++; return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 }
 
@@ -97,13 +96,14 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			t.Fatalf("%s: exit = %d, want 0", arg, code)
 		}
 		out := stderr()
-		for _, verb := range []string{"up [--reprovision]", "down", "reset", "status", "online", "offline", "image add <ref>", "image list", "image rm <ref>"} {
+		verbs := []string{"up [--reprovision]", "image add <ref>", "image list", "image rm <ref>"}
+		for verb := range vmNoArgOps {
+			verbs = append(verbs, verb)
+		}
+		for _, verb := range verbs {
 			if !strings.Contains(out, "omac vm "+verb) {
 				t.Errorf("%s: usage lacks %q:\n%s", arg, verb, out)
 			}
-		}
-		if strings.Contains(out, "exec") {
-			t.Errorf("%s: usage mentions exec, reserved for a later release:\n%s", arg, out)
 		}
 	}
 }
@@ -165,8 +165,8 @@ func TestVMMisuse(t *testing.T) {
 			if code := runVM(args, env); code != ExitMisuse {
 				t.Fatalf("exit = %d, want %d", code, ExitMisuse)
 			}
-			if fake.built != 0 {
-				t.Fatalf("manager built %d times, want 0: misuse must be caught before the VM is touched", fake.built)
+			if fake.factoryCalls != 0 {
+				t.Fatalf("manager built %d times, want 0: misuse must be caught before the VM is touched", fake.factoryCalls)
 			}
 			if out := stderr(); !strings.Contains(out, "omac vm: ") || !strings.Contains(out, "Usage:") {
 				t.Fatalf("stderr lacks the error line or usage:\n%s", out)
@@ -225,6 +225,24 @@ func TestVMErrorMapping(t *testing.T) {
 			}
 			if !strings.Contains(stderr(), tc.wantStderr) {
 				t.Fatalf("stderr lacks %q:\n%s", tc.wantStderr, stderr())
+			}
+		})
+	}
+}
+
+func TestVMReadVerbErrorPrintsNothingToStdout(t *testing.T) {
+	for _, args := range [][]string{{"status"}, {"image", "list"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			useFakeVM(t, &fakeVMManager{err: errors.New("boom"), images: []string{"alpine:3"}})
+			env, stdout, stderr := vmTestEnv(t)
+			if code := runVM(args, env); code != ExitGeneric {
+				t.Fatalf("exit = %d, want %d", code, ExitGeneric)
+			}
+			if out := stdout(); out != "" {
+				t.Fatalf("stdout = %q, want empty", out)
+			}
+			if !strings.Contains(stderr(), "boom") {
+				t.Fatalf("stderr lacks cause:\n%s", stderr())
 			}
 		})
 	}
