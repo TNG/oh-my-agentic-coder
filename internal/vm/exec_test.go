@@ -270,6 +270,39 @@ func TestIgnoredPathsFailsOnGitError(t *testing.T) {
 	}
 }
 
+// subRunner fakes git for a repository at /w/repo with one submodule at
+// libs/lib; lsFiles answers the ignored listing in the submodule.
+func subRunner(lsFiles func(stdout io.Writer) error) CommandRunner {
+	return func(_ context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
+		inSub := args[1] == "/w/repo/libs/lib"
+		switch {
+		case slices.Contains(args, "submodule") && !inSub:
+			_, _ = io.WriteString(stdout, "libs/lib\n")
+		case slices.Contains(args, "--ignored") && inSub:
+			return lsFiles(stdout)
+		}
+		return nil
+	}
+}
+
+func TestIgnoredPathsExcludesFullyIgnoredSubmodule(t *testing.T) {
+	run := subRunner(func(stdout io.Writer) error {
+		_, _ = io.WriteString(stdout, "./\x00")
+		return nil
+	})
+	got, err := IgnoredPaths(context.Background(), run, "/w/repo")
+	if err != nil || !reflect.DeepEqual(got, []string{"libs/lib/"}) {
+		t.Fatalf("IgnoredPaths = %q, %v; want [libs/lib/]", got, err)
+	}
+}
+
+func TestIgnoredPathsFailsOnGitErrorInSubmodule(t *testing.T) {
+	run := subRunner(func(io.Writer) error { return exitErr(t, 128) })
+	if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err == nil {
+		t.Fatal("IgnoredPaths with a failing git call in a submodule = nil error")
+	}
+}
+
 func TestIgnoredPathsDropsBareDot(t *testing.T) {
 	run := func(_ context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
 		if slices.Contains(args, "--ignored") {
