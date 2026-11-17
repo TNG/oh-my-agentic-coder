@@ -101,7 +101,7 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			verbs = append(verbs, verb)
 		}
 		for _, verb := range verbs {
-			if !strings.Contains(out, "omac vm "+verb) {
+			if !strings.Contains(out, "omac vm "+verb+" ") {
 				t.Errorf("%s: usage lacks %q:\n%s", arg, verb, out)
 			}
 		}

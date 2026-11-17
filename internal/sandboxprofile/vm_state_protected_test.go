@@ -8,8 +8,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
-// The directory vm.DefaultRoot resolves to holds admin_key, root access to
-// the omac VM. Checking the resolved path, not the literals in
+// Checking the path vm.DefaultRoot resolves to, not the literals in
 // protectedCommon, catches a DefaultRoot that moves without the baseline.
 func TestSecurityVMStateRootIsProtected(t *testing.T) {
 	for name, xdgState := range map[string]string{
