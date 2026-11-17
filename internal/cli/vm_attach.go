@@ -183,7 +183,7 @@ type vmSelection struct {
 }
 
 // selectVM picks the VM for a session in dir: the explicit --vm=<name>, else
-// the project map entry of dir's repository, else the default VM.
+// the project map entry that covers dir, else the default VM.
 func selectVM(explicit, dir string) (vmSelection, error) {
 	if explicit != "" {
 		return vmSelection{name: explicit, source: "--vm=" + explicit}, nil

@@ -261,8 +261,8 @@ func TestSetupOutputKeepsOnlyTheEnd(t *testing.T) {
 	if len(w.b) > 2*maxSetupOutput {
 		t.Errorf("kept %d bytes, want at most %d", len(w.b), 2*maxSetupOutput)
 	}
-	if got := w.String(); !strings.HasPrefix(got, "…") || !strings.Contains(got, "line 999 ") {
-		t.Errorf("output lost the end or the cut mark: %.80q", got)
+	if got := string(w.b); len(got) < maxSetupOutput || !strings.Contains(got, "line 999 ") {
+		t.Errorf("kept %d bytes without the end: %.80q", len(got), got)
 	}
 }
 

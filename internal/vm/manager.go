@@ -340,26 +340,16 @@ const setupCmd = "rm -f " + ProvisionedMarker + " && bash -s && touch " + Provis
 
 const maxSetupOutput = 4096
 
-// tailWriter keeps about the last maxSetupOutput bytes written to it.
-type tailWriter struct {
-	b       []byte
-	dropped bool
-}
+// tailWriter keeps at least the last maxSetupOutput bytes written to it,
+// for capOutput to cut.
+type tailWriter struct{ b []byte }
 
 func (w *tailWriter) Write(p []byte) (int, error) {
 	w.b = append(w.b, p...)
 	if len(w.b) > 2*maxSetupOutput {
 		w.b = append(w.b[:0], w.b[len(w.b)-maxSetupOutput:]...)
-		w.dropped = true
 	}
 	return len(p), nil
-}
-
-func (w *tailWriter) String() string {
-	if w.dropped {
-		return "…" + string(w.b)
-	}
-	return string(w.b)
 }
 
 // capOutput keeps the end of s, where a failing script says why.
@@ -389,7 +379,7 @@ func (m *Manager) runSetup(ctx context.Context, st *State, script string) error 
 		return nil
 	}
 	detail := err.Error()
-	if s := strings.TrimSpace(out.String()); s != "" {
+	if s := strings.TrimSpace(string(out.b)); s != "" {
 		detail = s + "\n" + detail
 	}
 	return fmt.Errorf("omac vm: setup failed:\n%s", capOutput(detail))
