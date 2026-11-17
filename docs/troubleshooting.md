@@ -213,7 +213,7 @@ Cause: the Gradle daemon talks to its client over a random loopback port, which 
 
 Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.gradle.daemon=false`). If Gradle still tries to start a daemon, align the JVM arguments with the project (see the [Gradle documentation](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:disabling_the_daemon); the _Single-use Daemon_ case must be prevented).
 
-Alternatively, run the build in the omac VM, where the daemon works: `omac vm exec -- ./gradlew test --offline` from a session started with `--vm`. See [omac vm](./usage/cli.md#omac-vm).
+Alternatively, run the build in the omac VM, where the daemon works: `omac vm exec -- ./gradlew test --offline` from a session started with `--vm`. This needs a JDK listed under `jdks` in `vm.yaml` and one priming run that downloads the dependencies; see [omac vm](./usage/cli.md#omac-vm).
 
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external TCP egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 
