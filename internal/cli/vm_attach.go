@@ -198,6 +198,20 @@ func selectVM(explicit, dir string) (vmSelection, error) {
 	return vmSelection{name: vm.DefaultVMName}, nil
 }
 
+// sessionVM is the VM a --vm session is attached to, read from the
+// variables the session exports; ok is false outside such a session. A
+// session without OMAC_VM_NAME was started by an omac that attached only
+// the default VM.
+func sessionVM() (name string, ok bool) {
+	if os.Getenv(vm.EnvVMSSHPort) == "" {
+		return "", false
+	}
+	if name = os.Getenv(vm.EnvVMName); name != "" {
+		return name, true
+	}
+	return vm.DefaultVMName, true
+}
+
 // errNoVMInstance is the abort for a chosen VM that was never created. It
 // matches vm.ErrNotCreated, so the exit code says a prerequisite is missing.
 type errNoVMInstance struct{ vmSelection }

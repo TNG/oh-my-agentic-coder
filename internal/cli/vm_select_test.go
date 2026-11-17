@@ -495,6 +495,38 @@ func TestVMExecUnreadableMapFallsThrough(t *testing.T) {
 	}
 }
 
+func TestVMExecInSessionHintsNameTheSessionVM(t *testing.T) {
+	t.Setenv(vm.EnvVMSSHPort, "43022")
+	t.Setenv(vm.EnvVMSSHKey, filepath.Join(t.TempDir(), "agent_key"))
+	t.Setenv(vm.EnvVMUser, "agent")
+	t.Setenv(vm.EnvVMName, "session-vm")
+	useFakeVMExec(t, nil, 0, errors.New("omac vm exec: connection lost (is the VM running? `omac vm status`)"))
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitIOError {
+		t.Fatalf("exit = %d, want %d", code, ExitIOError)
+	}
+	if !strings.Contains(stderr(), "`omac vm status --name session-vm`") {
+		t.Errorf("stderr does not name the session's VM:\n%s", stderr())
+	}
+}
+
+// A session without OMAC_VM_NAME comes from an omac that attached only the
+// default VM, so another --name cannot be the VM the connection reaches.
+func TestVMExecInSessionWithoutNameRejectsOtherName(t *testing.T) {
+	t.Setenv(vm.EnvVMSSHPort, "43022")
+	t.Setenv(vm.EnvVMSSHKey, filepath.Join(t.TempDir(), "agent_key"))
+	t.Setenv(vm.EnvVMUser, "agent")
+	t.Setenv(vm.EnvVMName, "")
+	calls := useFakeVMExec(t, nil, 0, nil)
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--name", "x", "--", "true"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+	}
+	if !strings.Contains(stderr(), `"omac"`) || len(*calls) != 0 {
+		t.Errorf("want a misuse naming the default VM and no exec; calls=%d stderr:\n%s", len(*calls), stderr())
+	}
+}
+
 func TestVMExecErrorNamesInstance(t *testing.T) {
 	useFakeVMExec(t, nil, 0, errors.New("omac vm exec: connection lost (is the VM running? `omac vm status`)"))
 	env, _, stderr := vmTestEnv(t)

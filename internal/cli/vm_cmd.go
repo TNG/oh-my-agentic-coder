@@ -234,27 +234,26 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
-	inSession := os.Getenv(vm.EnvVMSSHPort) != ""
-	if a.named && inSession {
-		if attached := os.Getenv(vm.EnvVMName); attached != "" && attached != a.name {
+	if attached, inSession := sessionVM(); inSession {
+		if err := vm.ValidateName(attached); err != nil {
+			return vmExecMisuse(env, vm.EnvVMName+": "+err.Error())
+		}
+		if a.named && a.name != attached {
 			return vmExecMisuse(env, fmt.Sprintf("this session is attached to VM %q; to use VM %q, start a session with --vm=%s", attached, a.name, a.name))
 		}
-	}
-	if !a.named {
-		a.name = vm.DefaultVMName
-		// Inside a --vm session the exported OMAC_VM_* variables decide the
-		// VM, so the project map does not apply there.
-		if !inSession {
-			mapped, ok, err := vm.MappedInstance(env.Workdir)
+		a.name = attached
+	} else if !a.named {
+		sel, err := selectVM("", env.Workdir)
+		switch {
+		case err == nil:
+			a.name = sel.name
+		case errors.Is(err, os.ErrPermission):
 			// The sandbox blocks the map, so a session started without
 			// --vm gets ConnInfo's hint instead.
-			if err != nil && !errors.Is(err, os.ErrPermission) {
-				fmt.Fprintln(env.Stderr, err)
-				return ExitConfigInvalid
-			}
-			if err == nil && ok {
-				a.name = mapped
-			}
+			a.name = vm.DefaultVMName
+		default:
+			fmt.Fprintln(env.Stderr, err)
+			return ExitConfigInvalid
 		}
 	}
 	conn, err := resolveVMConn(env, a.name)
