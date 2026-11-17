@@ -79,7 +79,9 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
 ## Read the results
 
 Build output stays in the VM and is not copied back. Read it with another
-`omac vm exec`. For example, after a Gradle test run in `backend/`:
+`omac vm exec`. Result files from an earlier run stay in the VM too, so
+read them only after a build whose log shows that the test task ran. For
+example, after a Gradle test run in `backend/`:
 
 ```sh
 # number of test cases that ran
@@ -88,8 +90,8 @@ omac vm exec --cwd backend -- sh -c 'cat build/test-results/test/*.xml | grep -c
 omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/test-results/test/*.xml; [ $? -eq 1 ] && echo "no failures"'
 ```
 
-If grep reports that no result file exists, the tests did not run: read the
-build log instead.
+If no result file exists, the tests did not run: read the build log
+instead.
 
 ## When something is missing, ask the human
 
@@ -100,7 +102,7 @@ build log instead.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
   or `No cached version ... available for offline mode`. Do not drop
   `--offline`. Ask the human to prime the VM from the host, as described in
-  step 6 of [setup.md](setup.md). omac refuses `omac vm online` while a
+  "Prime the build caches" in [setup.md](setup.md). omac refuses `omac vm online` while a
   session is attached, so they end this session first. Tell them which build
   files you changed: priming runs your changes online with their token.
 - **A JDK or system package is missing.** Gradle reports `No matching
@@ -111,5 +113,5 @@ build log instead.
   `omac vm up --reprovision` on the host.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig`.** The session cannot read `~/.gitconfig`, so every git
-  command in it fails. Ask the human to grant it as described in step 7 of
-  [setup.md](setup.md), then restart the session.
+  command in it fails. Ask the human to grant it as described in "Sandbox
+  grants" in [setup.md](setup.md), then restart the session.

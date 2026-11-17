@@ -102,7 +102,9 @@ The session must be able to read `~/.gitconfig`, otherwise `omac vm exec`
 fails at `git rev-parse`. The default grants allow it. If the human edited the
 sandbox grants file `~/.config/omac/sandbox-profiles/default.json`,
 `filesystem.read` must list `~/.gitconfig`, its symlink target if it is a
-symlink, and every file it `[include]`s.
+symlink, and every file it `[include]`s. The agent can read every file
+granted this way, so move tokens out of them first, for example a token in
+a `url.<base>.insteadOf` URL.
 
 ## 8. Start a session with the VM
 
@@ -111,7 +113,8 @@ omac start --vm
 ```
 
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
-refuses `--vm` while the VM is online, with `--no-sandbox`, and with launcher
+refuses `--vm` while the VM is online, with `--no-sandbox`, with
+`omac serve --no-inner`, and with launcher
 profiles that use a sandbox other than omac's own. Once the human has started
 the session, offer to check the connection with `omac vm exec -- true`.
 
