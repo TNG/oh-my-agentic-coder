@@ -27,7 +27,7 @@ If a skill in your project is not registered, omac refuses to start and tells yo
 
 ## Built-in skills
 
-`omac setup` copies these skills into the skills folder of every harness it finds, and `omac doctor` checks that they are there. They are guidance for the agent only and not registered, so `omac list` does not show them:
+`omac start` copies these skills into the skills folder of the harness it starts, `omac setup` into that of every harness it finds, and `omac doctor` checks that they are there. They are guidance for the agent only and not registered, so `omac list` does not show them:
 
 - **omac-write-a-skill**: lets the agent draft and register new skills without leaving the sandbox. Useful if you want AI assistance creating a new integration — see [Authoring skills](../skills/authoring.md).
 - **omac-vm**: tells the agent in a session started with `--vm` how to run builds and tests in the omac VM, how to read their results, and when to ask you to import an image or prime the VM. See [omac vm](./cli.md#omac-vm).
