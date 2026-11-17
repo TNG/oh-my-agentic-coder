@@ -2,6 +2,9 @@ package netprompt
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -52,5 +55,25 @@ func TestSanitizeDialogTextDropsUnicodeLineBreaksAndFormatChars(t *testing.T) {
 	}
 	if got != "x=1 Declared: safe y z " {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestDialogFailureIsNotTheUsersCancel(t *testing.T) {
+	for code, wantErr := range map[int]bool{1: false, 5: true, 255: true} {
+		dir := t.TempDir()
+		for _, name := range []string{"zenity", "kdialog"} {
+			script := fmt.Sprintf("#!/bin/sh\nexit %d\n", code)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("PATH", dir)
+		t.Setenv("DISPLAY", ":99")
+		for _, b := range []dialogBackendChoice{zenityChoice{}, kdialogChoice{}} {
+			label, err := b.choose(context.Background(), "t", "x", []string{"Deny"}, "Deny")
+			if (err != nil) != wantErr || label != "" {
+				t.Errorf("%s exit %d: label=%q err=%v, want error=%v", b.name(), code, label, err, wantErr)
+			}
+		}
 	}
 }

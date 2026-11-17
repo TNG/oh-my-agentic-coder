@@ -2,6 +2,7 @@ package netprompt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -50,8 +51,8 @@ func NewChooser() (*Chooser, bool) {
 }
 
 // Choose blocks until the user picks a label, cancels (returns "", nil) or
-// ctx ends (returns ctx.Err()). The default label is preselected. title and
-// text are sanitized here; labels are chosen by the caller and not user data.
+// ctx ends (returns ctx.Err()). The default label is preselected. text is
+// sanitized here; title and labels are chosen by the caller and not user data.
 func (c *Chooser) Choose(ctx context.Context, title, text string, labels []string, def string) (string, error) {
 	if c.stub != "" {
 		return c.stub, nil
@@ -151,10 +152,7 @@ func (zenityChoice) choose(ctx context.Context, title, text string, labels []str
 	cmd.Env = append(os.Environ(), "GTK_OVERLAY_SCROLLING=0")
 	out, err := cmd.Output()
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", nil
+		return "", dialogExitError(ctx, "zenity", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -179,10 +177,7 @@ func (kdialogChoice) choose(ctx context.Context, title, text string, labels []st
 	}
 	out, err := exec.CommandContext(ctx, "kdialog", args...).Output()
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", nil
+		return "", dialogExitError(ctx, "kdialog", err)
 	}
 	idx := strings.TrimSpace(string(out))
 	for i, l := range labels {
@@ -191,4 +186,19 @@ func (kdialogChoice) choose(ctx context.Context, title, text string, labels []st
 		}
 	}
 	return "", nil
+}
+
+// dialogExitError maps a failed zenity or kdialog run to Choose's contract.
+// Exit code 1 is the user's Cancel and returns nil. Anything else, such as
+// zenity's 255 for a display it cannot open, is an error: the dialog was
+// never shown, and reading it as Cancel would record a deny nobody gave.
+func dialogExitError(ctx context.Context, name string, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", name, err)
 }
