@@ -218,15 +218,16 @@ sidecar:
 
 - `match` is `<METHOD> <path>`. The method is upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or `ANY`. The path is relative to the mount.
 - A path segment is a literal (letters, digits, `.`, `_`, `~`, `-`), `{name}` for exactly one non-empty segment, or `**` for the rest of the path, including nothing, and only as the last segment. No regular expressions, and the query string is not matched.
-- An entry covers exactly what it says. `GET /status` does not cover `HEAD /status` or `GET /status/` (trailing slash). List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both.
+- An entry covers exactly what it says. `GET /status` does not cover `HEAD /status` or `GET /status/` (trailing slash). List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both. A trailing slash cannot be declared, so a request with one always asks; have your clients call the path without it.
+- Literal segments match case-sensitively, but many sidecars ignore case (Express does by default). So that `/files/SECRET` cannot slip through `GET /files/{name}: none` to a handler declared `GET /files/secret: required`, a request asks when a `required` entry matches it ignoring case.
 - **Most specific wins**: compared segment by segment, a literal beats `{name}`, and an exact path beats a `**` that would match nothing (`GET /a` beats `GET /a/**` for a request to `/a`). If the paths tie, a concrete method beats `ANY`. Two entries of the same shape are an error.
 - Unknown keys in the block, a misspelled block name such as `aprovals:`, or any other `approval` value stop the registration, so a typo cannot silently turn the dialog off.
 
 **What the user sees and answers**
 
-- The dialog shows what omac itself saw (method, cleaned path, query) and your `description`, one sentence. Credential-like query values are masked. The request body is not shown.
+- The dialog shows what omac itself saw (method, cleaned path, query) and your `description`, one sentence. Credential-like query values are masked, and characters outside printable ASCII in the method, path and query are shown percent-encoded (`ä` as `%C3%A4`), so the agent cannot add a line that looks like omac's. Line breaks in `description` show as spaces. The request body is not shown.
 - The user can answer once, for the session, or always. "For the session" and "always" cover everything the matched entry covers, and the dialog names the entry when it is wider than the request. For an unlisted route, and for an entry on `ANY` or a `**` path, they cover only that exact method and path: allowing `GET /messages/123` does not allow `GET /messages/124`. Declare `GET /messages/{id}` if one answer should cover them all.
-- Stored answers belong to one project directory and to the entry's `match` text. Rewording an entry, or registering the skill in another project, asks again. The user lists and removes them with `omac approvals list` and `omac approvals revoke <id>`.
+- Stored answers belong to one project directory and to the entry's `match` text. Rewording an entry, or registering the skill in another project, asks again. In `omac serve`, a skill registered user-global is one route shared by all projects, so its answers are shared by all projects too. The user lists and removes them with `omac approvals list` and `omac approvals revoke <id>`.
 - Other choices in the dialog, its wording and its timeout are omac's choice and can change; do not rely on them.
 
 **What the agent gets back**
@@ -235,8 +236,9 @@ sidecar:
 |---|---|---|
 | `403` | `approval-denied` | The user said no. |
 | `403` | `approval-timeout` | Nobody answered in time. |
-| `503` | `approval-unavailable` | No dialog can be shown, e.g. a host without a display. |
-| `400` | `invalid-path` | The path is ambiguous: an encoded `/` or `\`, a raw `\`, control characters, or invalid percent-encoding. |
+| `503` | `approval-unavailable` | No dialog can be shown, e.g. a host without a display or a dialog program that fails. In `omac serve`, also a request omac cannot tie to a project. |
+| `400` | `invalid-path` | The path is ambiguous: an encoded `/` or `\`, a raw `\`, a `;` (raw or `%3B`), or an encoded control character such as `%00`. |
+| `400` | none | Invalid percent-encoding (`%zz`) or a raw control character. The HTTP server refuses these before omac sees the request. |
 
 **How omac reads a request**
 
