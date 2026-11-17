@@ -338,7 +338,7 @@ func IsDesktopStateDir(dir string) bool {
 // installed). macOS: ~/Library/Application Support/<id>; Linux:
 // $XDG_CONFIG_HOME (~/.config)/<id>.
 func defaultDesktopStateDir(home string) string {
-	const appID = "ai.opencode.desktop"
+	appID := desktopAppIDs[0]
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", appID)
 	}

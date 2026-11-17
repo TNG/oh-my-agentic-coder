@@ -294,3 +294,22 @@ func TestIsDesktopStateDir(t *testing.T) {
 		}
 	}
 }
+
+// Whatever folder DesktopStateDir picks, also the default when no app
+// folder exists yet, IsDesktopStateDir must recognize it.
+func TestDesktopStateDirIsRecognized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	if dir := DesktopStateDir(); !IsDesktopStateDir(dir) {
+		t.Errorf("IsDesktopStateDir(DesktopStateDir() = %q) = false", dir)
+	}
+	beta := filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta")
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if dir := DesktopStateDir(); dir != beta || !IsDesktopStateDir(dir) {
+		t.Errorf("DesktopStateDir() = %q, want the recognized %q", dir, beta)
+	}
+}
