@@ -43,6 +43,8 @@ func TestRunSetupProvisionsAllHarnessesAndIsIdempotent(t *testing.T) {
 	for _, p := range []string{
 		filepath.Join(home, ".config", "opencode", "skills", "omac-write-a-skill", "SKILL.md"),
 		filepath.Join(home, ".claude", "skills", "omac-write-a-skill", "SKILL.md"),
+		filepath.Join(home, ".config", "opencode", "skills", "omac-vm", "SKILL.md"),
+		filepath.Join(home, ".claude", "skills", "omac-vm", "SKILL.md"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("expected provisioned file %s: %v", p, err)

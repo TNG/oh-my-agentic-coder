@@ -120,18 +120,19 @@ rm -rf ~/Library/Logs/omac
 
 omac adds a few files to a harness's own folders. It never edits a harness's configuration files. The files exist only if you started omac with that harness, or ran `omac setup` while it was installed (`omac setup` covers every harness it finds).
 
-Every harness gets a copy of the built-in skill `omac-write-a-skill`, which helps the agent write new skills. Some harnesses let you move their folder with an environment variable. If you set it, the files are in that folder instead of the default one.
+Every harness gets copies of the built-in skills `omac-write-a-skill`, which helps the agent write new skills, and `omac-vm`, which explains how to run commands in the omac VM. Some harnesses let you move their folder with an environment variable. If you set it, the files are in that folder instead of the default one.
 
 #### OpenCode
 
 | Location | If `XDG_CONFIG_HOME` is set | What is in it |
 |---|---|---|
 | `~/.config/opencode/skills/omac-write-a-skill` | `$XDG_CONFIG_HOME/opencode/skills/omac-write-a-skill` | The built-in skill |
+| `~/.config/opencode/skills/omac-vm` | `$XDG_CONFIG_HOME/opencode/skills/omac-vm` | The built-in VM skill |
 | `~/.config/opencode/plugins/omac-multidir.ts` | `$XDG_CONFIG_HOME/opencode/plugins/omac-multidir.ts` | omac's OpenCode plugin. `omac start` installs it so OpenCode can show omac's sandbox information and use skills. |
 | `.opencode/plugins/omac-multidir.ts` in a project | (same) | The same plugin, only if you ran `omac plugin install opencode-desktop` in that project without `--global` |
 
 ```bash
-rm -rf ~/.config/opencode/skills/omac-write-a-skill
+rm -rf ~/.config/opencode/skills/omac-write-a-skill ~/.config/opencode/skills/omac-vm
 rm -f ~/.config/opencode/plugins/omac-multidir.ts
 ```
 
@@ -140,18 +141,23 @@ rm -f ~/.config/opencode/plugins/omac-multidir.ts
 | Location | If `CLAUDE_CONFIG_DIR` is set | What is in it |
 |---|---|---|
 | `~/.claude/skills/omac-write-a-skill` | `$CLAUDE_CONFIG_DIR/skills/omac-write-a-skill` | The built-in skill |
+| `~/.claude/skills/omac-vm` | `$CLAUDE_CONFIG_DIR/skills/omac-vm` | The built-in VM skill |
 
 ```bash
-rm -rf ~/.claude/skills/omac-write-a-skill
+rm -rf ~/.claude/skills/omac-write-a-skill ~/.claude/skills/omac-vm
 ```
 
 #### Other harnesses
 
-Each of these only gets the built-in skill:
+Each of these only gets the built-in skills:
 
 | Harness | Location | If this variable is set |
 |---|---|---|
 | Codex | `~/.codex/skills/omac-write-a-skill` | `$CODEX_HOME/skills/omac-write-a-skill` |
+| Codex | `~/.codex/skills/omac-vm` | `$CODEX_HOME/skills/omac-vm` |
 | Copilot | `~/.copilot/skills/omac-write-a-skill` | `$COPILOT_HOME/skills/omac-write-a-skill` |
+| Copilot | `~/.copilot/skills/omac-vm` | `$COPILOT_HOME/skills/omac-vm` |
 | Pi | `~/.pi/agent/skills/omac-write-a-skill` | `$PI_CODING_AGENT_DIR/skills/omac-write-a-skill` |
+| Pi | `~/.pi/agent/skills/omac-vm` | `$PI_CODING_AGENT_DIR/skills/omac-vm` |
 | CodeWhale | `~/.codewhale/skills/omac-write-a-skill` | `$CODEWHALE_HOME/skills/omac-write-a-skill` |
+| CodeWhale | `~/.codewhale/skills/omac-vm` | `$CODEWHALE_HOME/skills/omac-vm` |
