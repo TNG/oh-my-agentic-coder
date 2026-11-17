@@ -369,6 +369,7 @@ type execFakes struct {
 	rsyncErr error
 	remotes  []string
 	cmdErr   error
+	regErr   error // returned by the registration, the first ssh call
 	notRepo  error // returned by `git rev-parse`, with git's "not a git repository" message
 	// top and prefix are what `git rev-parse --show-toplevel --show-prefix`
 	// prints; by default the workdir is the top level.
@@ -417,6 +418,9 @@ func (f *execFakes) ssh(_ context.Context, t SSHTarget, _ io.Reader, stdout, _ i
 	f.order = append(f.order, "ssh")
 	f.remotes = append(f.remotes, remote)
 	f.ttys = append(f.ttys, t.TTY)
+	if len(f.remotes) == 1 {
+		return f.regErr
+	}
 	if len(f.remotes) == 2 {
 		if f.onCmd != nil {
 			f.onCmd()
@@ -602,6 +606,17 @@ func TestExecRsyncFailureStopsBeforeCommand(t *testing.T) {
 	}
 	if len(f.remotes) != 1 {
 		t.Fatalf("ssh calls after rsync failure = %q, want only the registration", f.remotes)
+	}
+}
+
+func TestExecRegistrationFailureStopsBeforeCopy(t *testing.T) {
+	f := &execFakes{regErr: exitErr(t, 1)}
+	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+	if err == nil || !strings.Contains(err.Error(), "register worktree") {
+		t.Fatalf("err = %v, want the registration error", err)
+	}
+	if f.rsync != nil || len(f.remotes) != 1 {
+		t.Fatalf("after a failed registration: rsync=%q ssh=%q, want neither copy nor command", f.rsync, f.remotes)
 	}
 }
 

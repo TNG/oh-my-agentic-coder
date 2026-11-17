@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -74,6 +75,63 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 	want := []string{"-leading-dash.txt", "foo1", "keep.txt", "sub/build/x", "sub/main.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("copied %q, want %q", got, want)
+	}
+}
+
+// stubSSH records its arguments, one per line, then runs the remote
+// command locally the way sshd would hand it to a shell.
+const stubSSH = `#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a" >> "$SSH_ARGS_FILE"; done
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-i|-p|-o|-l) shift 2 ;;
+	-*) shift ;;
+	*) break ;;
+	esac
+done
+shift
+exec sh -c "$*"
+`
+
+// TestRsyncRemoteShellKeepsSSHArgs runs the local rsync with the production
+// arguments, including -e, against a stub ssh, so the -e parser of this
+// machine's rsync must keep each ssh argument intact.
+func TestRsyncRemoteShellKeepsSSHArgs(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not installed")
+	}
+	base := t.TempDir()
+	bin, src, dst := filepath.Join(base, "bin"), filepath.Join(base, "src"), filepath.Join(base, "dst")
+	writeFiles(t, src, map[string]string{"keep.txt": "k"})
+	writeFiles(t, bin, map[string]string{"ssh": stubSSH})
+	if err := os.Chmod(filepath.Join(bin, "ssh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	excl, err := WriteExcludeFile(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(base, "ssh-args")
+	ctx := withCommandEnv(context.Background(), "PATH="+bin+":"+os.Getenv("PATH"), "SSH_ARGS_FILE="+argsFile)
+	args := RsyncArgs(src, excl, testTarget, dst+"/")
+	var stderr bytes.Buffer
+	if err := ExecRunner(ctx, "rsync", args, nil, io.Discard, &stderr); err != nil {
+		t.Fatalf("rsync %q: %v: %s", args, err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dst, "keep.txt")); err != nil {
+		t.Fatalf("not copied through the stub: %v", err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(string(raw), "\n")
+	want := SSHArgs(testTarget)
+	if len(got) < len(want) || !reflect.DeepEqual(got[:len(want)], want) {
+		t.Fatalf("ssh got %q, want it to start with %q", got, want)
 	}
 }
 
