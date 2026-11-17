@@ -1057,16 +1057,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	if vmSess != nil {
-		ready := onReady
-		onReady = func(pid int) {
-			vmSess.trackChild(pid)
-			if ready != nil {
-				ready(pid)
-			}
-		}
-	}
-	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
+	code, err := sandbox.ExecWithReadyPID(argv, extra, vmSess.readyHook(onReady))
 	auditor.Emit(audit.SessionStop(code))
 	if ocPin != nil {
 		// Always report a failed save: otherwise the user silently re-picks

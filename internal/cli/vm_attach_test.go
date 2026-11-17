@@ -272,6 +272,29 @@ func TestVMSessionTracksChildUntilRelease(t *testing.T) {
 	}
 }
 
+// readyHook is what start and serve hand to sandbox.ExecWithReadyPID: it
+// must register the child and still run the hook it wraps.
+func TestVMSessionReadyHook(t *testing.T) {
+	layout := vm.NewLayout(t.TempDir())
+	s := &vmSession{markers: &vmMarkers{layout: layout}, stderr: io.Discard}
+	var wrapped int
+	s.readyHook(func(pid int) { wrapped = pid })(4242)
+	if wrapped != 4242 {
+		t.Errorf("wrapped hook got pid %d, want 4242", wrapped)
+	}
+	if _, err := os.Stat(filepath.Join(layout.SessionsDir, "4242")); err != nil {
+		t.Errorf("child marker missing: %v", err)
+	}
+	s.readyHook(nil)(4243)
+	if _, err := os.Stat(filepath.Join(layout.SessionsDir, "4243")); err != nil {
+		t.Errorf("child marker missing without a wrapped hook: %v", err)
+	}
+	var none *vmSession
+	if none.readyHook(nil) != nil {
+		t.Error("nil session must keep a nil hook")
+	}
+}
+
 func TestVMSessionNilIsNoOp(t *testing.T) {
 	var s *vmSession
 	argv := []string{"omac", "sandbox", "run", "--", "x"}

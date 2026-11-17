@@ -59,10 +59,23 @@ func (s *vmSession) sandboxEnv() map[string]string {
 	return s.env
 }
 
+// readyHook wraps next (may be nil) into the ready hook for
+// sandbox.ExecWithReadyPID, so the sandboxed command is registered too.
+func (s *vmSession) readyHook(next func(pid int)) func(pid int) {
+	if s == nil {
+		return next
+	}
+	return func(pid int) {
+		s.trackChild(pid)
+		if next != nil {
+			next(pid)
+		}
+	}
+}
+
 // trackChild registers the sandboxed command, which keeps using the VM if
 // omac dies without cleaning up (SIGKILL, os.Exit): its marker keeps
-// `omac vm online` refused until that process is gone too. Use it as the
-// ready hook of sandbox.ExecWithReadyPID.
+// `omac vm online` refused until that process is gone too.
 func (s *vmSession) trackChild(pid int) {
 	if s == nil {
 		return

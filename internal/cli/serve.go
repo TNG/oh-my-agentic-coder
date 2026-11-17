@@ -744,12 +744,11 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
-	code, err := sandbox.ExecWithReadyPID(argv, extra, func(pid int) {
-		vmSess.trackChild(pid)
+	code, err := sandbox.ExecWithReadyPID(argv, extra, vmSess.readyHook(func(int) {
 		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
 		}
-	})
+	}))
 	auditor.Emit(audit.SessionStop(code))
 	watch.report(verbose, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
