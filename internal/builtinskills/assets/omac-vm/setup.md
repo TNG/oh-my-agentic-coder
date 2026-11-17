@@ -120,20 +120,15 @@ omac vm offline
   to that prompt as its answer: the build stops and the VM stays online.
   So the human runs the lines one at a time, and runs `omac vm offline` if
   the build stopped.
-- If the token sits in `~/.gradle/gradle.properties`, the human lists the
-  property names (without values) and picks the token:
+- If the build reads its token from a Gradle property, for example `gpr.key`
+  in `~/.gradle/gradle.properties`, do not reuse that stored token: it is
+  usually long-lived. The human creates a short-lived read-only token,
+  exports it as `TOKEN` and hands it to Gradle under the property's name.
+  Gradle reads a property `foo` also from the environment variable
+  `ORG_GRADLE_PROJECT_foo`:
 
   ```sh
-  grep -oE '^[[:space:]]*[^#![:space:]=:]+' ~/.gradle/gradle.properties | grep -iE 'token|password|secret|key'
-  ```
-
-  Gradle reads a property `foo` also from `ORG_GRADLE_PROJECT_foo`, so for
-  `foo` they run the commands below. This does not work for names with a
-  dot, such as `gpr.key`, because a shell variable name cannot contain one.
-
-  ```sh
-  export ORG_GRADLE_PROJECT_foo="$(sed -n 's/^foo[[:space:]]*[=:][[:space:]]*//p' ~/.gradle/gradle.properties)"
-  omac vm exec --env ORG_GRADLE_PROJECT_foo --cwd backend -- ./gradlew check --no-daemon
+  omac vm exec --env TOKEN --cwd backend -- sh -c 'env "ORG_GRADLE_PROJECT_gpr.key=$TOKEN" ./gradlew check --no-daemon'
   ```
 
 - Priming has to end with `BUILD SUCCESSFUL`. Gradle stops at the first
