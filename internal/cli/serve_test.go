@@ -827,14 +827,24 @@ func TestRootsEmptyAllowsAny(t *testing.T) {
 }
 
 func TestVMStateHome(t *testing.T) {
-	cases := []struct{ xdg, desktop, want string }{
-		{"", "/desktop", ""},                 // manual serve: XDG_STATE_HOME unset
-		{"/desktop", "/desktop", ""},         // launched by the Desktop app
-		{"/x/state", "/desktop", "/x/state"}, // the user's own XDG_STATE_HOME
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	// DesktopStateDir prefers the stable app, so only this check sees that
+	// the running beta app set XDG_STATE_HOME.
+	if err := os.MkdirAll(filepath.Join(home, ".config", "ai.opencode.desktop"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	beta := filepath.Join(home, ".config", "ai.opencode.desktop.beta")
+	cases := []struct{ xdg, want string }{
+		{"", ""},                 // manual serve: XDG_STATE_HOME unset
+		{beta, ""},               // launched by the beta Desktop app
+		{beta + "/", ""},         // the same, spelled differently
+		{"/x/state", "/x/state"}, // the user's own XDG_STATE_HOME
 	}
 	for _, c := range cases {
-		if got := vmStateHome(c.xdg, c.desktop); got != c.want {
-			t.Errorf("vmStateHome(%q, %q) = %q, want %q", c.xdg, c.desktop, got, c.want)
+		if got := vmStateHome(c.xdg); got != c.want {
+			t.Errorf("vmStateHome(%q) = %q, want %q", c.xdg, got, c.want)
 		}
 	}
 }

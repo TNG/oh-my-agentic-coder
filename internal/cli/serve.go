@@ -317,7 +317,7 @@ func runServe(args []string, env *Env) int {
 	// an explicit value is respected. The dir is granted read+write in
 	// the sandbox in the --for-opencode-desktop block below.
 	if forDesktop {
-		defer vm.PinStateHome(vmStateHome(os.Getenv("XDG_STATE_HOME"), opencodestate.DesktopStateDir()))()
+		defer vm.PinStateHome(vmStateHome(os.Getenv("XDG_STATE_HOME")))()
 	}
 	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
@@ -806,8 +806,8 @@ func resolveDesktopStateDir(forDesktop bool) (dir string, setEnv bool) {
 // --for-opencode-desktop mode. When the Desktop app launched omac,
 // XDG_STATE_HOME is the app's data folder, so the VM state falls back to
 // $HOME/.local/state, where `omac vm up` created it.
-func vmStateHome(xdg, desktopDir string) string {
-	if xdg == desktopDir {
+func vmStateHome(xdg string) string {
+	if opencodestate.IsDesktopStateDir(xdg) {
 		return ""
 	}
 	return xdg

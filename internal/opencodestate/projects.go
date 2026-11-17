@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -309,6 +310,23 @@ func desktopStateCandidates(home, appID string) []string {
 	}
 	dirs = append(dirs, filepath.Join(home, ".local", "share", appID))
 	return dirs
+}
+
+// IsDesktopStateDir reports whether dir is a data folder of the stable or
+// the beta Desktop app, whether or not it exists. Unlike DesktopStateDir,
+// which picks one folder, it recognizes the folder of whichever app runs.
+func IsDesktopStateDir(dir string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || dir == "" {
+		return false
+	}
+	dir = filepath.Clean(dir)
+	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+		if slices.Contains(desktopStateCandidates(home, appID), dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultDesktopStateDir is the platform-native Electron userData path

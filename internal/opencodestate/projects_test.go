@@ -273,3 +273,24 @@ func TestWorktreesNoState(t *testing.T) {
 		t.Errorf("expected empty: %v %v", worktrees, skipped)
 	}
 }
+
+func TestIsDesktopStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	for _, dir := range []string{
+		filepath.Join(home, ".config", "ai.opencode.desktop"),
+		filepath.Join(home, ".config", "ai.opencode.desktop.beta"),
+		filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop.beta") + "/",
+	} {
+		if !IsDesktopStateDir(dir) {
+			t.Errorf("IsDesktopStateDir(%q) = false, want true", dir)
+		}
+	}
+	for _, dir := range []string{"", filepath.Join(home, ".local", "state"), "/x/state"} {
+		if IsDesktopStateDir(dir) {
+			t.Errorf("IsDesktopStateDir(%q) = true, want false", dir)
+		}
+	}
+}
