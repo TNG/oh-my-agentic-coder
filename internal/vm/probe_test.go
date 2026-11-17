@@ -90,6 +90,46 @@ func TestWaitDockerTimesOut(t *testing.T) {
 	}
 }
 
+func TestDockerVersionBoundsEachCheck(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	var deadline time.Time
+	m.Deps.SSH = func(ctx context.Context, _ SSHTarget, _ io.Reader, stdout, _ io.Writer, _ string) error {
+		deadline, _ = ctx.Deadline()
+		fmt.Fprint(stdout, "1.47 27.3.1\n")
+		return nil
+	}
+	if _, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022}); err != nil {
+		t.Fatal(err)
+	}
+	if latest := time.Now().Add(dockerCheckTimeout); deadline.IsZero() || deadline.After(latest) {
+		t.Errorf("ssh deadline = %v, want one no later than %v", deadline, latest)
+	}
+}
+
+func TestWaitDockerStopsWhenSSHLoginIsRejected(t *testing.T) {
+	for name, stderr := range map[string]string{
+		"key rejected":     "omac-alice@127.0.0.1: Permission denied (publickey).",
+		"host key changed": "Host key verification failed.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _, _ := newTestManager(t)
+			calls := 0
+			m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, errOut io.Writer, _ string) error {
+				calls++
+				fmt.Fprintln(errOut, stderr)
+				return errors.New("exit status 255")
+			}
+			err := m.waitDocker(context.Background(), &State{SSHPort: 42022}, time.Minute)
+			if !errors.Is(err, ErrSSHLoginRejected) || !strings.Contains(err.Error(), "omac vm reset") {
+				t.Fatalf("err = %v, want ErrSSHLoginRejected naming `omac vm reset`", err)
+			}
+			if calls != 1 {
+				t.Errorf("ssh calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
 func TestWaitDockerRejectsNonPositiveInterval(t *testing.T) {
 	for _, interval := range []time.Duration{0, -time.Second} {
 		t.Run(interval.String(), func(t *testing.T) {

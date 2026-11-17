@@ -132,6 +132,9 @@ func (s StatusReport) Write(w io.Writer) {
 	fmt.Fprintf(w, "mode: %s\n", s.Mode)
 	fmt.Fprintf(w, "ssh: 127.0.0.1:%d\n", s.SSHPort)
 	docker := "not answering"
+	if s.Running {
+		docker = "not answering (checked over SSH)"
+	}
 	if s.Docker != nil {
 		docker = fmt.Sprintf("Docker %s, API %s", printable(s.Docker.Version), printable(s.Docker.APIVersion))
 	}

@@ -258,6 +258,9 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	if err := m.waitDocker(ctx, st, m.Deps.ProvisionTimeout); err != nil {
+		if errors.Is(err, ErrSSHLoginRejected) {
+			return err
+		}
 		return fmt.Errorf("%w; %s", err, retryUpHint)
 	}
 	if err := m.switchMode(ctx, st, ModeOffline, true, m.Deps.RestartTimeout); err != nil {
@@ -586,7 +589,7 @@ func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 	}
 	v, err := m.dockerVersion(ctx, st)
 	if err != nil {
-		return AttachInfo{}, fmt.Errorf("omac vm: docker in the VM: %w", err)
+		return AttachInfo{}, fmt.Errorf("omac vm: Docker in the VM does not answer, so the session was not started; run `omac vm status` to see the VM's state: %w", err)
 	}
 	return AttachInfo{
 		SSHPort:      st.SSHPort,

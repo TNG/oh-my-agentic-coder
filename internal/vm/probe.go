@@ -19,8 +19,18 @@ type DockerVersion struct {
 // fails while dockerd does not answer on its socket.
 var dockerVersionCmd = dockerCmd("version --format '{{.Server.APIVersion}} {{.Server.Version}}'")
 
+// dockerCheckTimeout bounds one Docker check, so that a hanging SSH
+// connection cannot use up a caller's whole wait.
+const dockerCheckTimeout = 10 * time.Second
+
+// ErrSSHLoginRejected means the VM refused omac's SSH key or presented a host
+// key that differs from the recorded one. Waiting does not change either.
+var ErrSSHLoginRejected = errors.New("the VM rejected omac's SSH login; run `omac vm reset` to recreate the VM")
+
 // dockerVersion asks the VM's Docker for its version over the agent's ssh.
 func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, error) {
+	ctx, cancel := context.WithTimeout(ctx, dockerCheckTimeout)
+	defer cancel()
 	var out bytes.Buffer
 	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, dockerVersionCmd); err != nil {
 		return DockerVersion{}, err
@@ -46,10 +56,20 @@ func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Durati
 		if err == nil {
 			return nil
 		}
+		if sshLoginRejected(err) {
+			return fmt.Errorf("omac vm: %w: %w", ErrSSHLoginRejected, err)
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("omac vm: docker in the VM not ready (last error: %w): %w", err, ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+// sshLoginRejected matches the messages OpenSSH prints for a refused key and
+// for a changed host key; m.ssh folds them into the error.
+func sshLoginRejected(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Permission denied (") || strings.Contains(msg, "Host key verification failed")
 }

@@ -417,6 +417,20 @@ func TestUpStartsStoppedOnlineWithProvisionTimeout(t *testing.T) {
 	}
 }
 
+func TestUpCreateNamesOnlyResetWhenSSHLoginIsRejected(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	ssh.fail = func(remote string) error {
+		if remote == dockerVersionCmd {
+			return errors.New("exit status 255: omac-alice@127.0.0.1: Permission denied (publickey).")
+		}
+		return nil
+	}
+	err := m.Up(context.Background(), false)
+	if !errors.Is(err, ErrSSHLoginRejected) || strings.Contains(err.Error(), retryUpHint) {
+		t.Fatalf("Up = %v, want ErrSSHLoginRejected without the retry hint", err)
+	}
+}
+
 func TestUpRerunsProvisioningWhenRunningUnprovisioned(t *testing.T) {
 	m, lima, ssh := newTestManager(t)
 	ssh.provisionFailures = 1
@@ -1518,7 +1532,7 @@ func TestPrepareAttachChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ssh.fail = dockerDown
-	if _, err := m.PrepareAttach(ctx); err == nil || !strings.Contains(err.Error(), "docker in the VM") {
+	if _, err := m.PrepareAttach(ctx); err == nil || !strings.Contains(err.Error(), "session was not started") || !strings.Contains(err.Error(), "omac vm status") {
 		t.Fatalf("docker down: %v", err)
 	}
 	ssh.fail = nil
@@ -1589,6 +1603,12 @@ func TestStatusReportWrite(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("stopped report lacks %q:\n%s", want, b.String())
 		}
+	}
+
+	b.Reset()
+	StatusReport{Created: true, Running: true}.Write(&b)
+	if want := "docker: not answering (checked over SSH)\n"; !strings.Contains(b.String(), want) {
+		t.Errorf("running report without Docker lacks %q:\n%s", want, b.String())
 	}
 
 	b.Reset()
