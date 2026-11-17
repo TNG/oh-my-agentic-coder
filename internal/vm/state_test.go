@@ -1,9 +1,11 @@
 package vm
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -89,8 +91,15 @@ func TestLoadStateRejectsNewerVersion(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"version": 99}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadState(p); err == nil {
-		t.Error("state.json from a newer omac accepted")
+	_, err := LoadState(p)
+	if err == nil || !strings.Contains(err.Error(), p) || !strings.Contains(err.Error(), "update omac") {
+		t.Errorf("LoadState = %v, want an error naming %s and asking to update omac", err, p)
+	}
+	if err := os.WriteFile(p, []byte(fmt.Sprintf(`{"version": %d}`, StateVersion)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(p); err != nil {
+		t.Errorf("current version rejected: %v", err)
 	}
 }
 

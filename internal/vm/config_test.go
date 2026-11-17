@@ -42,8 +42,8 @@ func TestLoadUserConfigRejectsUnknownField(t *testing.T) {
 func TestLoadUserConfigRejectsNegativeCPUs(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "vm.yaml")
 	os.WriteFile(p, []byte("cpus: -2\n"), 0o600)
-	if _, err := LoadUserConfig(p); err == nil {
-		t.Error("negative cpus accepted")
+	if _, err := LoadUserConfig(p); err == nil || !strings.Contains(err.Error(), p) || !strings.Contains(err.Error(), "cpus must not be negative") {
+		t.Errorf("LoadUserConfig = %v, want an error naming %s and the cpus rule", err, p)
 	}
 }
 
