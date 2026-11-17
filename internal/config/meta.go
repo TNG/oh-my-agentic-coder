@@ -4,7 +4,6 @@
 package config
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -178,15 +177,14 @@ func editDistance(a, b string) int {
 // unlike the rest of omac.yaml, because a misspelled key in a security
 // declaration must not silently weaken it.
 func (a *ApprovalsSpec) UnmarshalYAML(node *yaml.Node) error {
-	raw, err := yaml.Marshal(node)
-	if err != nil {
-		return err
+	var unknown []string
+	collectUnknownKeys(node, reflect.TypeOf(ApprovalsSpec{}), "sidecar.approvals", &unknown)
+	if len(unknown) > 0 {
+		return fmt.Errorf("unknown key %s", strings.Join(unknown, ", "))
 	}
 	type plain ApprovalsSpec
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	dec.KnownFields(true)
 	var p plain
-	if err := dec.Decode(&p); err != nil {
+	if err := node.Decode(&p); err != nil {
 		return fmt.Errorf("sidecar.approvals: %w", err)
 	}
 	*a = ApprovalsSpec(p)

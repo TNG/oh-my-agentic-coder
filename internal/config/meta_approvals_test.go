@@ -110,3 +110,29 @@ func TestApprovals_Refused(t *testing.T) {
 		}
 	}
 }
+
+func TestApprovals_AliasToAnchorOutsideTheBlock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), MetaFileName)
+	doc := "name: t\nx-safe: &safe {match: \"GET /status\", approval: none}\nsidecar:\n  command: [\"true\"]\n  approvals:\n    endpoints:\n      - *safe\n"
+	if err := os.WriteFile(p, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadMeta(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Sidecar.Approvals.Endpoints; len(got) != 1 || got[0].Match != "GET /status" {
+		t.Errorf("endpoints = %+v", got)
+	}
+}
+
+func TestApprovals_UnknownKeyBehindAliasIsRefused(t *testing.T) {
+	p := filepath.Join(t.TempDir(), MetaFileName)
+	doc := "name: t\nx-e: &e {match: \"GET /a\", aproval: none}\nsidecar:\n  command: [\"true\"]\n  approvals:\n    endpoints:\n      - *e\n"
+	if err := os.WriteFile(p, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMeta(p); err == nil || !strings.Contains(err.Error(), "sidecar.approvals.endpoints[0].aproval") {
+		t.Errorf("err = %v, want the misspelled key named", err)
+	}
+}
