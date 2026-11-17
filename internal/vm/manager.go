@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,6 +44,9 @@ type Deps struct {
 	Host     HostResources
 	Alive    func(int) bool
 	HostUser string // host login name, mapped to the VM user by AgentUserName
+	// MaxSocketPath is the longest Unix socket path the host accepts; 0
+	// skips the check.
+	MaxSocketPath int
 
 	// Zero means 15m, 5m and 2s.
 	ProvisionTimeout, RestartTimeout, ProbeInterval time.Duration
@@ -60,7 +64,22 @@ func RealDeps() Deps {
 		Host:     DetectHost(),
 		Alive:    ProcessAlive,
 		HostUser: hostUserName(),
+		// macOS: sun_path holds 104 bytes including the NUL; Linux allows more.
+		MaxSocketPath: 103,
 	}
+}
+
+// checkSocketPath refuses a state directory too long for the ssh master
+// socket, which ssh names <LimaHome>/omac/ssh.sock plus 17 bytes.
+func (m *Manager) checkSocketPath() error {
+	if m.Deps.MaxSocketPath == 0 {
+		return nil
+	}
+	n := len(filepath.Join(m.Layout.LimaHome, InstanceName, "ssh.sock")) + len(".XXXXXXXXXXXXXXXX")
+	if n > m.Deps.MaxSocketPath {
+		return fmt.Errorf("omac vm: the state path %s is too long for the VM's ssh socket (%d bytes, at most %d); use a shorter VM name or a shorter $XDG_STATE_HOME", m.Layout.Root, n, m.Deps.MaxSocketPath)
+	}
+	return nil
 }
 
 func hostUserName() string {
@@ -194,6 +213,9 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, error) {
 	if instanceExists {
 		return m.loadState()
+	}
+	if err := m.checkSocketPath(); err != nil {
+		return nil, err
 	}
 	// A leftover state.json belongs to a VM that is gone: keep its port while
 	// it is free, and replace an unloadable file, since no instance can be

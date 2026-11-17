@@ -781,6 +781,23 @@ func TestConcurrentNewInstancesGetDistinctPorts(t *testing.T) {
 	}
 }
 
+// The ssh master socket under LimaHome must fit the socket-path limit, or
+// Lima fails later with an unclear error.
+func TestUpRefusesStatePathTooLongForSocket(t *testing.T) {
+	m, lima, _ := newTestManager(t)
+	sock := len(filepath.Join(m.Layout.LimaHome, InstanceName, "ssh.sock")) + len(".XXXXXXXXXXXXXXXX")
+	m.Deps.MaxSocketPath = sock - 1
+	err := m.Up(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), m.Layout.Root) || !strings.Contains(err.Error(), "XDG_STATE_HOME") {
+		t.Fatalf("Up = %v, want a too-long error naming the state path and XDG_STATE_HOME", err)
+	}
+	if slices.Contains(lima.verbs(), "create") {
+		t.Error("limactl create ran despite the refusal")
+	}
+	m.Deps.MaxSocketPath = sock
+	mustUp(t, m)
+}
+
 func TestFirstInstanceGetsBlockZero(t *testing.T) {
 	m, _, _ := newTestManager(t)
 	mustUp(t, m)
