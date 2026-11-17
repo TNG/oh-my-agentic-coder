@@ -227,23 +227,27 @@ func useTerminals(t *testing.T, files ...*os.File) {
 	isTerminal = func(f *os.File) bool { return slices.Contains(files, f) }
 }
 
-func TestVMExecNoTTYWhenStdoutIsAFile(t *testing.T) {
-	calls := useFakeVMExec(t, nil, 0, nil)
-	env, _, _ := vmTestEnv(t)
-	useTerminals(t, env.Stdin) // omac vm exec -- cat report.html > report.html
-	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
-		t.Fatalf("exit = %d", code)
-	}
-	if (*calls)[0].TTY {
-		t.Errorf("TTY = true although stdout is a file")
-	}
-
-	useTerminals(t, env.Stdin, env.Stdout)
-	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
-		t.Fatalf("exit = %d", code)
-	}
-	if !(*calls)[1].TTY {
-		t.Errorf("TTY = false although stdin and stdout are terminals")
+func TestVMExecTTYOnlyWhenNoStreamIsRedirected(t *testing.T) {
+	for name, tc := range map[string]struct {
+		terminals func(env *Env) []*os.File
+		wantTTY   bool
+	}{
+		"all terminals":     {func(env *Env) []*os.File { return []*os.File{env.Stdin, env.Stdout, env.Stderr} }, true},
+		"stdin redirected":  {func(env *Env) []*os.File { return []*os.File{env.Stdout, env.Stderr} }, false},
+		"stdout redirected": {func(env *Env) []*os.File { return []*os.File{env.Stdin, env.Stderr} }, false},
+		"stderr redirected": {func(env *Env) []*os.File { return []*os.File{env.Stdin, env.Stdout} }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			env, _, _ := vmTestEnv(t)
+			useTerminals(t, tc.terminals(env)...)
+			if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+				t.Fatalf("exit = %d", code)
+			}
+			if got := (*calls)[0].TTY; got != tc.wantTTY {
+				t.Errorf("TTY = %v, want %v", got, tc.wantTTY)
+			}
+		})
 	}
 }
 

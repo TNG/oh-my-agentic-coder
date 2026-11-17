@@ -200,9 +200,9 @@ func runVMExec(args []string, env *Env) int {
 		Conn:    conn,
 		Run:     vm.ExecRunner,
 		SSH:     vm.DefaultSSH,
-		// A terminal in the VM turns "\n" into "\r\n" and mixes stderr into
-		// stdout, which would corrupt `omac vm exec -- cat x > x`.
-		TTY:    isTerminal(env.Stdin) && isTerminal(env.Stdout),
+		// A terminal in the VM turns "\n" into "\r\n" and merges stderr into
+		// stdout, so a redirected stream such as `2>build.log` rules it out.
+		TTY:    isTerminal(env.Stdin) && isTerminal(env.Stdout) && isTerminal(env.Stderr),
 		Stdin:  env.Stdin,
 		Stdout: env.Stdout,
 		Stderr: env.Stderr,
