@@ -38,11 +38,11 @@ func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, 
 		}
 		return DockerVersion{}, err
 	}
-	api, version, _ := strings.Cut(strings.TrimSpace(out.String()), " ")
-	if api == "" {
-		return DockerVersion{}, errors.New("docker version printed no API version")
+	fields := strings.Fields(out.String())
+	if len(fields) != 2 {
+		return DockerVersion{}, fmt.Errorf("docker version printed %q, want \"<api version> <version>\"", out.String())
 	}
-	return DockerVersion{APIVersion: api, Version: version}, nil
+	return DockerVersion{APIVersion: fields[0], Version: fields[1]}, nil
 }
 
 // waitDocker polls dockerVersion until Docker answers or timeout passes.

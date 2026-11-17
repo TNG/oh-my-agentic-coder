@@ -1562,7 +1562,7 @@ func TestPrepareAttachNamesResetWhenSSHLoginIsRejected(t *testing.T) {
 	mustUp(t, m)
 	ssh.fail = func(remote string) error {
 		if remote == dockerVersionCmd {
-			return errors.New("exit status 255: Host key verification failed.")
+			return errors.New("exit status 255: omac-alice@127.0.0.1: Permission denied (publickey).")
 		}
 		return nil
 	}
