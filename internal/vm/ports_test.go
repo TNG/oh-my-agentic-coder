@@ -5,45 +5,33 @@ import (
 	"testing"
 )
 
-func TestPickPortsDefaults(t *testing.T) {
-	ssh, docker, err := PickPorts(func(int) bool { return true })
+func TestPickSSHPortDefault(t *testing.T) {
+	ssh, err := PickSSHPort(func(int) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ssh != DefaultSSHPort || docker != DefaultDockerPort {
-		t.Errorf("got %d/%d, want %d/%d", ssh, docker, DefaultSSHPort, DefaultDockerPort)
+	if ssh != DefaultSSHPort {
+		t.Errorf("got %d, want %d", ssh, DefaultSSHPort)
 	}
 }
 
-func TestPickPortsSkipsBusySSHDefault(t *testing.T) {
-	ssh, docker, err := PickPorts(func(p int) bool { return p != 42022 })
+func TestPickSSHPortSkipsBusyDefault(t *testing.T) {
+	ssh, err := PickSSHPort(func(p int) bool { return p != 42022 })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ssh != 42023 || docker != DefaultDockerPort {
-		t.Errorf("got %d/%d, want 42023/%d", ssh, docker, DefaultDockerPort)
+	if ssh != 42023 {
+		t.Errorf("got %d, want 42023", ssh)
 	}
 }
 
-func TestPickPortsNeverEqual(t *testing.T) {
-	// Only ports at or above 42376 are free: the SSH scan lands in the docker
-	// range, and the docker pick must not reuse it.
-	ssh, docker, err := PickPorts(func(p int) bool { return p >= 42376 })
-	if err != nil {
-		t.Fatal(err)
+func TestPickSSHPortExhausted(t *testing.T) {
+	if _, err := PickSSHPort(func(int) bool { return false }); err == nil {
+		t.Fatal("PickSSHPort with no free port returned nil error")
 	}
-	if ssh == docker {
-		t.Fatalf("ssh and docker port both %d", ssh)
-	}
-}
-
-func TestPickPortsExhausted(t *testing.T) {
-	if _, _, err := PickPorts(func(int) bool { return false }); err == nil {
-		t.Fatal("PickPorts with no free port returned nil error")
-	}
-	// Only one port free in total: two distinct ports cannot be found.
-	if _, _, err := PickPorts(func(p int) bool { return p == 42500 }); err == nil {
-		t.Fatal("PickPorts with a single free port returned nil error")
+	// A free port above the scan range does not count.
+	if _, err := PickSSHPort(func(p int) bool { return p == 43000 }); err == nil {
+		t.Fatal("PickSSHPort picked a port outside 42022..42999")
 	}
 }
 

@@ -84,10 +84,29 @@ omac vm offline
 - Use the task that runs all checks (`check` or the project's own), not only
   `test`: Gradle downloads the tools behind tasks such as Checkstyle or
   Spotless only when those tasks run.
-- `--env NAME` passes a token from the host's shell. Leave it out if the
-  downloads need none. Use a short-lived token, because anything a session
-  left behind in the VM runs online with it. `--no-daemon` makes sure no
-  Gradle daemon keeps the token afterwards.
+- `--env NAME` passes a token from the host's shell. The human exports `NAME`
+  in that shell first; otherwise omac stops with `environment variable NAME
+  is not set`. Never look for the token or its value yourself. Leave `--env`
+  out if the downloads need no token. Use a short-lived token, because
+  anything a session left behind in the VM runs online with it.
+  `--no-daemon` makes sure no Gradle daemon keeps the token afterwards.
+- If the token sits in `~/.gradle/gradle.properties`, the human lists the
+  property names (without values) and picks the token:
+
+  ```sh
+  cut -d= -f1 ~/.gradle/gradle.properties | grep -iE 'token|password|secret|key'
+  ```
+
+  Gradle reads a property `foo` also from `ORG_GRADLE_PROJECT_foo`, so for
+  `foo` they run:
+
+  ```sh
+  export ORG_GRADLE_PROJECT_foo="$(sed -n 's/^foo=//p' ~/.gradle/gradle.properties)"
+  omac vm exec --env ORG_GRADLE_PROJECT_foo --cwd backend -- ./gradlew check --no-daemon
+  ```
+
+- Priming has to end with `BUILD SUCCESSFUL`. If it fails, every offline
+  build in a session fails too.
 
 ## 7. Sandbox grants
 

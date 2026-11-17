@@ -22,10 +22,11 @@ metadata:
 # omac-vm
 
 The omac VM is one long-lived Linux VM on the human's computer. In a session
-started with `--vm`, the `docker` command talks to the Docker inside the VM,
-and `omac vm exec` runs a command in the VM on a copy of the worktree. The VM
-has no network access. Only the human can import Docker images into it and
-fill its build caches ("priming"), from the host; you cannot do either.
+started with `--vm`, `omac vm exec` runs a command in the VM on a copy of the
+worktree. Docker exists only there: run `omac vm exec -- docker ps`, not
+`docker ps`. The VM has no network access. Only the human can import Docker
+images into it and fill its build caches ("priming"), from the host; you
+cannot do either.
 
 ## Setting up the VM for the first time
 
@@ -69,8 +70,10 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
   killed in the VM, for example when it ran out of memory.
 - omac quotes every argument after `--`, so `*` and `|` are not expanded in
   the VM. Wrap such a command in `sh -c '...'`, as in the examples below.
-- Run tests that use Testcontainers through `omac vm exec`, not in the
-  sandbox: the sandbox reaches the Docker API but not the containers' ports.
+- Run Docker commands and tests that use Testcontainers through
+  `omac vm exec`; the sandbox has no Docker. Paths in `docker run -v` and
+  `docker build` refer to the VM, so use paths inside the worktree copy, for
+  example `omac vm exec -- docker build -t app .`.
 - Keep runs short: run focused tests (`--tests 'com.example.FooTest'`), do not
   run `clean`, and let the Gradle daemon keep running between runs.
 
@@ -93,10 +96,12 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
   `postgres:16-alpine`, and ask the human to run
   `omac vm image add <image>` on the host.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
-  or `No cached version ... available for offline mode`. Do not drop
-  `--offline`. Ask the human to prime the VM from the host. omac refuses
-  `omac vm online` while a session is attached, so they end this session
-  first:
+  or `No cached version ... available for offline mode`. If the Gradle
+  wrapper already fails with `UnknownHostException: services.gradle.org`
+  while downloading its distribution, the VM was never primed, for example
+  after `omac vm reset`. Do not drop `--offline`. Ask the human to prime the
+  VM from the host. omac refuses `omac vm online` while a session is
+  attached, so they end this session first:
 
   ```sh
   omac vm online
@@ -107,7 +112,9 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
   `<check task>` is the task that runs all checks, such as `check`, not only
   `test`: Gradle downloads the tools behind tasks such as Checkstyle or
   Spotless only when those tasks run. Leave out `--env` if the downloads need
-  no token. `--no-daemon` is only for priming: a daemon would keep the token.
+  no token; otherwise the human exports it in that shell first. Never look
+  for the token yourself. `--no-daemon` is only for priming: a daemon would
+  keep the token. Priming has to end with `BUILD SUCCESSFUL`.
 - **A JDK or system package is missing.** Gradle reports `Cannot find a Java
   installation matching ...`, or a command is not found. Name it, for example
   `temurin-21`, and ask the human to add it to `jdks` or `packages` in

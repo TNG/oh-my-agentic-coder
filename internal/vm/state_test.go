@@ -10,7 +10,7 @@ import (
 func TestSaveLoadStateRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "state.json")
 	want := &State{
-		Version: StateVersion, SSHPort: 60022, DockerPort: 62375, Mode: ModeOffline,
+		Version: StateVersion, SSHPort: 60022, Mode: ModeOffline,
 		Images: []string{"postgres:16"},
 		JDKs:   []string{"temurin-25"}, Packages: []string{"jq"},
 	}
