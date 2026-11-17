@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -220,6 +221,35 @@ func TestInterruptedSetupLeavesNoMarker(t *testing.T) {
 	}
 	if _, g := ssh.snapshot(); g.provisioned {
 		t.Error("marker present after an interrupted setup; the next up would skip setup")
+	}
+}
+
+// The script's own output says why it failed; both streams have to reach
+// the error, and of a long output its end.
+func TestSetupFailureShowsTheEndOfBothStreams(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	writeConfig(t, m, "setup: |\n  false\n")
+	fake := m.Deps.SSH
+	m.Deps.SSH = func(ctx context.Context, tg SSHTarget, stdin io.Reader, stdout, stderr io.Writer, remote string) error {
+		if remote != setupCmd {
+			return fake(ctx, tg, stdin, stdout, stderr, remote)
+		}
+		fmt.Fprint(stdout, strings.Repeat("early line\n", 2000))
+		fmt.Fprint(stdout, "last stdout line\n")
+		fmt.Fprint(stderr, "E: Unable to locate package nope\n")
+		return errors.New("exit status 100")
+	}
+	err := m.Up(context.Background(), false)
+	if err == nil {
+		t.Fatal("Up succeeded")
+	}
+	for _, want := range []string{"last stdout line", "Unable to locate package nope", "exit status 100", "…"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %.300s", want, err)
+		}
+	}
+	if len(err.Error()) > 2*maxSetupOutput {
+		t.Errorf("error is %d bytes, want it capped", len(err.Error()))
 	}
 }
 

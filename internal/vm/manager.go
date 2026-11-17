@@ -357,7 +357,7 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 
 func (w *tailWriter) String() string {
 	if w.dropped {
-		return capOutput("…" + string(w.b))
+		return "…" + string(w.b)
 	}
 	return string(w.b)
 }
