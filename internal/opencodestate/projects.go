@@ -233,7 +233,7 @@ func desktopWorktrees() []worktreeEntry {
 		return nil
 	}
 	var out []worktreeEntry
-	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+	for _, appID := range desktopAppIDs {
 		for _, base := range desktopDataDirs(home, appID) {
 			for _, p := range desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat")) {
 				out = append(out, worktreeEntry{path: p, origin: originDesktop})
@@ -278,7 +278,7 @@ func DesktopStateDir() string {
 	if err != nil {
 		return ""
 	}
-	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+	for _, appID := range desktopAppIDs {
 		for _, dir := range desktopStateCandidates(home, appID) {
 			if fi, statErr := os.Stat(dir); statErr == nil && fi.IsDir() {
 				return dir
@@ -287,6 +287,9 @@ func DesktopStateDir() string {
 	}
 	return defaultDesktopStateDir(home)
 }
+
+// desktopAppIDs are the stable and the beta Desktop app, most likely first.
+var desktopAppIDs = []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"}
 
 // desktopStateCandidates lists the per-user directories the OpenCode
 // Desktop (an Electron app) may use for its data/state — the location it
@@ -321,7 +324,7 @@ func IsDesktopStateDir(dir string) bool {
 		return false
 	}
 	dir = filepath.Clean(dir)
-	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+	for _, appID := range desktopAppIDs {
 		if slices.Contains(desktopStateCandidates(home, appID), dir) {
 			return true
 		}
