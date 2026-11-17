@@ -21,10 +21,17 @@ Verify that the guard rejects the failure independently of the checkout or
 host where practical. State any remaining gap; prose and ADRs document
 decisions but do not enforce them.
 
-In every fix round, run `comment-placement-review` as well as
-`documentation-accuracy-review`. Delete redundant comments; prefer clear
-names and structure. Keep comments for necessary contracts and surprising
-reasons, and put usage guidance in documentation and fix history in the PR.
+Prefer self-explanatory code; comments are the exception. Use clear names
+and structure rather than comments that explain what the code does.
+
+When modifying a class, function or module, review its existing comments
+too. Remove redundant or stale comments, and replace explanations with
+clearer code where practical. Retain only comments that convey necessary
+information the code cannot express, or are required by tooling, public
+API documentation or licensing.
+
+In every fix round, check documentation accuracy and comment placement.
+Put usage guidance in documentation and fix history in the PR.
 
 ## Communication
 
