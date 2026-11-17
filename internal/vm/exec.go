@@ -267,8 +267,9 @@ type ExecOpts struct {
 
 // Exec records the copy in ~/omac/.worktrees, copies the git top level of
 // Workdir (or Workdir outside a repository) into the VM (one way, never
-// deleting there), and runs Cmd in it. It returns the remote command's
-// exit code; err is set only when omac itself failed.
+// deleting there), and runs Cmd in it. It refuses a copy that overlaps a
+// path the sandbox protects. It returns the remote command's exit code;
+// err is set only when omac itself failed.
 func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	logf := o.Log
 	if logf == nil {
@@ -309,13 +310,13 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 			return 1, err
 		}
 	} else {
-		if containsHome(root) {
-			return 1, fmt.Errorf("omac vm exec: %s is not a git work tree and contains your home directory, which holds credentials; run it from a project directory", root)
-		}
 		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and the files the sandbox protects, such as .env\n", root)
 	}
 	if strings.ContainsAny(root, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
+	}
+	if err := refuseProtectedOverlap(root); err != nil {
+		return 1, err
 	}
 	slug := WorktreeSlug(root)
 	remoteDir := RemoteDir(slug)
@@ -361,15 +362,40 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	return 0, nil
 }
 
-// containsHome reports whether dir is the user's home directory or one of
-// its parents.
-func containsHome(dir string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
+// refuseProtectedOverlap fails when root contains or lies in a path the
+// sandbox protects, such as ~/.ssh or the VM's admin key: every --vm
+// session can read the copy. Paths are compared by file identity, so a
+// symlink or another spelling of the same directory counts too.
+func refuseProtectedOverlap(root string) error {
+	if _, err := os.UserHomeDir(); err != nil {
+		return fmt.Errorf("omac vm exec: cannot tell which paths the sandbox protects: %w", err)
 	}
-	rel, err := filepath.Rel(dir, filepath.Clean(home))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return nil // nothing there to copy; rsync reports it
+	}
+	for _, p := range sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil) {
+		pInfo, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if hasAncestor(p, rootInfo) || hasAncestor(root, pInfo) {
+			return fmt.Errorf("omac vm exec: %s overlaps %s, which the sandbox protects; run it from a project directory", root, p)
+		}
+	}
+	return nil
+}
+
+// hasAncestor reports whether path or one of its parents is dir.
+func hasAncestor(path string, dir os.FileInfo) bool {
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		if fi, err := os.Stat(p); err == nil && os.SameFile(fi, dir) {
+			return true
+		}
+		if filepath.Dir(p) == p {
+			return false
+		}
+	}
 }
 
 const connectionHint = "connection lost or remote command killed (is the VM running? `omac vm status`)"

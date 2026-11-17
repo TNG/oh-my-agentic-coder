@@ -556,22 +556,65 @@ func TestExecFromSubdirOfRealRepo(t *testing.T) {
 	}
 }
 
-func TestExecRefusesToCopyHomeOutsideRepo(t *testing.T) {
-	t.Setenv("HOME", "/w/home/alice")
-	for _, workdir := range []string{"/w/home/alice", "/w/home/alice/", "/w/home", "/"} {
-		f := &execFakes{notRepo: exitErr(t, 128)}
-		_, err := Exec(context.Background(), f.opts(workdir, io.Discard))
-		if err == nil || !strings.Contains(err.Error(), "home directory") {
-			t.Errorf("Exec from %s = %v, want a refusal naming the home directory", workdir, err)
-		}
-		if f.rsync != nil || len(f.remotes) != 0 {
-			t.Errorf("Exec from %s copied: rsync=%q ssh=%q", workdir, f.rsync, f.remotes)
+func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "home")
+	writeFiles(t, home, map[string]string{".ssh/id_ed25519": "x", "proj/a.go": "package a"})
+	t.Setenv("HOME", home)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	type copyRoot struct {
+		workdir string
+		repo    bool
+	}
+	cases := map[string]copyRoot{
+		"home":                 {home, false},
+		"home as a repository": {home, true},
+		"parent of home":       {base, false},
+		"protected directory":  {filepath.Join(home, ".ssh"), false},
+		"symlink to home":      {link, false},
+	}
+	if upper := strings.ToUpper(home); upper != home {
+		if a, err1 := os.Stat(upper); err1 == nil {
+			if b, err2 := os.Stat(home); err2 == nil && os.SameFile(a, b) {
+				cases["home in other case"] = copyRoot{upper, false} // case-insensitive file system
+			}
 		}
 	}
-	// A repository at the home directory is copied as git sees it.
-	f := &execFakes{}
-	if _, err := Exec(context.Background(), f.opts("/w/home/alice", io.Discard)); err != nil {
-		t.Errorf("Exec from a repository at home = %v, want nil", err)
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := &execFakes{}
+			if !c.repo {
+				f.notRepo = exitErr(t, 128)
+			}
+			_, err := Exec(context.Background(), f.opts(c.workdir, io.Discard))
+			if err == nil || !strings.Contains(err.Error(), "protects") {
+				t.Errorf("Exec from %s = %v, want a refusal", c.workdir, err)
+			}
+			if f.rsync != nil || len(f.remotes) != 0 {
+				t.Errorf("Exec from %s copied: rsync=%q ssh=%q", c.workdir, f.rsync, f.remotes)
+			}
+		})
+	}
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	if _, err := Exec(context.Background(), f.opts(filepath.Join(home, "proj"), io.Discard)); err != nil {
+		t.Errorf("Exec from a project under home = %v, want nil", err)
+	}
+}
+
+func TestExecRefusesWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	if _, err := Exec(context.Background(), f.opts("/w/plain", io.Discard)); err == nil {
+		t.Fatal("Exec without a home directory = nil, want an error")
+	}
+	if f.rsync != nil {
+		t.Fatalf("copied without knowing the protected paths: %q", f.rsync)
 	}
 }
 
