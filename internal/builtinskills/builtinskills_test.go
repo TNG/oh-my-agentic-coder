@@ -120,6 +120,30 @@ func TestMaterializeWritesWholeBundle(t *testing.T) {
 	}
 }
 
+func TestMissingSecondaryFileIsStaleAndRestored(t *testing.T) {
+	parent := t.TempDir()
+	if _, err := Materialize("omac-vm", parent, false); err != nil {
+		t.Fatal(err)
+	}
+	setup := filepath.Join(parent, "omac-vm", "setup.md")
+	if err := os.Remove(setup); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := Check("omac-vm", parent); err != nil || st != StateStale {
+		t.Fatalf("Check = %s, %v; want %s", st, err, StateStale)
+	}
+	res, err := Materialize("omac-vm", parent, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusUpdated {
+		t.Fatalf("status = %s, want updated", res.Status)
+	}
+	if _, err := os.Stat(setup); err != nil {
+		t.Fatalf("setup.md not restored: %v", err)
+	}
+}
+
 func TestMaterializeForeignGuard(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "omac-write-a-skill")
