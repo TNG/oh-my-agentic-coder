@@ -95,17 +95,21 @@ and import the images again.
 
 ```sh
 omac vm online
-omac vm exec --env MY_REPO_TOKEN --cwd backend -- <full build command>
+omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
 omac vm offline
 ```
 
+For Maven, the middle line is
+`omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./mvnw verify`.
+
 - If the build fails, still run `omac vm offline`: omac refuses `--vm`
   sessions while the VM is online.
-- Run it from the fresh clone. `--cwd` is the module with the build,
-  relative to the current directory.
-- `<full build command>` runs all checks, not only the tests, because some
-  tools, such as Checkstyle or Spotless, are downloaded only when their task
-  runs. Examples: Gradle `./gradlew check --no-daemon`, Maven `./mvnw verify`.
+- Run it from the fresh clone. `--cwd` is the root of the build (the
+  directory with `gradlew` or the top-level `pom.xml`), relative to the
+  current directory.
+- Run all checks, not only the tests (`check` for Gradle, `verify` for
+  Maven), because some tools, such as Checkstyle or Spotless, are downloaded
+  only when the build step that uses them runs.
 - `--env NAME` passes a token from the host's shell. The human exports `NAME`
   in that shell first; otherwise omac stops with `environment variable NAME
   is not set`. Never look for the token or its value yourself. Leave `--env`
@@ -132,9 +136,16 @@ omac vm offline
   omac vm exec --env TOKEN --cwd backend -- sh -c 'env "ORG_GRADLE_PROJECT_gpr.key=$TOKEN" bash ./gradlew check --no-daemon'
   ```
 
-- Priming has to end with a successful build. Gradle, for example, stops at
-  the first failed task and skips the downloads of the tasks after it, so
-  offline builds in a session can then miss dependencies.
+- Maven reads repository credentials only from a `<server>` entry in a
+  settings file, not from the environment. Use a settings file in the
+  project that git does not ignore (the VM copy leaves ignored files out),
+  for example `.mvn/settings.xml`, whose `<password>` is
+  `${env.MY_REPO_TOKEN}`, and add `-s .mvn/settings.xml` to the Maven
+  command. Never write the token itself into a file: the VM keeps it.
+- Priming has to end with exit code 0 and `BUILD SUCCESSFUL` (Gradle) or
+  `BUILD SUCCESS` (Maven). Gradle, for example, stops at the first failed
+  task and skips the downloads of the tasks after it, so offline builds in a
+  session can then miss dependencies.
 
 ## 7. Sandbox grants
 

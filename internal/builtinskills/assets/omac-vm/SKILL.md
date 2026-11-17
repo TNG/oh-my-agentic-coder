@@ -54,14 +54,16 @@ run `omac vm up` yourself.
 omac vm exec --cwd <module> -- <build command> > "${TMPDIR:-/tmp}/vm-test.log" 2>&1; echo "exit=$?"
 ```
 
-`<module>` is the directory with the build, relative to your current
-directory, for example `backend`. Typical build commands, with the tool's
-offline switch:
+`<module>` is the root of the build, relative to your current directory, for
+example `backend`: the directory with `gradlew` or `settings.gradle`, or with
+the top-level `pom.xml`, not a submodule. Typical build commands, with the
+tool's offline switch:
 
 - Gradle: `./gradlew test --offline`. Without `--offline`, Gradle checks
-  version ranges such as `[1.4,2.0)` online again after 24 hours and fails
-  in the VM even though the cache is complete.
-- Maven: `./mvnw -o test` (or `mvn -o test`).
+  version ranges such as `[1.4,2.0)` and `-SNAPSHOT` dependencies online
+  again after 24 hours and fails in the VM even though the cache is complete.
+- Maven: `./mvnw -o test` (or `mvn -o test`). Select a submodule with
+  `-pl <submodule> -am`.
 
 The VM has no network access: everything a build downloads must already be
 in its cache. Keep the tool's offline switch if it has one.
@@ -92,9 +94,11 @@ in its cache. Keep the tool's offline switch if it has one.
   `omac vm exec -- sh -c 'docker run --rm -v "$PWD":/src -w /src <image> ls'`,
   where `$PWD` is the directory the command runs in: the place in the copy
   that matches your current directory or `--cwd`.
-- Keep runs short: run focused tests, do not run `clean`, and keep build
-  daemons running between runs. With Gradle: `--tests 'com.example.FooTest'`;
-  with Maven: `-Dtest=FooTest`.
+- Keep runs short: run focused tests and do not run `clean`. With Gradle,
+  use `--tests 'com.example.FooTest'` and let the Gradle daemon keep running
+  between runs. With Maven, use
+  `-Dtest=FooTest -Dsurefire.failIfNoSpecifiedTests=false`; without the
+  second flag, every module without a matching test fails.
 
 ## Read the results
 
@@ -113,6 +117,8 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
 If no result file exists, the tests did not run: read the build log
 instead.
 
+Maven writes the same XML files to `target/surefire-reports/` of each module.
+
 ## When something is missing, ask the human
 
 - **An image is missing.** Docker or Testcontainers reports `Unable to find
@@ -130,13 +136,14 @@ instead.
   is attached, so they end this session first. Never look for the registry
   token the build needs yourself.
 - **The build wrapper cannot download its build tool.** The wrapper fails to
-  download its own distribution before the build starts, for example with
-  `UnknownHostException` for the host in Gradle's `distributionUrl` (usually
-  `services.gradle.org`): the VM was not primed for this project's build
-  tool version, for example after `omac vm reset` or a wrapper upgrade. Name
-  the version from the wrapper's properties file, such as `distributionUrl`
-  in `gradle/wrapper/gradle-wrapper.properties`, and ask the human to prime
-  the VM as described in [setup.md](setup.md); they end this session first.
+  download its own distribution before the build starts, with an unknown
+  host: the one in the wrapper's `distributionUrl`, usually
+  `services.gradle.org` or `repo.maven.apache.org`. The VM was not primed
+  for this project's build tool version, for example after `omac vm reset`
+  or a wrapper upgrade. Name the version from the wrapper's properties file
+  (`distributionUrl` in `gradle/wrapper/gradle-wrapper.properties` or
+  `.mvn/wrapper/maven-wrapper.properties`), and ask the human to prime the
+  VM as described in [setup.md](setup.md); they end this session first.
 - **A JDK or system package is missing.** The build reports a missing Java
   installation (Gradle: `No matching toolchains found` or `Cannot find a Java
   installation`), or a command is not found. Name it, for example
