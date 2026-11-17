@@ -133,6 +133,7 @@ type fakeGuest struct {
 	firewall    bool
 	bootDone    bool
 	images      []string
+	worktrees   string // content of omac/.worktrees in the agent's home
 }
 
 type fakeSSH struct {
@@ -203,6 +204,8 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		if !g.bootDone {
 			return errors.New("exit status 1")
 		}
+	case remote == listWorktreesCmd:
+		fmt.Fprint(stdout, g.worktrees)
 	case remote == dockerCmd("load"):
 		g.images = append(g.images, in)
 	case strings.HasPrefix(remote, dockerCmd("image ls")):
@@ -285,6 +288,12 @@ func (f *fakeSSH) setFirewall(on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.guest.firewall = on
+}
+
+func (f *fakeSSH) setWorktrees(content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.guest.worktrees = content
 }
 
 func (f *fakeSSH) remotes() []string {

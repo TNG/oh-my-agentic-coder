@@ -32,6 +32,12 @@ func TestSSHArgs(t *testing.T) {
 			t.Errorf("SSHArgs %v lacks %s %s", args, p[0], p[1])
 		}
 	}
+	if slices.Contains(args, "-t") {
+		t.Errorf("SSHArgs without TTY = %v, want no -t", args)
+	}
+	if args := SSHArgs(SSHTarget{User: "agent", Port: 42022, KeyPath: "/k", KnownHosts: "/kh", TTY: true}); !slices.Contains(args, "-t") {
+		t.Errorf("SSHArgs with TTY = %v, want -t", args)
+	}
 }
 
 func TestShellQuote(t *testing.T) {
