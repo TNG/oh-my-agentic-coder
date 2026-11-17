@@ -240,6 +240,142 @@ func TestUpRefusesWhileProvisioningStillRunning(t *testing.T) {
 	}
 }
 
+func TestLifecycleRefusesWhileProvisioningStillRunning(t *testing.T) {
+	operations := []struct {
+		name string
+		run  func(*Manager) error
+	}{
+		{"up", func(m *Manager) error { return m.Up(context.Background(), false) }},
+		{"reprovision", func(m *Manager) error { return m.Up(context.Background(), true) }},
+		{"offline", func(m *Manager) error { return m.SetMode(context.Background(), ModeOffline) }},
+	}
+	for _, op := range operations {
+		t.Run(op.name, func(t *testing.T) {
+			m, lima, ssh, _ := newTestManager(t)
+			ssh.slowBoots = 1
+			lima.startTimeout = errors.New("boot timed out")
+			if err := m.Up(context.Background(), false); err == nil {
+				t.Fatal("setup: expected the first boot to time out")
+			}
+			_, before := ssh.snapshot()
+			if before.bootDone || before.provisioned || lima.status() != StatusRunning {
+				t.Fatalf("setup: guest = %+v, want running and still provisioning", before)
+			}
+			writeConfig(t, m, "packages: [curl]\n")
+			lima.reset()
+			nSSH := len(ssh.remotes())
+
+			if err := op.run(m); err == nil || !strings.Contains(err.Error(), "provisioning is still running") {
+				t.Errorf("operation = %v, want still-provisioning refusal", err)
+			}
+			assertVerbs(t, lima, "list")
+			if ssh.stoppedWhileProvisioning() {
+				t.Error("stopped the VM during provisioning")
+			}
+			_, after := ssh.snapshot()
+			if after.modeFile != before.modeFile || after.packages != before.packages ||
+				after.provisioned != before.provisioned || after.bootDone != before.bootDone {
+				t.Errorf("guest changed: before %+v, after %+v", before, after)
+			}
+			for _, remote := range ssh.remotes()[nSSH:] {
+				if strings.Contains(remote, " > ") || strings.Contains(remote, "rm -f ") {
+					t.Errorf("guest mutation during provisioning: %s", remote)
+				}
+			}
+			if st := mustState(t, m); st.Mode != ModeOnline {
+				t.Errorf("mode = %q, want online kept", st.Mode)
+			}
+		})
+	}
+}
+
+func TestSetModeOfflineRefusesUnprovisionedGuest(t *testing.T) {
+	for _, stopped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stopped=%t", stopped), func(t *testing.T) {
+			m, lima, ssh, probe := newTestManager(t)
+			ssh.provisionFailures = 1
+			probe.setErr(errors.New("connection refused"))
+			if err := m.Up(context.Background(), false); err == nil {
+				t.Fatal("setup: expected provisioning failure")
+			}
+			_, guest := ssh.snapshot()
+			if !guest.bootDone || guest.provisioned {
+				t.Fatalf("setup: guest = %+v, want completed but failed provisioning", guest)
+			}
+			if stopped {
+				if err := m.Down(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				ssh.provisionFailures = 1
+			}
+			probe.setErr(nil)
+			lima.reset()
+			nSSH := len(ssh.remotes())
+
+			err := m.SetMode(context.Background(), ModeOffline)
+			if err == nil || !strings.Contains(err.Error(), "omac vm up") {
+				t.Errorf("SetMode(offline) = %v, want recovery hint", err)
+			}
+			want := []string{"list"}
+			if stopped {
+				want = append(want, "start")
+			}
+			assertVerbs(t, lima, want...)
+			if slices.Contains(ssh.remotes()[nSSH:], writeModeCmd(ModeOffline)) {
+				t.Error("wrote offline mode before provisioning succeeded")
+			}
+			if st := mustState(t, m); st.Mode != ModeOnline {
+				t.Errorf("mode = %q, want online kept", st.Mode)
+			}
+		})
+	}
+}
+
+func TestLifecycleReadinessProbeFailureRefusesMutation(t *testing.T) {
+	for _, op := range []string{"reprovision", "offline", "online"} {
+		t.Run(op, func(t *testing.T) {
+			m, lima, ssh, _ := newTestManager(t)
+			mustUp(t, m)
+			_, before := ssh.snapshot()
+			probeErr := errors.New("SSH disconnected")
+			ssh.fail = func(remote string) error {
+				if remote == bootDoneCmd {
+					return probeErr
+				}
+				return nil
+			}
+			writeConfig(t, m, "packages: [curl]\n")
+			lima.reset()
+			nSSH := len(ssh.remotes())
+
+			var err error
+			if op == "reprovision" {
+				err = m.Up(context.Background(), true)
+			} else {
+				// Force the offline request through the repair path.
+				if op == "offline" {
+					ssh.setFirewall(false)
+				}
+				err = m.SetMode(context.Background(), op)
+			}
+			if !errors.Is(err, probeErr) {
+				t.Errorf("operation = %v, want the readiness probe failure", err)
+			}
+			assertVerbs(t, lima, "list")
+			_, after := ssh.snapshot()
+			if after.modeFile != before.modeFile || after.packages != before.packages ||
+				after.provisioned != before.provisioned {
+				t.Errorf("guest files changed: before %+v, after %+v", before, after)
+			}
+			for _, remote := range ssh.remotes()[nSSH:] {
+				if strings.Contains(remote, " > ") || strings.Contains(remote, "rm -f ") {
+					t.Errorf("guest mutation after failed readiness check: %s", remote)
+				}
+			}
+		})
+	}
+}
+
 // A stopped VM whose state says online may lack the provisioned marker, so
 // its boot provisions: it needs the provisioning timeout and the retry hint.
 func TestUpStartsStoppedOnlineWithProvisionTimeout(t *testing.T) {

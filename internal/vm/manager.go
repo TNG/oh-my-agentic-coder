@@ -272,14 +272,21 @@ func (m *Manager) upOnline(ctx context.Context, st *State, cfg UserConfig, runni
 			return fmt.Errorf("%w; %s", err, retryUpHint)
 		}
 	}
-	if m.ssh(ctx, m.rootTarget(st), nil, nil, bootDoneCmd) != nil {
-		return errors.New("omac vm: provisioning is still running; run `omac vm up` again in a few minutes")
+	if err := m.checkBootDone(ctx, st); err != nil {
+		return err
 	}
 	if m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd) != nil {
 		fmt.Fprintln(m.Out, "omac vm: provisioning was not completed, re-running it")
 		return m.reprovision(ctx, st, cfg, true)
 	}
 	fmt.Fprintln(m.Out, "omac vm: VM is online; run `omac vm offline` before attaching sessions")
+	return nil
+}
+
+func (m *Manager) checkBootDone(ctx context.Context, st *State) error {
+	if err := m.ssh(ctx, m.rootTarget(st), nil, nil, bootDoneCmd); err != nil {
+		return fmt.Errorf("omac vm: cannot confirm boot completion; provisioning is still running or the guest is unreachable; run `omac vm up` again in a few minutes: %w", err)
+	}
 	return nil
 }
 
@@ -313,11 +320,13 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 	}
 	fmt.Fprintln(m.Out, "omac vm: reprovisioning (this takes a few minutes)…")
 	if !running {
-		// The VM boots offline; root ssh works regardless. A boot that still
-		// owes its provisioning needs the full timeout.
+		// A boot that still owes its provisioning needs the full timeout.
 		if err := m.start(ctx, m.Deps.ProvisionTimeout); err != nil {
 			return err
 		}
+	}
+	if err := m.checkBootDone(ctx, st); err != nil {
+		return err
 	}
 	st.Mode = ModeOnline
 	if err := SaveState(m.Layout.StatePath, st); err != nil {
@@ -339,6 +348,7 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 // switchMode writes ModeFile, restarts the VM, waits for Docker and checks
 // the firewall matches mode. State records ModeOnline until the check
 // passes, so a failed switch never leaves state claiming offline.
+// It refuses during provisioning, and refuses offline until provisioning succeeds.
 func (m *Manager) switchMode(ctx context.Context, st *State, mode string, running bool, timeout time.Duration) error {
 	if st.Mode != ModeOnline {
 		st.Mode = ModeOnline
@@ -351,6 +361,14 @@ func (m *Manager) switchMode(ctx context.Context, st *State, mode string, runnin
 		// provisioning timeout.
 		if err := m.start(ctx, m.Deps.ProvisionTimeout); err != nil {
 			return err
+		}
+	}
+	if err := m.checkBootDone(ctx, st); err != nil {
+		return err
+	}
+	if mode == ModeOffline {
+		if err := m.ssh(ctx, m.rootTarget(st), nil, nil, markerPresentCmd); err != nil {
+			return fmt.Errorf("omac vm: cannot confirm provisioning completed; %s: %w", retryUpHint, err)
 		}
 	}
 	if err := m.ssh(ctx, m.rootTarget(st), nil, nil, writeModeCmd(mode)); err != nil {
@@ -451,6 +469,8 @@ func (m *Manager) Reset(ctx context.Context) error {
 
 // SetMode switches to ModeOnline or ModeOffline, restarting the VM unless it is
 // already in that mode. Going online is refused while sessions are attached.
+// Mode changes are refused during provisioning; an offline switch also
+// requires successful provisioning.
 func (m *Manager) SetMode(ctx context.Context, mode string) error {
 	if mode != ModeOnline && mode != ModeOffline {
 		return fmt.Errorf("omac vm: unknown mode %q (want %s or %s)", mode, ModeOnline, ModeOffline)
