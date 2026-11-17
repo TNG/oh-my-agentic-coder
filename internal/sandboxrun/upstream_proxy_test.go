@@ -196,31 +196,50 @@ func TestResolveUpstreamProxyEmptyDoesNotDialHttpColon(t *testing.T) {
 	}
 }
 
-// TestResolveUpstreamProxyNoProxyLeadingDot verifies that the shell's
-// NO_PROXY is honored end to end when it uses the common leading-dot
-// domain form: hosts under that suffix must be planned for direct
-// dialing (ChainsHost false), everything else still chained.
-func TestResolveUpstreamProxyNoProxyLeadingDot(t *testing.T) {
-	clearProxyEnv(t)
-	t.Setenv("HTTPS_PROXY", "http://proxy.test:8080")
-	t.Setenv("NO_PROXY", ".example.com")
-
-	p := &sandboxprofile.Profile{}
-	d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
-
-	planner, ok := d.(netproxy.TunnelPlanner)
-	if !ok {
-		t.Fatalf("got %T, want upstream proxy dialer implementing TunnelPlanner", d)
+// TestResolveUpstreamProxyNoProxyForms verifies that every supported
+// NO_PROXY form is honored end to end, from the shell's NO_PROXY (split
+// on commas and trimmed by resolveUpstreamProxy) and from the grants
+// file's network.no_proxy: hosts under the domain must be planned for
+// direct dialing (ChainsHost false), everything else still chained.
+func TestResolveUpstreamProxyNoProxyForms(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		profile []string
+		bypass  []string
+		chain   []string
+	}{
+		{"leading_dot", ".example.com", nil, []string{"example.com", "svc.example.com", "a.b.example.com"}, []string{"other.test", "notexample.com"}},
+		{"wildcard", "*.example.com", nil, []string{"example.com", "svc.example.com"}, []string{"other.test", "notexample.com"}},
+		{"match_all", "*", nil, []string{"example.com", "other.test"}, nil},
+		{"list", "foo.test, .example.com", nil, []string{"foo.test", "svc.example.com"}, []string{"other.test", "notexample.com"}},
+		{"grants_file", "", []string{".example.com"}, []string{"example.com", "svc.example.com"}, []string{"other.test", "notexample.com"}},
 	}
-	for _, host := range []string{"example.com", "svc.example.com", "a.b.example.com"} {
-		if planner.ChainsHost(host) {
-			t.Errorf("ChainsHost(%q) = true, want false (leading-dot NO_PROXY entry must bypass)", host)
-		}
-	}
-	for _, host := range []string{"other.test", "notexample.com"} {
-		if !planner.ChainsHost(host) {
-			t.Errorf("ChainsHost(%q) = false, want true (outside NO_PROXY, matching is on dot boundaries)", host)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearProxyEnv(t)
+			t.Setenv("HTTPS_PROXY", "http://proxy.test:8080")
+			t.Setenv("NO_PROXY", c.env)
+
+			p := &sandboxprofile.Profile{}
+			p.Network.NoProxy = c.profile
+			d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
+
+			planner, ok := d.(netproxy.TunnelPlanner)
+			if !ok {
+				t.Fatalf("got %T, want upstream proxy dialer implementing TunnelPlanner", d)
+			}
+			for _, host := range c.bypass {
+				if planner.ChainsHost(host) {
+					t.Errorf("ChainsHost(%q) = true, want false (host matches NO_PROXY and must bypass)", host)
+				}
+			}
+			for _, host := range c.chain {
+				if !planner.ChainsHost(host) {
+					t.Errorf("ChainsHost(%q) = false, want true (outside NO_PROXY, matching is on dot boundaries)", host)
+				}
+			}
+		})
 	}
 }
 
