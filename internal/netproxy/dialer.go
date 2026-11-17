@@ -98,9 +98,9 @@ type upstreamProxyDialer struct {
 }
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
-// corporate proxy at proxyURL. Hosts matching any entry in noProxy
-// (a domain, ".domain", "*.domain" or "*"; see hostMatchesNoProxy) bypass
-// the upstream proxy and dial the server-pinned IPs directly instead.
+// corporate proxy at proxyURL. Hosts matching any entry in noProxy (see
+// hostMatchesNoProxy) bypass the upstream proxy and dial the
+// server-pinned IPs directly instead.
 func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
 	return newUpstreamProxyDialerInternal(proxyURL, noProxy, logf, false)
 }
@@ -136,9 +136,9 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 // All domain forms are equivalent: "example.com", ".example.com", and
 // "*.example.com" each match the domain itself and any subdomain, and
 // "*" matches every host. An IP address entry matches that literal host.
-// IP ranges, ports and "<local>" are not supported: matching happens on
-// the unresolved hostname, so an address-based entry could not be
-// evaluated here. NoProxyEntryIgnoreReason flags such entries.
+// IP ranges and ports are not supported: matching happens on the
+// unresolved hostname, so an address-based entry could not be evaluated
+// here. NoProxyEntryIgnoreReason flags such entries.
 func hostMatchesNoProxy(host string, entries []string) bool {
 	h := NormalizeHost(host)
 	for _, e := range entries {

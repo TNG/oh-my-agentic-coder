@@ -332,100 +332,66 @@ func TestUpstreamProxyDialerNon200(t *testing.T) {
 	}
 }
 
+// TestUpstreamProxyDialerNoProxyBypass checks that a NO_PROXY match
+// dials the pinned addresses directly and never touches the upstream
+// proxy, for each domain form ("test", ".test", "*.test"), while a
+// non-matching host is still chained.
 func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
-	var conns int32
-	ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
-	defer ln.Close()
+	for _, entry := range []string{"test", ".test", "*.test"} {
+		t.Run(entry, func(t *testing.T) {
+			var conns int32
+			ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
+			defer ln.Close()
 
-	echoLn := startEchoListener(t)
-	defer echoLn.Close()
-	echoPort := echoLn.Addr().(*net.TCPAddr).Port
+			echoLn := startEchoListener(t)
+			defer echoLn.Close()
+			echoPort := echoLn.Addr().(*net.TCPAddr).Port
 
-	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{"localhost"}, t.Logf)
+			proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
+			d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{entry}, t.Logf)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	// NO_PROXY match → dial the server-pinned IPs directly, never the proxy.
-	conn, err := d.DialTunnel(ctx, "localhost", echoPort, pin("127.0.0.1"))
-	if err != nil {
-		t.Fatalf("DialTunnel localhost bypass: %v", err)
-	}
-	defer conn.Close()
+			if planner, ok := d.(TunnelPlanner); !ok || planner.ChainsHost("svc.test") {
+				t.Fatalf("ChainsHost(svc.test) = true for NO_PROXY entry %q, want bypass", entry)
+			}
 
-	payload := []byte("bypass-echo")
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	buf := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != string(payload) {
-		t.Errorf("echo mismatch: got %q want %q", buf, payload)
-	}
+			// NO_PROXY match → dial the server-pinned IPs directly, never the proxy.
+			conn, err := d.DialTunnel(ctx, "svc.test", echoPort, pin("127.0.0.1"))
+			if err != nil {
+				t.Fatalf("DialTunnel svc.test bypass: %v", err)
+			}
+			defer conn.Close()
 
-	if got := atomic.LoadInt32(&conns); got != 0 {
-		t.Errorf("upstream connections for bypass = %d, want 0", got)
-	}
+			payload := []byte("bypass-echo")
+			if _, err := conn.Write(payload); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			buf := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(buf) != string(payload) {
+				t.Errorf("echo mismatch: got %q want %q", buf, payload)
+			}
 
-	// Non-match → chained through the upstream proxy. The pinned IP is used as
-	// the CONNECT target so the upstream connects to the checked address.
-	conn2, err := d.DialTunnel(ctx, "nonproxy.test", 443, pin("203.0.113.9"))
-	if err != nil {
-		t.Fatalf("DialTunnel nonproxy.test via upstream: %v", err)
-	}
-	conn2.Close()
+			if got := atomic.LoadInt32(&conns); got != 0 {
+				t.Errorf("upstream connections for bypass = %d, want 0", got)
+			}
 
-	if got := atomic.LoadInt32(&conns); got != 1 {
-		t.Errorf("upstream connections for non-bypass = %d, want 1", got)
-	}
-}
+			// Non-match → chained through the upstream proxy. The pinned IP is used as
+			// the CONNECT target so the upstream connects to the checked address.
+			conn2, err := d.DialTunnel(ctx, "nonproxy.example", 443, pin("203.0.113.9"))
+			if err != nil {
+				t.Fatalf("DialTunnel nonproxy.example via upstream: %v", err)
+			}
+			conn2.Close()
 
-// TestUpstreamProxyDialerNoProxyBypassLeadingDot pins the common
-// corporate-NO_PROXY spelling: an entry like ".test" (leading dot, also
-// written "*.test") must bypass the upstream proxy and dial the pinned
-// addresses directly, exactly like the bare-domain form does.
-func TestUpstreamProxyDialerNoProxyBypassLeadingDot(t *testing.T) {
-	var conns int32
-	ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
-	defer ln.Close()
-
-	echoLn := startEchoListener(t)
-	defer echoLn.Close()
-	echoPort := echoLn.Addr().(*net.TCPAddr).Port
-
-	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{".test"}, t.Logf)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if planner, ok := d.(TunnelPlanner); !ok || planner.ChainsHost("svc.test") {
-		t.Fatal("ChainsHost(svc.test) = true for leading-dot NO_PROXY entry, want bypass")
-	}
-
-	conn, err := d.DialTunnel(ctx, "svc.test", echoPort, pin("127.0.0.1"))
-	if err != nil {
-		t.Fatalf("DialTunnel svc.test bypass: %v", err)
-	}
-	defer conn.Close()
-
-	payload := []byte("dotted-bypass-echo")
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	buf := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != string(payload) {
-		t.Errorf("echo mismatch: got %q want %q", buf, payload)
-	}
-
-	if got := atomic.LoadInt32(&conns); got != 0 {
-		t.Errorf("upstream connections for leading-dot bypass = %d, want 0", got)
+			if got := atomic.LoadInt32(&conns); got != 1 {
+				t.Errorf("upstream connections for non-bypass = %d, want 1", got)
+			}
+		})
 	}
 }
 
