@@ -86,9 +86,9 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream proxy %s rejected tunnel: %s", e.ProxyHost, e.StatusLine)
 }
 
-// upstreamProxyDialer tunnels connections through an upstream corporate
-// proxy via HTTP CONNECT. It is used when the sandbox itself sits behind
-// a corporate egress proxy and cannot dial the destination directly.
+// upstreamProxyDialer tunnels connections through an upstream proxy via
+// HTTP CONNECT. It is used when the sandbox itself sits behind an egress
+// proxy and cannot dial the destination directly.
 type upstreamProxyDialer struct {
 	proxyURL  *url.URL
 	proxyAuth string   // "Basic <base64>" or ""
@@ -98,7 +98,7 @@ type upstreamProxyDialer struct {
 }
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
-// corporate proxy at proxyURL. Hosts matching any entry in noProxy (see
+// upstream proxy at proxyURL. Hosts matching any entry in noProxy (see
 // hostMatchesNoProxy) bypass the upstream proxy and dial the
 // server-pinned IPs directly instead.
 func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {

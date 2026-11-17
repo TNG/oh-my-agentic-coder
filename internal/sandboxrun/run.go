@@ -514,9 +514,9 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 // dropUnsupportedNoProxy returns entries without those that can never
 // match a host (see netproxy.NoProxyEntryIgnoreReason), printing one
 // warning per dropped entry. These entries come from the user's shell or
-// grants file and are common in corporate setups (e.g. "10.0.0.0/8"), so
+// grants file and are common in company networks (e.g. "10.0.0.0/8"), so
 // they must not block startup, but silently ignoring them would leave the
-// user guessing why those hosts still go through the corporate proxy.
+// user guessing why those hosts still go through the upstream proxy.
 func dropUnsupportedNoProxy(entries []string, source string, stderr io.Writer) []string {
 	var kept []string
 	for _, e := range entries {
