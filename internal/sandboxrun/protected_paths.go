@@ -85,9 +85,12 @@ func (s *ProtectedPathSet) AddLaunchPaths(paths []string, rule string) {
 	if s == nil {
 		return
 	}
+	// Expanded like the constructor's entries, so IsProtected matches them the same way.
 	for _, p := range paths {
-		s.entries = append(s.entries, filepath.Clean(p))
-		s.rules = append(s.rules, rule)
+		if exp, err := sandboxprofile.ExpandPath(p); err == nil {
+			s.entries = append(s.entries, exp)
+			s.rules = append(s.rules, rule)
+		}
 	}
 }
 

@@ -114,3 +114,15 @@ func TestProtectedPathSetAddMidSession(t *testing.T) {
 		t.Errorf("IsProtected(subpath) = %q,%v; want %q,true", rule, ok, sandboxdeny.RuleMidSession)
 	}
 }
+
+func TestProtectedPathSetAddLaunchPathsExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	set := NewProtectedPathSet(&sandboxprofile.Profile{})
+	set.AddLaunchPaths([]string{"~/desktop/store.dat", "$HOME/other//store.dat"}, "opencode-desktop")
+	for _, p := range []string{home + "/desktop/store.dat", home + "/other/store.dat"} {
+		if rule, ok := set.IsProtected(p); !ok || rule != "opencode-desktop" {
+			t.Errorf("IsProtected(%q) = %q,%v; want opencode-desktop,true", p, rule, ok)
+		}
+	}
+}
