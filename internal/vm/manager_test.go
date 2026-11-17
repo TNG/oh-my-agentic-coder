@@ -131,6 +131,9 @@ func TestUpIsIdempotentWhenRunningOffline(t *testing.T) {
 	if !strings.Contains(out.String(), "status: running") {
 		t.Errorf("second Up output = %q, want a status report", out.String())
 	}
+	if !strings.Contains(out.String(), "worktrees: not read") {
+		t.Errorf("second Up output = %q, want the worktrees marked as not read, not as none", out.String())
+	}
 }
 
 func TestUpStartsStoppedInstanceOffline(t *testing.T) {
@@ -1163,6 +1166,9 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 			listed = true
 			if c.target.User != AgentUserName("alice") {
 				t.Errorf("listed worktrees as %q, want the agent user", c.target.User)
+			}
+			if !c.hasDeadline {
+				t.Error("listed worktrees without a deadline; a wedged guest would block Status")
 			}
 		}
 	}

@@ -116,9 +116,10 @@ func (f *fakeLimaCtl) status() string {
 }
 
 type sshCall struct {
-	target SSHTarget
-	remote string
-	stdin  string
+	target      SSHTarget
+	remote      string
+	stdin       string
+	hasDeadline bool
 }
 
 // fakeGuest mirrors the guest files the manager writes and the boot script
@@ -158,7 +159,7 @@ type fakeSSH struct {
 	fail          func(remote string) error
 }
 
-func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
+func (f *fakeSSH) run(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
 	if f.lima != nil && f.lima.status() != StatusRunning {
 		return errors.New("exit status 255: ssh: connect to host 127.0.0.1: Connection refused")
 	}
@@ -172,7 +173,8 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, sshCall{t, remote, in})
+	_, hasDeadline := ctx.Deadline()
+	f.calls = append(f.calls, sshCall{t, remote, in, hasDeadline})
 	if f.fail != nil {
 		if err := f.fail(remote); err != nil {
 			return err

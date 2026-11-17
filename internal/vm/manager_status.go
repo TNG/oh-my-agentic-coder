@@ -8,8 +8,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
+
+const guestListTimeout = 10 * time.Second
 
 // StatusReport is what `omac vm status` shows.
 type StatusReport struct {
@@ -21,7 +24,7 @@ type StatusReport struct {
 	JDKs, Packages      []string
 	Sessions            []int
 	Docker              *DockerVersion // nil when the probe failed or the VM is stopped
-	// WorktreesNote replaces the worktree list when it could not be read.
+	// WorktreesNote replaces the worktree list when it was not read.
 	WorktreesNote string
 }
 
@@ -42,17 +45,15 @@ func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 		return StatusReport{}, fmt.Errorf("omac vm: %s is missing; run `omac vm reset`", m.Layout.StatePath)
 	}
 	r, err := m.report(ctx, inst, st)
-	switch {
-	case err != nil:
-	case !r.Running || st == nil:
-		r.WorktreesNote = "unknown (VM not running)"
-	default:
-		var ok bool
-		if r.Worktrees, ok = m.guestWorktrees(ctx, st); !ok {
-			r.WorktreesNote = "unknown (could not read the list from the VM)"
-		}
+	if err != nil || !r.Running {
+		return r, err
 	}
-	return r, err
+	if wts, ok := m.guestWorktrees(ctx, st); ok {
+		r.Worktrees, r.WorktreesNote = wts, ""
+	} else {
+		r.WorktreesNote = "unknown (could not read the list from the VM)"
+	}
+	return r, nil
 }
 
 func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (StatusReport, error) {
@@ -64,6 +65,10 @@ func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (Status
 		Created:   inst != nil,
 		Running:   inst != nil && inst.Status == StatusRunning,
 		Resources: ResolveResources(cfg, m.Deps.Host),
+	}
+	r.WorktreesNote = "not read (see `omac vm status`)"
+	if !r.Running {
+		r.WorktreesNote = "unknown (VM not running)"
 	}
 	if st != nil {
 		r.Mode, r.SSHPort, r.DockerPort = st.Mode, st.SSHPort, st.DockerPort
@@ -81,8 +86,11 @@ func (m *Manager) report(ctx context.Context, inst *Instance, st *State) (Status
 }
 
 // guestWorktrees reads the registry that Exec keeps in the guest and returns
-// "<host path> (<slug>)" entries. ok is false when SSH failed.
+// "<host path> (<slug>)" entries. ok is false when SSH failed or timed out.
 func (m *Manager) guestWorktrees(ctx context.Context, st *State) ([]string, bool) {
+	// A wedged guest can accept the connection and never answer.
+	ctx, cancel := context.WithTimeout(ctx, guestListTimeout)
+	defer cancel()
 	var out bytes.Buffer
 	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, listWorktreesCmd); err != nil {
 		return nil, false
