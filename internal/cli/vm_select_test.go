@@ -537,3 +537,19 @@ func TestVMExecErrorNamesInstance(t *testing.T) {
 		t.Errorf("stderr does not name the instance:\n%s", stderr())
 	}
 }
+
+func TestVMExecMappedVMNotCreated(t *testing.T) {
+	repo, worktree := selectionFixture(t)
+	writeVMProjectMap(t, repo+": yarp3\n")
+	orig := resolveVMConn
+	calls := useFakeVMExec(t, nil, 0, nil)
+	resolveVMConn = orig
+	env, _, stderr := vmTestEnv(t)
+	env.Workdir = worktree
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitPrerequisiteMissing {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitPrerequisiteMissing, stderr())
+	}
+	if !strings.Contains(stderr(), "`omac vm up --name yarp3`") || len(*calls) != 0 {
+		t.Errorf("want the hint naming yarp3 and no exec; calls=%d stderr:\n%s", len(*calls), stderr())
+	}
+}
