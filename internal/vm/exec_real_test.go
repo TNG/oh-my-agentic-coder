@@ -32,11 +32,13 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 		"sub/.env.local":    "SECRET=2",
 		"sub/.envrc":        "export SECRET=3",
 		"-leading-dash.txt": "copied",
+		"secret\nkey":       "ignored",
+		"x[1]\ny":           "ignored",
 	})
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	excl, err := WriteExcludeFile(base, []string{"build/", "foo[1]"})
+	excl, err := WriteExcludeFile(base, []string{"build/", "foo[1]", "secret\nkey", "x[1]\ny"})
 	if err != nil {
 		t.Fatal(err)
 	}

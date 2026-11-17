@@ -40,16 +40,21 @@ func WorktreeSlug(absWorkdir string) string {
 	return base + "-" + hex.EncodeToString(sum[:4])
 }
 
-// rsyncLiteral makes name match only itself as an rsync pattern. rsync
-// honors backslash escapes only in patterns that contain a wildcard, so a
-// name without one stays as is: "a\b" is literal, "foo[1]" → `foo\[1\]`.
-func rsyncLiteral(name string) string {
-	if !strings.ContainsAny(name, "*?[") {
+// rsyncPattern makes name match only itself as one line of an rsync
+// exclude file. rsync honors backslash escapes only in patterns that
+// contain a wildcard, so a name without one stays as is: "a\b" is literal,
+// "foo[1]" → `foo\[1\]`. A line cannot hold a line break, so "?" matches
+// it instead: "a\nb" → "a?b".
+func rsyncPattern(name string) string {
+	if !strings.ContainsAny(name, "*?[\r\n") {
 		return name
 	}
 	var b strings.Builder
 	for _, r := range name {
-		if strings.ContainsRune(`*?[]\`, r) {
+		switch {
+		case r == '\r' || r == '\n':
+			r = '?'
+		case strings.ContainsRune(`*?[]\`, r):
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)
@@ -138,14 +143,10 @@ func WriteExcludeFile(dir string, ignored []string) (string, error) {
 	var b strings.Builder
 	b.WriteString(".git\n")
 	for _, name := range sandboxprofile.PlatformBaseline().WorkdirProtected {
-		b.WriteString(rsyncLiteral(name) + "\n")
+		b.WriteString(rsyncPattern(name) + "\n")
 	}
 	for _, p := range ignored {
-		// rsync reads one pattern per line; a newline in a name cannot be expressed.
-		if strings.ContainsAny(p, "\r\n") {
-			continue
-		}
-		b.WriteString("/" + rsyncLiteral(p) + "\n")
+		b.WriteString("/" + rsyncPattern(p) + "\n")
 	}
 	path := filepath.Join(dir, "exclude")
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
