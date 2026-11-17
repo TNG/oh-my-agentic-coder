@@ -251,17 +251,20 @@ func TestResolveUpstreamProxyDropsUnsupportedNoProxy(t *testing.T) {
 	cases := []struct {
 		name       string
 		env        string
+		lowerEnv   string
 		profile    []string
 		wantSource string
 	}{
-		{"env", "10.0.0.0/8, .example.com, example.org:8443, <local>", nil, "the NO_PROXY environment variable"},
-		{"profile", "", []string{"10.0.0.0/8", ".example.com", "example.org:8443", "<local>"}, "network.no_proxy"},
+		{"env", "10.0.0.0/8, .example.com, example.org:8443, <local>", "", nil, "the NO_PROXY environment variable"},
+		{"lowercase env", "", "10.0.0.0/8, .example.com, example.org:8443, <local>", nil, "the no_proxy environment variable"},
+		{"profile", "", "", []string{"10.0.0.0/8", ".example.com", "example.org:8443", "<local>"}, "network.no_proxy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			clearProxyEnv(t)
 			t.Setenv("HTTPS_PROXY", "http://proxy.test:8080")
 			t.Setenv("NO_PROXY", c.env)
+			t.Setenv("no_proxy", c.lowerEnv)
 
 			p := &sandboxprofile.Profile{}
 			p.Network.NoProxy = c.profile
