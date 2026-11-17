@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +44,26 @@ func TestLoadUserConfigRejectsNegativeCPUs(t *testing.T) {
 	os.WriteFile(p, []byte("cpus: -2\n"), 0o600)
 	if _, err := LoadUserConfig(p); err == nil {
 		t.Error("negative cpus accepted")
+	}
+}
+
+// A size without a unit would otherwise fail only when a VM is created, and
+// without naming the file.
+func TestLoadUserConfigChecksSizes(t *testing.T) {
+	for _, ok := range []string{"16G", "16GB", "16GiB", "512MiB", "1.5TiB"} {
+		p := filepath.Join(t.TempDir(), "vm.yaml")
+		os.WriteFile(p, []byte("memory: "+ok+"\ndisk: "+ok+"\n"), 0o600)
+		if _, err := LoadUserConfig(p); err != nil {
+			t.Errorf("size %q rejected: %v", ok, err)
+		}
+	}
+	for _, field := range []string{"memory", "disk"} {
+		p := filepath.Join(t.TempDir(), "vm.yaml")
+		os.WriteFile(p, []byte(field+": \"8\"\n"), 0o600)
+		_, err := LoadUserConfig(p)
+		if err == nil || !strings.Contains(err.Error(), p) || !strings.Contains(err.Error(), field) {
+			t.Errorf("%s without unit: err = %v, want an error naming %s and the field", field, err, p)
+		}
 	}
 }
 

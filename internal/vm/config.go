@@ -10,7 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// UserConfig is ~/.config/omac/vm.yaml. Every field is optional.
+// UserConfig is the config file of one VM: ~/.config/omac/vm.yaml for the
+// default VM, vms/<name>.yaml for the others. Every field is optional.
 type UserConfig struct {
 	CPUs     int      `yaml:"cpus"`
 	Memory   string   `yaml:"memory"`
@@ -42,9 +43,10 @@ const (
 	defaultDisk = "60GiB"
 )
 
-// LoadUserConfig reads vm.yaml. A missing file or empty path yields the
-// zero config. Unknown keys are an error so a typo does not silently fall
-// back to defaults.
+// LoadUserConfig reads a VM config file. A missing file or empty path
+// yields the zero config. Unknown keys and invalid values are an error
+// naming the file, so a typo does not silently fall back to defaults or
+// fail only when the VM is created.
 func LoadUserConfig(path string) (UserConfig, error) {
 	var cfg UserConfig
 	if path == "" {
@@ -64,6 +66,11 @@ func LoadUserConfig(path string) (UserConfig, error) {
 	}
 	if cfg.CPUs < 0 {
 		return UserConfig{}, fmt.Errorf("validate %s: cpus must not be negative, got %d", path, cfg.CPUs)
+	}
+	for field, v := range map[string]string{"memory": cfg.Memory, "disk": cfg.Disk} {
+		if v != "" && !sizePattern.MatchString(v) {
+			return UserConfig{}, fmt.Errorf("validate %s: %s %q is not a size with a unit like 16GiB", path, field, v)
+		}
 	}
 	return cfg, nil
 }
