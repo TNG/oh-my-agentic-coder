@@ -240,8 +240,7 @@ date -u +%FT%TZ > /var/lib/omac-vm/provisioned`
 // userScript runs as the agent user on every boot, so a failed Docker start
 // is retried on the next boot. The user D-Bus starts first because the
 // system script installs dbus-user-session after the user's systemd
-// manager came up. dockerd listens only on its Unix socket; omac reaches
-// it over ssh.
+// manager came up.
 const userScript = `#!/bin/bash
 set -eu
 mkdir -p ~/.ssh && chmod 0700 ~/.ssh

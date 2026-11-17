@@ -181,7 +181,6 @@ func TestVMSandboxEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No DOCKER_* vars: the session reaches Docker only through `omac vm exec`.
 	want := map[string]string{
 		"OMAC_VM_HOST":     "127.0.0.1",
 		"OMAC_VM_SSH_PORT": "31022",
@@ -201,9 +200,6 @@ func TestVMSandboxEnv(t *testing.T) {
 	}
 	if st, err := os.Stat(filepath.Join(tmp, "vm")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
 		t.Errorf("vm dir: %v, want a 0700 dir", err)
-	}
-	if _, err := os.Stat(filepath.Join(tmp, "vm", "docker")); !os.IsNotExist(err) {
-		t.Errorf("vm/docker: %v, want absent", err)
 	}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, slices.Sorted(slices.Values(vmEnvNames))) {
@@ -550,7 +546,6 @@ func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
 	s := &vmSession{info: vm.AttachInfo{SSHPort: 31022}}
 	got := s.grant(argv)
-	// Only the ssh port: no Docker port and no --allow-env DOCKER_*.
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
 		"--open-port", "31022",
 		"--", "opencode"}

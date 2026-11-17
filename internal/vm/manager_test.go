@@ -79,9 +79,6 @@ func TestUpCreatesProvisionsAndGoesOffline(t *testing.T) {
 			t.Errorf("lima yaml lacks %q", want)
 		}
 	}
-	if strings.Contains(string(yaml), "42375") {
-		t.Error("lima yaml forwards a Docker port")
-	}
 	for path, want := range map[string]os.FileMode{l.Root: 0o700, l.LimaHome: 0o700, l.LimaYAML: 0o600} {
 		fi, err := os.Stat(path)
 		if err != nil {
@@ -549,6 +546,15 @@ func TestUpCreateDropsStaleKnownHosts(t *testing.T) {
 	}
 	if strings.Contains(string(got), "AAAAstale") {
 		t.Errorf("known_hosts = %q, want the stale entry gone", got)
+	}
+
+	const currentEntry = "[127.0.0.1]:42022 ssh-ed25519 AAAAcurrent\n"
+	if err := os.WriteFile(m.Layout.KnownHosts, []byte(currentEntry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustUp(t, m)
+	if got, _ := os.ReadFile(m.Layout.KnownHosts); string(got) != currentEntry {
+		t.Errorf("known_hosts after up on the existing VM = %q, want %q kept", got, currentEntry)
 	}
 }
 

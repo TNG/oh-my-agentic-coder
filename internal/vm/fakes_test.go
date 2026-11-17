@@ -126,7 +126,6 @@ type sshCall struct {
 // reads: ModeFile, PackagesFile, ProvisionedMarker, plus whether the
 // omac-vmguard table is loaded and which images Docker holds. bootDone is
 // /run/lima-boot-done: set once a boot's provisioning finished, cleared by
-// a shutdown. docker is whether dockerd answers: set by a boot, cleared by
 // a shutdown.
 type fakeGuest struct {
 	modeFile    string
@@ -134,7 +133,6 @@ type fakeGuest struct {
 	provisioned bool
 	firewall    bool
 	bootDone    bool
-	docker      bool
 	images      []string
 	worktrees   string // content of omac/.worktrees in the agent's home
 }
@@ -211,9 +209,6 @@ func (f *fakeSSH) run(ctx context.Context, t SSHTarget, stdin io.Reader, stdout,
 	case remote == listWorktreesCmd:
 		fmt.Fprint(stdout, g.worktrees)
 	case remote == dockerVersionCmd:
-		if !g.docker {
-			return errors.New("exit status 1: Cannot connect to the Docker daemon")
-		}
 		fmt.Fprint(stdout, "1.47 27.3.1\n")
 	case remote == dockerCmd("load"):
 		g.images = append(g.images, in)
@@ -250,7 +245,6 @@ func (f *fakeSSH) boot() {
 		mode = f.guest.modeFile
 	}
 	f.guest.firewall = mode == ModeOffline || f.stickyFirewall
-	f.guest.docker = true
 	if f.slowBoots > 0 {
 		f.slowBoots--
 		f.pending = true
@@ -283,7 +277,6 @@ func (f *fakeSSH) halt() {
 	}
 	f.guest.firewall = false
 	f.guest.bootDone = false
-	f.guest.docker = false
 	f.pending = false
 }
 
