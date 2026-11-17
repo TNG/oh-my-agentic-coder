@@ -277,11 +277,11 @@ A bare `--vm` skips step 1. `omac vm exec` follows the same order, with `--name 
 
 `omac serve --vm` picks the VM once, for the directory it starts in (or `--workdir`), and every project the server opens uses that VM. To keep projects of different VMs apart, run one server per VM.
 
-omac looks a project up by the nearest directory, at or above the one a command runs in, that holds a `.git`:
+An entry applies to its directory and everything below it; when several entries apply, the one with the longest path wins. For example:
 
-- All git worktrees of one repository share the entry of the repository's directory.
-- A worktree of a bare repository (one without a working directory of its own) and a git submodule each use the directory that holds their own `.git`, so each needs its own entry.
-- Outside git, the key is the directory the command runs in.
+- A repository's entry also covers its subdirectories, its submodules and the git worktrees inside it, such as under `.worktrees/`.
+- A git worktree outside the repository's directory uses the repository's entry, unless an entry covers the worktree's own path.
+- Worktrees of a bare repository (one without a working directory of its own) need an entry that covers their own path.
 
 Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 

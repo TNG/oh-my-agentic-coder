@@ -26,10 +26,8 @@ func ProjectMapPath() string {
 // LoadProjectMap reads the file that maps a project path to the name of the
 // VM its sessions use. A missing file is an empty map. Keys must be absolute
 // paths and values valid VM names; any other content is an error naming path.
-// A key has to be a path ProjectKey returns, such as a repository's root:
-// a subdirectory or a linked worktree as a key never matches. Keys are
-// returned canonicalized like ProjectKey's result, and two keys for one
-// directory are an error.
+// Keys are returned canonicalized, and two keys for one directory are an
+// error.
 func LoadProjectMap(path string) (map[string]string, error) {
 	if path == "" {
 		return map[string]string{}, nil
@@ -74,41 +72,48 @@ func canonicalPath(p string) string {
 	return p
 }
 
-// ProjectKey is the path a directory is looked up by in the project map:
-// the nearest directory at or above dir that holds a .git, else dir itself.
-// A linked worktree maps to the directory of its repository's .git instead,
-// so all worktrees of a repository share an entry. A .git file counts as a
-// linked worktree only when sandboxrun.ResolveWorktreeCommonDir verifies it:
-// the sandbox can write .git, and git would follow a planted commondir or
-// gitdir into another repository, and so into that repository's VM.
-func ProjectKey(dir string) string {
+// lookupPaths are the paths whose entries apply to dir, most specific
+// first: dir itself, then the main repository of each linked worktree dir
+// lies in. A worktree counts only when its .git is a regular file that
+// sandboxrun.ResolveWorktreeCommonDir verifies: the sandbox can write the
+// project, and a symlink or a planted pointer must not lead to another
+// repository's entry.
+func lookupPaths(dir string) []string {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		abs = dir
 	}
+	abs = canonicalPath(abs)
+	paths := []string{abs}
 	for d := abs; ; d = filepath.Dir(d) {
-		fi, err := os.Lstat(filepath.Join(d, ".git"))
-		if err == nil {
-			if !fi.IsDir() {
-				if common, _, ok := sandboxrun.ResolveWorktreeCommonDir(d); ok && filepath.Base(common) == ".git" {
-					return canonicalPath(filepath.Dir(common))
-				}
+		if fi, err := os.Lstat(filepath.Join(d, ".git")); err == nil && fi.Mode().IsRegular() {
+			if common, _, ok := sandboxrun.ResolveWorktreeCommonDir(d); ok && filepath.Base(common) == ".git" {
+				paths = append(paths, canonicalPath(filepath.Dir(common)))
 			}
-			return canonicalPath(d)
 		}
 		if filepath.Dir(d) == d {
-			return canonicalPath(abs)
+			return paths
 		}
 	}
 }
 
-// MappedInstance returns the VM the project map assigns to dir's repository;
-// ok is false when there is no entry.
+// MappedInstance returns the VM the project map assigns to dir: the entry
+// with the longest key that is dir or one of its parents, tried for each
+// of lookupPaths in turn. ok is false when no entry applies.
 func MappedInstance(dir string) (name string, ok bool, err error) {
 	m, err := LoadProjectMap(ProjectMapPath())
 	if err != nil || len(m) == 0 {
 		return "", false, err
 	}
-	name, ok = m[ProjectKey(dir)]
-	return name, ok, nil
+	for _, p := range lookupPaths(dir) {
+		for d := p; ; d = filepath.Dir(d) {
+			if name, ok := m[d]; ok {
+				return name, true, nil
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	return "", false, nil
 }

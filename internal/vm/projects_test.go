@@ -43,30 +43,6 @@ func writeProjectMap(t *testing.T, content string) string {
 	return path
 }
 
-func TestProjectKeyWorktreeMapsToMainRepo(t *testing.T) {
-	repo, worktree := repoWithWorktree(t)
-	if got := ProjectKey(repo); got != repo {
-		t.Errorf("ProjectKey(repo) = %q, want %q", got, repo)
-	}
-	if got := ProjectKey(worktree); got != repo {
-		t.Errorf("ProjectKey(worktree) = %q, want %q", got, repo)
-	}
-	sub := filepath.Join(worktree, "internal")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if got := ProjectKey(sub); got != repo {
-		t.Errorf("ProjectKey(subdir of worktree) = %q, want %q", got, repo)
-	}
-}
-
-func TestProjectKeyOutsideRepoIsTheDirectory(t *testing.T) {
-	dir := canonicalPath(t.TempDir())
-	if got := ProjectKey(dir); got != dir {
-		t.Errorf("ProjectKey = %q, want %q", got, dir)
-	}
-}
-
 func TestMappedInstanceFindsEntryFromWorktree(t *testing.T) {
 	repo, worktree := repoWithWorktree(t)
 	writeProjectMap(t, repo+": yarp3\n")
@@ -128,17 +104,6 @@ func TestLoadProjectMapRejectsBadFiles(t *testing.T) {
 	}
 }
 
-func TestProjectKeyFromSymlinkedWorktree(t *testing.T) {
-	repo, worktree := repoWithWorktree(t)
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(worktree, link); err != nil {
-		t.Fatal(err)
-	}
-	if got := ProjectKey(link); got != repo {
-		t.Errorf("ProjectKey(symlink to worktree) = %q, want %q", got, repo)
-	}
-}
-
 // Two spellings of one directory would otherwise let map iteration order
 // decide which VM a project gets.
 func TestLoadProjectMapRejectsKeysForTheSameDirectory(t *testing.T) {
@@ -169,26 +134,73 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// The sandbox can write the project, .git included. Whatever it writes
-// there must not make the project's key another repository's, or the next
-// bare --vm session would log in to that repository's VM.
-func TestProjectKeyIgnoresPlantedGitPointers(t *testing.T) {
+func wantEntry(t *testing.T, dir, want string) {
+	t.Helper()
+	name, ok, err := MappedInstance(dir)
+	if err != nil {
+		t.Fatalf("MappedInstance(%s): %v", dir, err)
+	}
+	if want == "" && ok {
+		t.Errorf("MappedInstance(%s) = %q, want no entry", dir, name)
+	}
+	if want != "" && (!ok || name != want) {
+		t.Errorf("MappedInstance(%s) = (%q, %v), want %q", dir, name, ok, want)
+	}
+}
+
+func mkdir(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// An entry covers its directory and everything below it; the longest key
+// wins. A linked worktree elsewhere also gets its repository's entry.
+func TestMappedInstanceLookup(t *testing.T) {
+	repo, worktree := repoWithWorktree(t)
+	outside := filepath.Join(canonicalPath(t.TempDir()), "wt")
+	gitIn(t, repo, "worktree", "add", "-q", outside, "-b", "outside")
+	writeProjectMap(t, repo+": a\n"+filepath.Join(repo, "special")+": b\n")
+
+	wantEntry(t, repo, "a")
+	wantEntry(t, mkdir(t, filepath.Join(worktree, "internal")), "a")
+	wantEntry(t, mkdir(t, filepath.Join(outside, "src")), "a")
+	wantEntry(t, mkdir(t, filepath.Join(repo, "special", "x")), "b")
+	wantEntry(t, t.TempDir(), "")
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Join(repo, "special"), link); err != nil {
+		t.Fatal(err)
+	}
+	wantEntry(t, link, "b")
+}
+
+// The sandbox can write the project, .git included. Nothing it writes there
+// may lead the lookup to another repository's entry, or the next bare --vm
+// session would log in to that repository's VM.
+func TestMappedInstanceIgnoresPlantedGitPointers(t *testing.T) {
 	other, otherWorktree := repoWithWorktree(t)
 	admin := filepath.Join(other, ".git", "worktrees", filepath.Base(otherWorktree))
+	writeProjectMap(t, other+": other\n")
 
 	t.Run("commondir in a .git directory", func(t *testing.T) {
 		repo, _ := repoWithWorktree(t)
 		writeFile(t, filepath.Join(repo, ".git", "commondir"), filepath.Join(other, ".git")+"\n")
-		if got := ProjectKey(repo); got != repo {
-			t.Errorf("ProjectKey = %q, want %q", got, repo)
-		}
+		wantEntry(t, repo, "")
 	})
 	t.Run(".git file naming another worktree's admin dir", func(t *testing.T) {
 		dir := canonicalPath(t.TempDir())
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: "+admin+"\n")
-		if got := ProjectKey(dir); got != dir {
-			t.Errorf("ProjectKey = %q, want %q", got, dir)
+		wantEntry(t, dir, "")
+	})
+	t.Run(".git symlink to another worktree's .git", func(t *testing.T) {
+		dir := canonicalPath(t.TempDir())
+		if err := os.Symlink(filepath.Join(otherWorktree, ".git"), filepath.Join(dir, ".git")); err != nil {
+			t.Fatal(err)
 		}
+		wantEntry(t, dir, "")
 	})
 	t.Run("forged admin dir inside the project", func(t *testing.T) {
 		dir := canonicalPath(t.TempDir())
@@ -196,23 +208,18 @@ func TestProjectKeyIgnoresPlantedGitPointers(t *testing.T) {
 		writeFile(t, filepath.Join(dir, ".git"), "gitdir: "+fake+"\n")
 		writeFile(t, filepath.Join(fake, "gitdir"), filepath.Join(dir, ".git")+"\n")
 		writeFile(t, filepath.Join(fake, "commondir"), filepath.Join(other, ".git")+"\n")
-		if got := ProjectKey(dir); got != dir {
-			t.Errorf("ProjectKey = %q, want %q", got, dir)
-		}
+		wantEntry(t, dir, "")
 	})
 }
 
-// A submodule's .git file has no back-pointer; the submodule is its own
-// project, also from a subdirectory.
-func TestProjectKeySubmoduleSubdirectory(t *testing.T) {
+// Creating or deleting .git markers below a mapped directory does not
+// change its VM: a submodule belongs to its superproject's entry.
+func TestMappedInstanceIgnoresGitMarkersBelowAnEntry(t *testing.T) {
 	repo, _ := repoWithWorktree(t)
+	writeProjectMap(t, repo+": a\n")
 	sub := filepath.Join(repo, "sub")
 	writeFile(t, filepath.Join(sub, ".git"), "gitdir: ../.git/modules/sub\n")
-	inner := filepath.Join(sub, "src")
-	if err := os.MkdirAll(inner, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if got := ProjectKey(inner); got != sub {
-		t.Errorf("ProjectKey = %q, want %q", got, sub)
-	}
+	wantEntry(t, mkdir(t, filepath.Join(sub, "src")), "a")
+	mkdir(t, filepath.Join(repo, "inner", ".git"))
+	wantEntry(t, filepath.Join(repo, "inner"), "a")
 }
