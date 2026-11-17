@@ -43,6 +43,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `limits.idle_timeout_secs` | no | — | Seconds of inactivity before the proxy closes a sidecar connection. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
+| `approvals` | no | — | Which routes run without asking the user. Without the block nothing asks; with it, every route asks unless listed with `approval: none`. See [Approvals](#approvals-which-routes-run-without-asking). |
 
 **`secrets[]` entry fields**
 
