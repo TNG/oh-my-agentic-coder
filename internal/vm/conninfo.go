@@ -30,7 +30,8 @@ var vmUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 // ConnFromEnv reads the OMAC_VM_* variables. ok is false when
 // OMAC_VM_SSH_PORT is unset; once it is set, the key and user must be set
-// too. The known_hosts file sits next to the copied key, because the
+// too, and a set OMAC_VM_HOST must be 127.0.0.1, the only address the VM
+// listens on. The known_hosts file sits next to the copied key, because the
 // sandbox cannot read the protected state directory.
 func ConnFromEnv(getenv func(string) string) (ConnInfo, bool, error) {
 	portStr := getenv(EnvVMSSHPort)
@@ -41,15 +42,18 @@ func ConnFromEnv(getenv func(string) string) (ConnInfo, bool, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q is not a port number", EnvVMSSHPort, portStr)
 	}
+	if host := getenv(EnvVMHost); host != "" && host != "127.0.0.1" {
+		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q is not supported; the VM is reachable only on 127.0.0.1", EnvVMHost, host)
+	}
 	key, user := getenv(EnvVMSSHKey), getenv(EnvVMUser)
 	if key == "" || user == "" {
 		return ConnInfo{}, true, fmt.Errorf("omac vm: %s is set but %s or %s is missing", EnvVMSSHPort, EnvVMSSHKey, EnvVMUser)
 	}
-	// The user goes before "--" on the ssh command line, and a space would
-	// split the key's known_hosts path in UserKnownHostsFile.
+	// The user goes before "--" on the ssh command line.
 	if !vmUserRE.MatchString(user) {
 		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q is not a valid user name", EnvVMUser, user)
 	}
+	// A space would split the known_hosts path next to the key in UserKnownHostsFile.
 	if !filepath.IsAbs(key) || strings.IndexFunc(key, unicode.IsSpace) >= 0 {
 		return ConnInfo{}, true, fmt.Errorf("omac vm: %s=%q must be an absolute path without whitespace", EnvVMSSHKey, key)
 	}

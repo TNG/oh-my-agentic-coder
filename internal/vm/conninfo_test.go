@@ -48,6 +48,7 @@ func TestConnFromEnvIncomplete(t *testing.T) {
 		"user too long":         {EnvVMSSHPort: "31022", EnvVMSSHKey: "/k", EnvVMUser: strings.Repeat("a", 33)},
 		"relative key":          {EnvVMSSHPort: "31022", EnvVMSSHKey: "k", EnvVMUser: "alice"},
 		"key with space":        {EnvVMSSHPort: "31022", EnvVMSSHKey: "/a b/k", EnvVMUser: "alice"},
+		"host not loopback":     {EnvVMHost: "10.0.0.5", EnvVMSSHPort: "31022", EnvVMSSHKey: "/k", EnvVMUser: "alice"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
