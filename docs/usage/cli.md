@@ -251,7 +251,7 @@ The command runs in the same place inside the copy as your current directory is 
 
 `--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables. `--env` is meant for priming, see below. `--verbose` prints which directory omac copies and where it goes in the VM.
 
-omac returns the command's exit code as is, with two exceptions: exit code 255 is ssh's code for a lost connection, so omac reports it as 5, and after Ctrl-C omac exits with 130. The command's code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
+omac returns the command's exit code as is, with two exceptions. ssh exits with 255 when the connection is lost or the command is killed by a signal, and omac reports that as 5. With a terminal, Ctrl-C goes to the command, so a command that dies from it also ends with 5; without a terminal, Ctrl-C stops omac, which exits with 130. The command's code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
 
 When stdin, stdout and stderr are all a terminal, the command gets one in the VM too, and Ctrl-C stops it there. Otherwise, for example when you pipe input into `omac vm exec` or redirect its output or errors to a file, Ctrl-C stops only omac and the command keeps running in the VM.
 

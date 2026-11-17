@@ -74,8 +74,9 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
   `gradle test` hangs. Run `./gradlew --no-daemon` (or set
   `org.gradle.daemon=false`); see
   [troubleshooting](./troubleshooting.md#gradle-build-hangs-cannot-reach-its-daemon-or-cannot-start-a-daemon).
-  Alternatively, run the build in the omac VM with
-  [`omac vm exec`](./usage/cli.md#omac-vm), where the daemon works.
+  Alternatively, from a session started with `--vm`, run the build in the
+  omac VM with [`omac vm exec`](./usage/cli.md#omac-vm), where the daemon
+  works. This needs a JDK in `vm.yaml` and one priming run.
 - **Docker is not available inside the sandbox by default.** Start the session
   with `--vm` to use Docker in the omac VM; see
   [omac vm](./usage/cli.md#omac-vm).
