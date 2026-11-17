@@ -26,6 +26,10 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+    env:
+      # Both the configure and model steps read these; defined once here.
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
     steps:
       - name: Checkout trusted base
         uses: actions/checkout@v4
@@ -34,9 +38,6 @@ jobs:
 
       - name: Validate gateway configuration
         id: configure
-        env:
-          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
-          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
         run: |
           : "${SKAINET_INTERNAL:?SKAINET_INTERNAL (gateway base URL) is empty}"
           : "${SKAINET_TOKEN:?Set the TRUSTEDTOKENS_TOKEN repository secret}"
@@ -44,9 +45,6 @@ jobs:
 
       - name: Resolve and verify model
         id: model
-        env:
-          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
-          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
         run: scripts/probe-model.sh opencode --github-output
 
       - name: Review and publish

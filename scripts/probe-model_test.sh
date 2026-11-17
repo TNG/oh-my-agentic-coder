@@ -367,6 +367,19 @@ out=$(probe E2E_MODEL_FALLBACK=fb/model opencode 2>"$TMP/err" || true)
 grep -q "title=Responses wire unhealthy" "$TMP/err" \
   || fail "an all-routes-out responses track was not reported with a codex caveat"
 
+# --- 16. PROBE_RESPONSES=0 skips the /responses track entirely ------------
+# The workflows probe codex separately, so their opencode probe must not touch
+# /responses or warn about what codex will run.
+start_stub "$PIN fb/model" "$PIN fb/model" 200 "" "$PIN"
+: > "$HITS"
+: > "$TMP/gh-out"
+probe PROBE_RESPONSES=0 GITHUB_OUTPUT="$TMP/gh-out" E2E_MODEL_FALLBACK=fb/model opencode --github-output \
+  >"$TMP/out" 2>"$TMP/err" || fail "PROBE_RESPONSES=0: probe failed"
+[ "$(read_output model "$TMP/gh-out")" = "$PIN" ] || fail "PROBE_RESPONSES=0: chat selection changed"
+[ "$(read_output responses_wire "$TMP/gh-out")" = "not-probed" ] || fail "PROBE_RESPONSES=0: wire not reported not-probed"
+grep -q "Responses wire" "$TMP/err" && fail "PROBE_RESPONSES=0: still warned about the responses wire"
+grep -q "POST fb/model" "$HITS" && fail "PROBE_RESPONSES=0: still scanned the chain for /responses"
+
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures" >&2
   exit 1
