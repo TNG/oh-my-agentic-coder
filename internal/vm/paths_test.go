@@ -76,8 +76,8 @@ func TestNewLayoutPaths(t *testing.T) {
 
 func TestInstanceConfigPathUsesXDGConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/x/cfg")
-	if got, want := InstanceConfigPath(DefaultVMName), filepath.Join("/x/cfg", "omac", "vm.yaml"); got != want {
-		t.Errorf("InstanceConfigPath(DefaultVMName) = %q, want %q", got, want)
+	if got, err := InstanceConfigPath(DefaultVMName); err != nil || got != filepath.Join("/x/cfg", "omac", "vm.yaml") {
+		t.Errorf("InstanceConfigPath(DefaultVMName) = %q, %v", got, err)
 	}
 }
 
@@ -106,12 +106,15 @@ func TestInstanceRootAndConfigPath(t *testing.T) {
 		if err != nil || root != filepath.FromSlash(c.root) {
 			t.Errorf("InstanceRoot(%q) = %q, %v; want %q", c.name, root, err, c.root)
 		}
-		if got := InstanceConfigPath(c.name); got != filepath.FromSlash(c.cfg) {
-			t.Errorf("InstanceConfigPath(%q) = %q, want %q", c.name, got, c.cfg)
+		if got, err := InstanceConfigPath(c.name); err != nil || got != filepath.FromSlash(c.cfg) {
+			t.Errorf("InstanceConfigPath(%q) = %q, %v; want %q", c.name, got, err, c.cfg)
 		}
 	}
 	if _, err := InstanceRoot("../x"); err == nil {
 		t.Error("InstanceRoot with a path-like name must fail")
+	}
+	if _, err := InstanceConfigPath("../x"); err == nil {
+		t.Error("InstanceConfigPath with a path-like name must fail")
 	}
 }
 

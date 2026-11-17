@@ -10,7 +10,8 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
 )
 
-// InstanceName is the single Lima instance omac manages.
+// InstanceName is the Lima instance name of every VM; each VM has its own
+// LIMA_HOME.
 const InstanceName = "omac"
 
 // Layout names every host-side file of the VM state directory.
@@ -148,15 +149,18 @@ func NewLayout(root string) Layout {
 // InstanceConfigPath is the config file of the named VM: vm.yaml for the
 // default VM, vms/<name>.yaml next to it for the others. "" when no global
 // config directory resolves.
-func InstanceConfigPath(name string) string {
+func InstanceConfigPath(name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", fmt.Errorf("omac vm: %w", err)
+	}
 	dir := prefs.GlobalDir()
 	if dir == "" {
-		return ""
+		return "", nil
 	}
 	if name == DefaultVMName {
-		return filepath.Join(dir, "vm.yaml")
+		return filepath.Join(dir, "vm.yaml"), nil
 	}
-	return filepath.Join(dir, "vms", name+".yaml")
+	return filepath.Join(dir, "vms", name+".yaml"), nil
 }
 
 // InstanceRow is one line of `omac vm list`.

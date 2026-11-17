@@ -38,7 +38,11 @@ var newVMManager = func(env *Env, name string) (vmManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return vm.NewManager(vm.NewLayout(root), vm.InstanceConfigPath(name), vm.RealDeps(), vm.NameHintWriter(name, env.Stdout)), nil
+	cfg, err := vm.InstanceConfigPath(name)
+	if err != nil {
+		return nil, err
+	}
+	return vm.NewManager(vm.NewLayout(root), cfg, vm.RealDeps(), vm.NameHintWriter(name, env.Stdout)), nil
 }
 
 // extractVMName removes --name <x> or --name=<x> from args wherever it sits
