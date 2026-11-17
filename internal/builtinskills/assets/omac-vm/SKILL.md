@@ -10,9 +10,10 @@ description: >-
   the omac VM; or when the user mentions the omac VM.
 license: Same as the omac repository
 compatibility: >-
-  Pure guidance skill: no sidecar and no omac.yaml. Needs an omac session
-  started with `--vm`. Works under any omac inner harness. Shipped with the
-  omac binary and provisioned by `omac setup`.
+  Pure guidance skill: no sidecar and no omac.yaml. The build commands need
+  an omac session started with `--vm`; setup.md covers sessions without it.
+  Works under any omac inner harness. Shipped with the omac binary and
+  provisioned by `omac setup`.
 metadata:
   author: tngtech
   version: "0.1.0"
@@ -64,9 +65,10 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
   `head` or `tail`: the pipe reports the exit code of its last command, so a
   failed build looks successful.
 - A non-zero exit code can come from the command or from omac (2, 4 or 5),
-  so read the log. omac's own errors are lines starting with `omac vm`.
+  so read the log. omac's own errors name `omac vm` or `--vm`.
   `connection lost or remote command killed` can also mean the build was
-  killed in the VM, for example when it ran out of memory.
+  killed in the VM, for example when it ran out of memory. Its hint to run
+  `omac vm status` is for the human on the host.
 - omac quotes every argument after `--`, so `*` and `|` are not expanded in
   the VM. Wrap such a command in `sh -c '...'`, as in the examples below.
 - Run tests that use Testcontainers through `omac vm exec`, not in the
@@ -83,8 +85,11 @@ Build output stays in the VM and is not copied back. Read it with another
 # number of test cases that ran
 omac vm exec --cwd backend -- sh -c 'cat build/test-results/test/*.xml | grep -c "<testcase "'
 # result files that contain a failure or an error
-omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/test-results/test/*.xml || echo "no failures"'
+omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/test-results/test/*.xml; [ $? -eq 1 ] && echo "no failures"'
 ```
+
+If grep reports that no result file exists, the tests did not run: read the
+build log instead.
 
 ## When something is missing, ask the human
 
@@ -94,28 +99,17 @@ omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/tes
   `omac vm image add <image>` on the host.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
   or `No cached version ... available for offline mode`. Do not drop
-  `--offline`. Ask the human to prime the VM from the host. omac refuses
-  `omac vm online` while a session is attached, so they end this session
-  first:
-
-  ```sh
-  omac vm online
-  omac vm exec --env <TOKEN_VARIABLE> --cwd <module> -- ./gradlew <check task> --no-daemon
-  omac vm offline
-  ```
-
-  `<check task>` is the task that runs all checks, such as `check`, not only
-  `test`: Gradle downloads the tools behind tasks such as Checkstyle or
-  Spotless only when those tasks run. Leave out `--env` if the downloads need
-  no token. `--no-daemon` is only for priming: a daemon would keep the token.
-- **A JDK or system package is missing.** Gradle reports `Cannot find a Java
-  installation matching ...`, or a command is not found. Name it, for example
+  `--offline`. Ask the human to prime the VM from the host, as described in
+  step 6 of [setup.md](setup.md). omac refuses `omac vm online` while a
+  session is attached, so they end this session first. Tell them which build
+  files you changed: priming runs your changes online with their token.
+- **A JDK or system package is missing.** Gradle reports `No matching
+  toolchains found` or `Cannot find a Java installation`, or a command is
+  not found. Name it, for example
   `temurin-21`, and ask the human to add it to `jdks` or `packages` in
   `~/.config/omac/vm.yaml`, end this session and run
   `omac vm up --reprovision` on the host.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig`.** The session cannot read `~/.gitconfig`, so every git
-  command in it fails. Ask the human to add `~/.gitconfig`, its symlink target
-  if it is a symlink, and every file it `[include]`s to `filesystem.read` in
-  the sandbox grants file `~/.config/omac/sandbox-profiles/default.json`, then
-  restart the session.
+  command in it fails. Ask the human to grant it as described in step 7 of
+  [setup.md](setup.md), then restart the session.

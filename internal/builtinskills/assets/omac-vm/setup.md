@@ -73,20 +73,27 @@ Builds run with `--offline` in the VM, so their dependencies must be
 downloaded once while the VM is online. No session may be attached, because
 omac refuses `omac vm online` while one is.
 
+The priming build runs the worktree as it is now, online and with the
+token, including what an agent changed. Before priming, the human should
+review `git status` and `git diff`, above all build scripts, the Gradle
+wrapper properties and settings files, or prime from a commit they trust.
+
 ```sh
 omac vm online
 omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
 omac vm offline
 ```
 
+- If the build fails, still run `omac vm offline`: omac refuses `--vm`
+  sessions while the VM is online.
 - Run it from the project directory. `--cwd` is the module with the build,
   relative to the current directory.
 - Use the task that runs all checks (`check` or the project's own), not only
   `test`: Gradle downloads the tools behind tasks such as Checkstyle or
   Spotless only when those tasks run.
 - `--env NAME` passes a token from the host's shell. Leave it out if the
-  downloads need none. Use a short-lived token, because anything a session
-  left behind in the VM runs online with it. `--no-daemon` makes sure no
+  downloads need none. Use a short-lived, read-only token, because anything
+  a session left behind in the VM runs online with it. `--no-daemon` makes sure no
   Gradle daemon keeps the token afterwards.
 
 ## 7. Sandbox grants
