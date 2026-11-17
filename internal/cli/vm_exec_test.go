@@ -14,7 +14,7 @@ import (
 
 // useFakeVMExec swaps both exec seams and the manager seam; the manager
 // fake fails the test if exec ever builds a manager. The returned pointer
-// holds the options of the last runVMExecFn call.
+// holds the options of every runVMExecFn call, in order.
 func useFakeVMExec(t *testing.T, connErr error, code int, execErr error) *[]vm.ExecOpts {
 	t.Helper()
 	origConn, origRun, origMgr, origState := resolveVMConn, runVMExecFn, newVMManager, loadVMState
