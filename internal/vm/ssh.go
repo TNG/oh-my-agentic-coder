@@ -6,7 +6,12 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
+
+// sshWaitDelay is how long a cancelled ssh may take to exit before it is killed.
+const sshWaitDelay = 5 * time.Second
 
 // SSHTarget is a VM user reachable through the forwarded port on 127.0.0.1.
 type SSHTarget struct {
@@ -28,6 +33,10 @@ func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stder
 	// commands starting with "-". See TestDashDashAfterDestinationEndsOptionParsing.
 	args := append(SSHArgs(t), t.User+"@127.0.0.1", "--", remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	// SIGTERM, unlike the default SIGKILL, lets ssh -t restore the local
+	// terminal from raw mode.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = sshWaitDelay
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

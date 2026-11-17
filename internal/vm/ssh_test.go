@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSSHArgs(t *testing.T) {
@@ -62,6 +63,39 @@ func TestShellJoin(t *testing.T) {
 	// not the command.
 	if got, want := ShellJoin([]string{"a=b", "c"}), `'a=b' c`; got != want {
 		t.Errorf("ShellJoin = %s, want %s", got, want)
+	}
+}
+
+// A killed ssh -t leaves the local terminal in raw mode; on SIGTERM it
+// restores it first.
+func TestDefaultSSHTerminatesOnCancel(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\ntrap 'echo term > \"$OMAC_TEST_MARK\"; exit 143' TERM\n" +
+		": > \"$OMAC_TEST_READY\"\nwhile :; do /bin/sleep 0.05; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mark, ready := filepath.Join(dir, "mark"), filepath.Join(dir, "ready")
+	t.Setenv("PATH", dir)
+	t.Setenv("OMAC_TEST_MARK", mark)
+	t.Setenv("OMAC_TEST_READY", ready)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			if _, err := os.Stat(ready); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	target := SSHTarget{User: "agent", Port: 42022, KeyPath: "/k", KnownHosts: "/kh", TTY: true}
+	if err := DefaultSSH(ctx, target, nil, nil, nil, "sleep 60"); err == nil {
+		t.Fatal("DefaultSSH = nil after cancel, want an error")
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("ssh was not sent SIGTERM on cancel: %v", err)
 	}
 }
 
