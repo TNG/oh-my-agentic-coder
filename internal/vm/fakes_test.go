@@ -139,6 +139,9 @@ type fakeSSH struct {
 	mu    sync.Mutex
 	calls []sshCall
 	guest fakeGuest
+	// lima is the instance this guest belongs to: a stopped instance refuses
+	// connections, as a real VM does.
+	lima *fakeLimaCtl
 	// stickyFirewall keeps the table loaded across boots, simulating a guest
 	// that ignores the online mode.
 	stickyFirewall bool
@@ -155,6 +158,9 @@ type fakeSSH struct {
 }
 
 func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
+	if f.lima != nil && f.lima.status() != StatusRunning {
+		return errors.New("exit status 255: ssh: connect to host 127.0.0.1: Connection refused")
+	}
 	var in string
 	if stdin != nil {
 		b, err := io.ReadAll(stdin)
@@ -203,9 +209,10 @@ func (f *fakeSSH) run(_ context.Context, t SSHTarget, stdin io.Reader, stdout, _
 		for _, img := range g.images {
 			fmt.Fprintln(stdout, img)
 		}
-	case strings.HasPrefix(remote, "if "+dockerCmd("image inspect ")):
-		// imageRemoveCmd: removes the image if Docker has it, else exits 0.
-		ref := strings.TrimPrefix(remote, "if "+dockerCmd("image inspect "))
+	case strings.HasPrefix(remote, "err=$("+dockerCmd("image inspect ")):
+		// imageRemoveCmd: an image the guest does not have counts as removed;
+		// otherwise it is deleted like image rm does.
+		ref := strings.TrimPrefix(remote, "err=$("+dockerCmd("image inspect "))
 		ref = strings.Trim(ref[:strings.Index(ref, " ")], "'")
 		g.images = slices.DeleteFunc(g.images, func(s string) bool { return s == ref })
 	case strings.HasPrefix(remote, dockerCmd("image rm ")):
@@ -322,7 +329,7 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "vm")
 	lima := &fakeLimaCtl{failOn: map[string]error{}}
-	ssh := &fakeSSH{}
+	ssh := &fakeSSH{lima: lima}
 	lima.onStart = ssh.boot
 	lima.onStop = ssh.halt
 	probe := &fakeProbe{lima: lima}
@@ -352,7 +359,6 @@ func newTestManager(t *testing.T) (*Manager, *fakeLimaCtl, *fakeSSH, *fakeProbe)
 		Host:             HostResources{CPUs: 16, MemoryBytes: 64 << 30},
 		Alive:            func(int) bool { return false },
 		HostUser:         "alice",
-		Now:              time.Now,
 		ProbeInterval:    time.Millisecond,
 		ProvisionTimeout: time.Second,
 		RestartTimeout:   time.Second,

@@ -413,6 +413,53 @@ func TestUpRefusesExistingInstanceWithoutState(t *testing.T) {
 	}
 }
 
+func TestUpReusesLeftoverPortsOnlyWhileTheyAreFree(t *testing.T) {
+	const sshPort, dockerPort = 42030, 42380
+	cases := []struct {
+		name    string
+		free    func(int) bool
+		wantSSH int
+	}{
+		{"free", func(int) bool { return true }, sshPort},
+		{"taken", func(p int) bool { return p != sshPort && p != dockerPort }, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, _, _, _ := newTestManager(t)
+			leftover := &State{Version: StateVersion, SSHPort: sshPort, DockerPort: dockerPort, Mode: ModeOffline}
+			if err := SaveState(m.Layout.StatePath, leftover); err != nil {
+				t.Fatal(err)
+			}
+			m.Deps.PortFree = c.free
+			mustUp(t, m)
+			st := mustState(t, m)
+			if c.wantSSH != 0 {
+				if st.SSHPort != c.wantSSH || st.DockerPort != dockerPort {
+					t.Errorf("ports = %d/%d, want the leftover %d/%d", st.SSHPort, st.DockerPort, c.wantSSH, dockerPort)
+				}
+				return
+			}
+			if st.SSHPort == sshPort || st.DockerPort == dockerPort {
+				t.Errorf("ports = %d/%d, want fresh ones", st.SSHPort, st.DockerPort)
+			}
+		})
+	}
+}
+
+func TestUpReplacesUnloadableLeftoverState(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	if err := os.MkdirAll(filepath.Dir(m.Layout.StatePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Layout.StatePath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustUp(t, m)
+	if st := mustState(t, m); st.SSHPort == 0 || st.DockerPort == 0 {
+		t.Errorf("state = %+v, want fresh ports", st)
+	}
+}
+
 func TestUpMissingLimactl(t *testing.T) {
 	m, lima, _, _ := newTestManager(t)
 	m.Deps.LookPath = func(string) (string, error) { return "", errors.New("not found") }
@@ -460,11 +507,17 @@ func TestUpReprovisionStartsStoppedInstanceFirst(t *testing.T) {
 	if err := m.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	m.Deps.ProvisionTimeout = 3 * time.Second
 	lima.reset()
 	if err := m.Up(context.Background(), true); err != nil {
 		t.Fatalf("Up(reprovision): %v", err)
 	}
 	assertVerbs(t, lima, "list", "start", "stop", "start", "stop", "start")
+	// That boot may still owe the system provisioning.
+	want := []string{"start", "--tty=false", "--timeout", "3s", InstanceName}
+	if got := lima.calls[1].args; !slices.Equal(got, want) {
+		t.Errorf("reprovisioning start = %v, want %v", got, want)
+	}
 }
 
 func TestUpReprovisionRejectsBadPackageName(t *testing.T) {
@@ -733,12 +786,106 @@ func TestSetModeOfflineRestoresFirewall(t *testing.T) {
 	}
 }
 
+func TestSetModeAlreadyOfflineDoesNotRestart(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	mustUp(t, m)
+	attachLiveSession(t, m, lima, 4242)
+
+	if err := m.SetMode(context.Background(), ModeOffline); err != nil {
+		t.Fatalf("SetMode(offline): %v", err)
+	}
+	assertVerbs(t, lima, "list")
+	if st := mustState(t, m); st.Mode != ModeOffline {
+		t.Errorf("mode = %q, want offline kept", st.Mode)
+	}
+	if pids, _ := AttachedSessions(m.Layout, m.Deps.Alive); !slices.Equal(pids, []int{4242}) {
+		t.Errorf("attached sessions = %v, want the session kept", pids)
+	}
+}
+
+func TestSetModeAlreadyOfflineRepairsMissingFirewall(t *testing.T) {
+	m, lima, ssh, _ := newTestManager(t)
+	mustUp(t, m)
+	ssh.setFirewall(false)
+	lima.reset()
+
+	if err := m.SetMode(context.Background(), ModeOffline); err != nil {
+		t.Fatalf("SetMode(offline): %v", err)
+	}
+	assertVerbs(t, lima, "list", "stop", "start")
+	if _, g := ssh.snapshot(); !g.firewall {
+		t.Errorf("guest = %+v, want the firewall reloaded", g)
+	}
+}
+
+func TestSetModeOnlineStartsStoppedVM(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	if err := m.SetMode(ctx, ModeOnline); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	lima.reset()
+
+	if err := m.SetMode(ctx, ModeOnline); err != nil {
+		t.Fatalf("SetMode(online) on a stopped VM: %v", err)
+	}
+	assertVerbs(t, lima, "list", "start", "stop", "start")
+	if lima.status() != StatusRunning {
+		t.Errorf("status = %q, want running", lima.status())
+	}
+}
+
+func TestSetModeOnStoppedVMUsesProvisionTimeout(t *testing.T) {
+	m, lima, _, _ := newTestManager(t)
+	ctx := context.Background()
+	mustUp(t, m)
+	if err := m.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.Deps.ProvisionTimeout = 3 * time.Second
+	lima.reset()
+
+	if err := m.SetMode(ctx, ModeOffline); err != nil {
+		t.Fatalf("SetMode(offline): %v", err)
+	}
+	want := []string{"start", "--tty=false", "--timeout", "3s", InstanceName}
+	if got := lima.calls[1].args; !slices.Equal(got, want) {
+		t.Errorf("start of the stopped VM = %v, want %v", got, want)
+	}
+}
+
+func TestVerifyModeFailsWhenGuestIsUnreachable(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	mustUp(t, m)
+	if err := m.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.verifyMode(context.Background(), mustState(t, m), ModeOnline); err == nil {
+		t.Fatal("verifyMode accepted a guest that refuses connections")
+	}
+}
+
 func TestSetModeRejectsUnknownMode(t *testing.T) {
 	m, lima, _, _ := newTestManager(t)
 	if err := m.SetMode(context.Background(), "airplane"); err == nil {
 		t.Fatal("SetMode(airplane) succeeded")
 	}
 	assertVerbs(t, lima)
+}
+
+func TestStatusRefusesExistingInstanceWithoutState(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	mustUp(t, m)
+	if err := os.Remove(m.Layout.StatePath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "is missing; run `omac vm reset`") {
+		t.Fatalf("Status = %v, want the missing-state error", err)
+	}
 }
 
 func TestStatusReportsEverything(t *testing.T) {

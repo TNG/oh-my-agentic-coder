@@ -100,11 +100,15 @@ func (m *Manager) ImageRemove(ctx context.Context, ref string) error {
 	return SaveState(m.Layout.StatePath, st)
 }
 
-// imageRemoveCmd removes ref from the VM's Docker. An image that is already
-// gone counts as removed, so state can still drop it.
+// imageRemoveCmd removes ref from the VM's Docker. Only a missing image counts
+// as already removed; every other failure must surface, or state would claim a
+// removal that did not happen.
 func imageRemoveCmd(ref string) string {
 	q := ShellQuote(ref)
-	return "if " + dockerCmd("image inspect "+q) + " >/dev/null 2>&1; then " + dockerCmd("image rm "+q) + "; fi"
+	return "err=$(" + dockerCmd("image inspect "+q) + " 2>&1 >/dev/null) || " +
+		`{ case "$err" in *"No such image"*) exit 0;; ` +
+		`*) printf '%s\n' "$err" >&2; exit 1;; esac; }; ` +
+		dockerCmd("image rm "+q)
 }
 
 func addSorted(list []string, s string) []string {

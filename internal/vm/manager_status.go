@@ -19,8 +19,9 @@ type StatusReport struct {
 	Docker              *DockerVersion // nil when the probe failed or the VM is stopped
 }
 
-// Status reports the VM without changing it. A failed Docker probe only
-// leaves Docker nil.
+// Status reports the VM state without modifying the VM. A failed Docker probe
+// only leaves Docker nil. An existing instance without state.json is an
+// error: its mode and ports are unknown, so the report would be misleading.
 func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	inst, err := m.instance(ctx)
 	if err != nil {
@@ -29,6 +30,9 @@ func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	st, err := LoadState(m.Layout.StatePath)
 	if err != nil {
 		return StatusReport{}, err
+	}
+	if st == nil && inst != nil {
+		return StatusReport{}, fmt.Errorf("omac vm: %s is missing; run `omac vm reset`", m.Layout.StatePath)
 	}
 	return m.report(ctx, inst, st)
 }

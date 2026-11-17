@@ -42,7 +42,6 @@ type Deps struct {
 	Host     HostResources
 	Alive    func(int) bool
 	HostUser string // host login name, mapped to the VM user by AgentUserName
-	Now      func() time.Time
 
 	// Zero means 15m, 5m and 2s.
 	ProvisionTimeout, RestartTimeout, ProbeInterval time.Duration
@@ -61,7 +60,6 @@ func RealDeps() Deps {
 		Host:     DetectHost(),
 		Alive:    ProcessAlive,
 		HostUser: hostUserName(),
-		Now:      time.Now,
 	}
 }
 
@@ -106,7 +104,8 @@ const (
 	markerPresentCmd  = "test -f " + ProvisionedMarker
 	// bootDoneCmd succeeds once Lima finished every provisioning script of
 	// the current boot; `limactl start` waits for the same file.
-	bootDoneCmd = "test -f /run/lima-boot-done"
+	bootDoneCmd       = "test -f /run/lima-boot-done"
+	guestReachableCmd = "true"
 )
 
 // writeModeCmd sets ModeFile, which the boot script reads on the next start.
@@ -187,9 +186,12 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if instanceExists {
 		return m.loadState()
 	}
+	// A leftover state.json belongs to a VM that is gone: keep its ports while
+	// they are free, and replace an unloadable file, since no instance can be
+	// inconsistent with it.
 	st, err := LoadState(m.Layout.StatePath)
-	if err != nil || st != nil {
-		return st, err
+	if err == nil && st != nil && m.Deps.PortFree(st.SSHPort) && m.Deps.PortFree(st.DockerPort) {
+		return st, nil
 	}
 	sshPort, dockerPort, err := PickPorts(m.Deps.PortFree)
 	if err != nil {
@@ -311,8 +313,9 @@ func (m *Manager) reprovision(ctx context.Context, st *State, cfg UserConfig, ru
 	}
 	fmt.Fprintln(m.Out, "omac vm: reprovisioning (this takes a few minutes)…")
 	if !running {
-		// The VM boots offline; root ssh works regardless.
-		if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
+		// The VM boots offline; root ssh works regardless. A boot that still
+		// owes its provisioning needs the full timeout.
+		if err := m.start(ctx, m.Deps.ProvisionTimeout); err != nil {
 			return err
 		}
 	}
@@ -344,7 +347,9 @@ func (m *Manager) switchMode(ctx context.Context, st *State, mode string, runnin
 		}
 	}
 	if !running {
-		if err := m.start(ctx, m.Deps.RestartTimeout); err != nil {
+		// A stopped VM may still owe its system provisioning, which needs the
+		// provisioning timeout.
+		if err := m.start(ctx, m.Deps.ProvisionTimeout); err != nil {
 			return err
 		}
 	}
@@ -372,7 +377,12 @@ func (m *Manager) switchMode(ctx context.Context, st *State, mode string, runnin
 }
 
 // verifyMode checks the omac-vmguard table: loaded offline, absent online.
+// It runs guestReachableCmd first, because a refused connection also fails the
+// table check and would read as "firewall absent".
 func (m *Manager) verifyMode(ctx context.Context, st *State, mode string) error {
+	if err := m.ssh(ctx, m.rootTarget(st), nil, nil, guestReachableCmd); err != nil {
+		return fmt.Errorf("omac vm: cannot ask the guest for its mode: %w", err)
+	}
 	err := m.checkFirewall(ctx, st)
 	switch {
 	case mode == ModeOffline && err != nil:
@@ -461,10 +471,17 @@ func (m *Manager) SetMode(ctx context.Context, mode string) error {
 	if err != nil {
 		return err
 	}
+	prev := st.Mode
 	if mode == ModeOnline {
 		if err := m.markOnlineUnattached(st); err != nil {
 			return err
 		}
+	}
+	// A healthy VM already in the requested mode is left alone: a restart would
+	// kill its containers and the attached sessions' Docker connections.
+	if prev == mode && m.verifyMode(ctx, st, mode) == nil {
+		fmt.Fprintf(m.Out, "omac vm: already %s\n", mode)
+		return nil
 	}
 	fmt.Fprintf(m.Out, "omac vm: switching %s (restarts the VM)…\n", mode)
 	return m.switchMode(ctx, st, mode, inst.Status == StatusRunning, m.Deps.RestartTimeout)
