@@ -95,9 +95,10 @@ func gitContext(ctx context.Context) context.Context {
 }
 
 // IgnoredPaths lists the paths git ignores in the repository at top and in
-// the repositories inside it (checked-out submodules and untracked clones),
-// relative to top; ignored directories are listed once, with a trailing
-// slash.
+// its checked-out submodules, relative to top; ignored directories are
+// listed once, with a trailing slash. Git never runs in an untracked
+// clone inside top: a sandboxed agent controls its config, which can run
+// commands (core.fsmonitor), so its ignore rules are not applied.
 func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string, error) {
 	ctx = gitContext(ctx)
 	var paths []string
@@ -126,17 +127,6 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string,
 		for line := range strings.Lines(subs) {
 			if sub := strings.TrimRight(line, "\r\n"); sub != "" {
 				roots = append(roots, root+sub+"/")
-			}
-		}
-		// Without --directory, git lists untracked files one by one but a
-		// repository inside them as "path/", without descending into it.
-		untracked, err := gitOutput(ctx, run, dir, "ls-files", "--others", "--exclude-standard", "-z")
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range strings.Split(untracked, "\x00") {
-			if strings.HasSuffix(p, "/") {
-				roots = append(roots, root+p)
 			}
 		}
 	}

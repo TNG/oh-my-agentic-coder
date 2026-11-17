@@ -165,7 +165,7 @@ func TestIgnoredPathsUsesGit(t *testing.T) {
 	}
 }
 
-func TestIgnoredPathsIncludesNestedRepositories(t *testing.T) {
+func TestIgnoredPathsIncludesNestedSubmodules(t *testing.T) {
 	nested := newRepo(t, map[string]string{".gitignore": "gen/\n", "n.go": "package n"})
 	git(t, nested, "add", ".")
 	git(t, nested, "commit", "-qm", "init")
@@ -173,20 +173,12 @@ func TestIgnoredPathsIncludesNestedRepositories(t *testing.T) {
 	git(t, lib, "submodule", "add", "-q", nested, "deps/nested")
 	git(t, lib, "add", ".")
 	git(t, lib, "commit", "-qm", "init")
-	top := newRepo(t, map[string]string{
-		".gitignore":   "build/\n",
-		"build/x":      "x",
-		"src/a.go":     "package a",
-		"vendor/x/v.c": "x", // a cloned repository that is not a submodule
-	})
+	top := newRepo(t, map[string]string{".gitignore": "build/\n", "build/x": "x", "src/a.go": "package a"})
 	git(t, top, "submodule", "add", "-q", lib, "libs/lib")
 	git(t, top, "submodule", "update", "-q", "--init", "--recursive")
-	git(t, filepath.Join(top, "vendor/x"), "init", "-q")
 	writeFiles(t, top, map[string]string{
 		"libs/lib/out/o.class":          "x",
 		"libs/lib/deps/nested/gen/g.go": "x",
-		"vendor/x/.gitignore":           "obj/\n",
-		"vendor/x/obj/v.o":              "x",
 	})
 
 	got, err := IgnoredPaths(context.Background(), ExecRunner, top)
@@ -194,8 +186,25 @@ func TestIgnoredPathsIncludesNestedRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(got)
-	if want := []string{"build/", "libs/lib/deps/nested/gen/", "libs/lib/out/", "vendor/x/obj/"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"build/", "libs/lib/deps/nested/gen/", "libs/lib/out/"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ignored = %q, want %q", got, want)
+	}
+}
+
+// A sandboxed agent can create a repository inside the worktree and set
+// its config; git must never run there on the host.
+func TestIgnoredPathsSkipsUntrackedClones(t *testing.T) {
+	top := newRepo(t, map[string]string{"src/a.go": "package a", "vendor/x/v.c": "x"})
+	clone := filepath.Join(top, "vendor/x")
+	git(t, clone, "init", "-q")
+	marker := filepath.Join(t.TempDir(), "ran")
+	git(t, clone, "config", "core.fsmonitor", "touch "+ShellQuote(marker)+"; false")
+
+	if _, err := IgnoredPaths(context.Background(), ExecRunner, top); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("git ran the clone's core.fsmonitor command on the host")
 	}
 }
 
