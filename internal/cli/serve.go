@@ -121,6 +121,12 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --no-sandbox or --no-inner")
 		return serveParse{}, false
 	}
+	// --for-opencode-desktop moves XDG_STATE_HOME, so serve would look for
+	// the VM's state in another directory than `omac vm up` created.
+	if *vmAttach && *forDesktop {
+		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --for-opencode-desktop")
+		return serveParse{}, false
+	}
 	if *cacheScopeFlag != "" {
 		if _, err := config.ValidateCacheScope(*cacheScopeFlag); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve:", err)

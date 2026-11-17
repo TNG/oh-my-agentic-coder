@@ -285,6 +285,12 @@ func TestVMSessionNilIsNoOp(t *testing.T) {
 	s.release()
 }
 
+func TestServeVMRefusesDesktop(t *testing.T) {
+	if _, ok := parseServeArgs([]string{"--vm", "--for-opencode-desktop"}, devnullEnv(t)); ok {
+		t.Error("parseServeArgs(--vm --for-opencode-desktop) accepted")
+	}
+}
+
 // attachOrderManager checks, inside PrepareAttach, that this process's
 // session marker already exists.
 type attachOrderManager struct {
