@@ -640,12 +640,15 @@ func TestBuiltinSkillVMCommandsParse(t *testing.T) {
 				}
 			}
 			if args[0] == "exec" {
-				if !slices.Contains(args, "--") {
+				if len(args) == 1 {
 					continue // a mention of the verb, not a command
 				}
 				env, _, stderr := vmTestEnv(t)
-				if _, _, ok := parseVMExecArgs(args[1:], env); !ok {
+				a, _, ok := parseVMExecArgs(args[1:], env)
+				if !ok {
 					t.Errorf("%s: command does not parse: omac vm %s\n%s", path, m[1], stderr())
+				} else if _, err := vm.ResolveEnv(a.envs, func(string) (string, bool) { return "x", true }); err != nil {
+					t.Errorf("%s: omac vm %s: %v", path, m[1], err)
 				}
 			} else {
 				useFakeVM(t, &fakeVMManager{})
