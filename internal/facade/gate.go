@@ -3,6 +3,7 @@ package facade
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,18 +15,21 @@ import (
 // human answer. Everything here comes from the request or from omac's own
 // declaration; nothing is taken from the sidecar.
 type ApprovalRequest struct {
-	Skill       string
-	Mount       string
-	Namespace   string
-	Method      string
-	Path        string // cleaned, as forwarded
-	RawQuery    string // as received; the approver must mask credentials
-	Match       string // the declared pattern that matched
+	Skill     string
+	Mount     string
+	Namespace string
+	Method    string
+	Path      string // cleaned, as forwarded
+	RawQuery  string // as received; the approver must mask credentials
+	// Match is the rule a stored answer is keyed on: the declared pattern,
+	// or the exact method and cleaned path for a catch-all entry (ANY or a
+	// ** path) and for an unlisted request.
+	Match       string
 	Description string // the declaration's one-line description
 	// Unlisted is true when the declaration has no entry for the request.
-	// Match is then the exact method and cleaned path, not a pattern. The
-	// cleaned path percent-encodes `{`, `}` and `*`, so it cannot spell a
-	// pattern today; the flag keeps the two apart without relying on that.
+	// The cleaned path percent-encodes `{`, `}` and `*`, so an exact Match
+	// cannot spell a pattern today; the flag keeps the two apart without
+	// relying on that.
 	Unlisted bool
 }
 
@@ -63,8 +67,11 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 		return "", false
 	}
 
-	nPrefix := strings.Count(route.key(), "/") + 1
-	segs, forward, err := approval.CleanPath(escapedRest(rawEscaped, nPrefix))
+	rest, ok := escapedRest(rawEscaped, strings.Split(route.key(), "/"))
+	if !ok {
+		return deny(http.StatusBadRequest, "invalid-path", "invalid-path", "/", nil)
+	}
+	segs, forward, err := approval.CleanPath(rest)
 	if err != nil {
 		return deny(http.StatusBadRequest, "invalid-path", "invalid-path", "/", nil)
 	}
@@ -77,7 +84,7 @@ func (f *Facade) gate(w http.ResponseWriter, r *http.Request, route *Route, rawE
 	// escaped, so passing it would encode it twice ("a%20b" → "a%2520b").
 	// CleanPath refuses an encoded "/", so joining the decoded segments
 	// gives back the same path.
-	rest := strings.Join(segs, "/")
+	rest = strings.Join(segs, "/")
 	// With an approvals block, a route the block does not list asks too;
 	// only an entry with approval: none lets a request through unasked.
 	entry, matched := route.Approvals.Lookup(r.Method, segs)
@@ -140,20 +147,26 @@ func (f *Facade) auditApproval(route *Route, method, path, result, source, scope
 	f.auditor.Emit(audit.FacadeApproval(route.Skill, method, route.Mount, route.Namespace, path, result, source, scope))
 }
 
-// escapedRest returns the part of the escaped request path after the first
-// nPrefix non-empty segments (the namespace and mount), starting with "/".
-func escapedRest(rawEscaped string, nPrefix int) string {
+// escapedRest returns the escaped path after the route prefix (namespace
+// and mount). ok is false when a prefix segment as received does not decode
+// to exactly the expected one: "/echo%2Flive/x" resolves to the route "echo"
+// on the decoded path, but its first raw segment is "echo%2Flive".
+func escapedRest(rawEscaped string, prefix []string) (rest string, ok bool) {
 	i := 0
-	for n := 0; n < nPrefix; n++ {
+	for _, want := range prefix {
 		for i < len(rawEscaped) && rawEscaped[i] == '/' {
 			i++
 		}
+		start := i
 		for i < len(rawEscaped) && rawEscaped[i] != '/' {
 			i++
 		}
+		if got, err := url.PathUnescape(rawEscaped[start:i]); err != nil || got != want {
+			return "", false
+		}
 	}
 	if i >= len(rawEscaped) {
-		return "/"
+		return "/", true
 	}
-	return rawEscaped[i:]
+	return rawEscaped[i:], true
 }

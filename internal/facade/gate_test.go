@@ -395,3 +395,27 @@ func TestGate_ApprovedStreamIsNotBuffered(t *testing.T) {
 		t.Errorf("asked %d times", len(ap.calls))
 	}
 }
+
+func TestGateRefusesAnEncodedSlashInTheMount(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}}
+	f, _, seen := gatedFacade(t, ap)
+	for _, target := range []string{"/echo%2Flive/x/status", "/echo%2flive/status"} {
+		w := do(f, "GET", target)
+		if w.Code != http.StatusBadRequest || w.Header().Get("X-Omac-Reason") != "invalid-path" {
+			t.Errorf("%s: code=%d reason=%q", target, w.Code, w.Header().Get("X-Omac-Reason"))
+		}
+	}
+	if len(ap.calls) != 0 || len(seen()) != 0 {
+		t.Errorf("asked=%d forwarded=%v", len(ap.calls), seen())
+	}
+}
+
+func TestGateAcceptsAnEncodedLetterInTheMount(t *testing.T) {
+	f, _, seen := gatedFacade(t, &fakeApprover{})
+	if w := do(f, "GET", "/ech%6F/status"); w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body)
+	}
+	if got := seen(); len(got) != 1 || !strings.HasPrefix(got[0], "GET /status ") {
+		t.Errorf("forwarded=%v", got)
+	}
+}
