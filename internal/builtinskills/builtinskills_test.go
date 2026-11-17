@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -101,46 +104,89 @@ func TestMaterializeCreateUnchangedUpdate(t *testing.T) {
 	}
 }
 
-// SKILL.md links to the bundle's other files, so they must be written too.
-func TestMaterializeWritesWholeBundle(t *testing.T) {
-	parent := t.TempDir()
-	if _, err := Materialize("omac-vm", parent, false); err != nil {
-		t.Fatal(err)
-	}
+// SKILL.md links to the bundle's other files, so they are written, checked
+// and refreshed like SKILL.md.
+func TestSecondaryFileIsWrittenCheckedAndRestored(t *testing.T) {
 	want, err := fs.ReadFile(assetsFS, assetsRoot+"/omac-vm/setup.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(parent, "omac-vm", "setup.md"))
-	if err != nil {
-		t.Fatal(err)
+	drifts := map[string]func(path string) error{
+		"edited":  func(p string) error { return os.WriteFile(p, []byte("old\n"), 0o644) },
+		"deleted": os.Remove,
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatal("setup.md differs from the embedded version")
+	for name, drift := range drifts {
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			setup := filepath.Join(parent, "omac-vm", "setup.md")
+			assertWritten := func() {
+				t.Helper()
+				got, err := os.ReadFile(setup)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("setup.md differs from the embedded version (err %v)", err)
+				}
+			}
+			if _, err := Materialize("omac-vm", parent, false); err != nil {
+				t.Fatal(err)
+			}
+			assertWritten()
+			if err := drift(setup); err != nil {
+				t.Fatal(err)
+			}
+			if st, err := Check("omac-vm", parent); err != nil || st != StateStale {
+				t.Fatalf("Check = %s, %v; want %s", st, err, StateStale)
+			}
+			res, err := Materialize("omac-vm", parent, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Status != StatusUpdated {
+				t.Fatalf("status = %s, want updated", res.Status)
+			}
+			assertWritten()
+		})
 	}
 }
 
-func TestMissingSecondaryFileIsStaleAndRestored(t *testing.T) {
-	parent := t.TempDir()
-	if _, err := Materialize("omac-vm", parent, false); err != nil {
-		t.Fatal(err)
-	}
-	setup := filepath.Join(parent, "omac-vm", "setup.md")
-	if err := os.Remove(setup); err != nil {
-		t.Fatal(err)
-	}
-	if st, err := Check("omac-vm", parent); err != nil || st != StateStale {
-		t.Fatalf("Check = %s, %v; want %s", st, err, StateStale)
-	}
-	res, err := Materialize("omac-vm", parent, false)
+var sectionRefRe = regexp.MustCompile(`"([^"]+)"\s+(?:in\s+\[[^\]]+\]\(([^)]+\.md)\)|above)`)
+
+// The skills point agents at sections by heading, as in
+// `"Sandbox grants" in [setup.md](setup.md)` or `"Sandbox grants" above`;
+// renaming a heading must fail here.
+func TestSectionReferencesExist(t *testing.T) {
+	found := 0
+	err := fs.WalkDir(assetsFS, assetsRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path.Ext(p) != ".md" {
+			return err
+		}
+		text, err := fs.ReadFile(assetsFS, p)
+		if err != nil {
+			return err
+		}
+		for _, m := range sectionRefRe.FindAllStringSubmatch(string(text), -1) {
+			found++
+			file := p
+			if m[2] != "" {
+				file = path.Join(path.Dir(p), m[2])
+			}
+			target, err := fs.ReadFile(assetsFS, file)
+			if err != nil {
+				t.Errorf("%s: %q refers to a missing file: %v", p, m[0], err)
+				continue
+			}
+			title := strings.Join(strings.Fields(m[1]), " ")
+			heading := regexp.MustCompile(`(?m)^#+ (\d+\. )?` + regexp.QuoteMeta(title) + `\s*$`)
+			if !heading.Match(target) {
+				t.Errorf("%s: %s has no heading %q", p, file, title)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != StatusUpdated {
-		t.Fatalf("status = %s, want updated", res.Status)
-	}
-	if _, err := os.Stat(setup); err != nil {
-		t.Fatalf("setup.md not restored: %v", err)
+	if found == 0 {
+		t.Fatal("found no section references; the pattern no longer matches the skills")
 	}
 }
 
