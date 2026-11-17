@@ -243,8 +243,8 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 		return err
 	}
 	// The first boot runs online (nothing provisioned yet); record that
-	// before anything can fail. Lists of a VM deleted outside omac go, and
-	// the JDKs count only once provisioning succeeded.
+	// before anything can fail. Clear the lists left by a VM deleted
+	// outside omac; the JDKs are recorded once the VM is offline.
 	st.Mode = ModeOnline
 	st.Packages = cfg.Packages
 	st.Images, st.JDKs = nil, nil
