@@ -371,26 +371,10 @@ func runServe(args []string, env *Env) int {
 	)
 	f.SetAuditor(auditor)
 	f.Approver = newSidecarApprover(env.Stderr, "omac serve", func(namespace string) string {
-		if namespace == facade.GlobalNamespace {
-			return "global"
+		if srvRef == nil {
+			return ""
 		}
-		if srvRef != nil {
-			srvRef.mu.RLock()
-			defer srvRef.mu.RUnlock()
-			if d := srvRef.byToken[namespace]; d != nil {
-				return workdirScope(d.Dir)
-			}
-			// The single-directory flat alias has no namespace; it belongs
-			// to the one active directory.
-			if namespace == "" && len(srvRef.dirs) == 1 {
-				for _, d := range srvRef.dirs {
-					return workdirScope(d.Dir)
-				}
-			}
-		}
-		// Unknown: the approver denies instead of storing an answer under a
-		// scope that every project would share.
-		return ""
+		return srvRef.approvalScope(namespace)
 	})
 	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
@@ -1203,6 +1187,29 @@ type serveServer struct {
 	// directory activates.
 	flatAliasMu sync.Mutex
 	flatAliases map[string]struct{}
+}
+
+// approvalScope is the scope a stored approval answer for a request in
+// namespace belongs to. A skill in the global namespace is one route shared
+// by every project, so its answers are shared too. A project's namespace
+// maps to that project's directory, and so does the flat alias while
+// exactly one directory is active. Anything else is "": the approver then
+// denies instead of storing an answer every project could read.
+func (s *serveServer) approvalScope(namespace string) string {
+	if namespace == facade.GlobalNamespace {
+		return "global"
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if d := s.byToken[namespace]; d != nil {
+		return workdirScope(d.Dir)
+	}
+	if namespace == "" && len(s.dirs) == 1 {
+		for _, d := range s.dirs {
+			return workdirScope(d.Dir)
+		}
+	}
+	return ""
 }
 
 // aud returns the server's auditor, or a no-op when unset (tests construct
