@@ -129,9 +129,13 @@ func TestExecRunnerAppliesCommandEnv(t *testing.T) {
 }
 
 func TestWithCommandEnvKeepsEarlierEntries(t *testing.T) {
-	ctx := withCommandEnv(withCommandEnv(context.Background(), "LC_ALL=C"), "A=b")
-	if got, want := commandEnv(ctx), []string{"LC_ALL=C", "A=b"}; !slices.Equal(got, want) {
-		t.Fatalf("commandEnv = %q, want %q", got, want)
+	parent := withCommandEnv(context.Background(), "LC_ALL=C")
+	a, b := withCommandEnv(parent, "A=1"), withCommandEnv(parent, "B=2")
+	if got, want := commandEnv(a), []string{"LC_ALL=C", "A=1"}; !slices.Equal(got, want) {
+		t.Errorf("commandEnv(a) = %q, want %q", got, want)
+	}
+	if got, want := commandEnv(b), []string{"LC_ALL=C", "B=2"}; !slices.Equal(got, want) {
+		t.Errorf("commandEnv(b) = %q, want %q", got, want)
 	}
 }
 
@@ -205,6 +209,21 @@ func TestIgnoredPathsSkipsUntrackedClones(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("git ran the clone's core.fsmonitor command on the host")
+	}
+}
+
+// A failed git call must fail the copy: skipping it would copy ignored files.
+func TestIgnoredPathsFailsOnGitError(t *testing.T) {
+	for _, failing := range []string{"ls-files", "submodule"} {
+		run := func(_ context.Context, _ string, args []string, _ io.Reader, _, _ io.Writer) error {
+			if slices.Contains(args, failing) {
+				return exitErr(t, 128)
+			}
+			return nil
+		}
+		if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err == nil {
+			t.Errorf("IgnoredPaths with a failing git %s = nil error", failing)
+		}
 	}
 }
 

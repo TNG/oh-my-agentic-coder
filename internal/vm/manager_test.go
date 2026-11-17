@@ -1156,8 +1156,8 @@ func TestStatusListsWorktreesFromGuest(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	want := []string{"/Users/alice/proj (a1b2c3)", "/Users/alice/my proj (d4e5f6)"}
-	if !slices.Equal(r.Worktrees, want) {
-		t.Errorf("Worktrees = %q, want %q", r.Worktrees, want)
+	if !slices.Equal(r.Worktrees, want) || r.WorktreesNote != "" {
+		t.Errorf("Worktrees = %q, note %q; want %q and no note", r.Worktrees, r.WorktreesNote, want)
 	}
 	calls, _ := ssh.snapshot()
 	var listed bool
