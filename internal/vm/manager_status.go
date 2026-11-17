@@ -24,14 +24,14 @@ type StatusReport struct {
 	Images, Worktrees []string
 	JDKs, Packages    []string
 	Sessions          []int
-	Docker            *DockerVersion // nil when the probe failed or the VM is stopped
+	Docker            *DockerVersion // nil when the Docker check failed or the VM is stopped
 	// WorktreesNote replaces the worktree list when it was not read.
 	WorktreesNote string
 }
 
-// Status reports the VM state without modifying the VM. A failed Docker probe
+// Status reports the VM state without modifying the VM. A failed Docker check
 // only leaves Docker nil. An existing instance without state.json is an
-// error: its mode and ports are unknown, so the report would be misleading.
+// error: its mode and SSH port are unknown, so the report would be misleading.
 // Copied worktrees are read here, not in report, so an idempotent Up needs only
 // the Docker check over SSH.
 func (m *Manager) Status(ctx context.Context) (StatusReport, error) {

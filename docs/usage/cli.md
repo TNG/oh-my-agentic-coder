@@ -218,7 +218,7 @@ The omac VM is one long-lived Linux virtual machine per computer, which omac cre
 
 ```bash
 omac vm up                     # create, provision and switch offline (needs network once); later: start the VM in its last mode
-omac vm status                 # show state, mode, ports, images, sessions, packages, JDKs, copied worktrees, resources from vm.yaml or defaults
+omac vm status                 # show state, mode, SSH port, images, sessions, packages, JDKs, copied worktrees, resources from vm.yaml or defaults
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
@@ -247,7 +247,7 @@ omac vm exec --cwd backend -- ./gradlew test --offline
 omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay in the VM; read them back like this
 ```
 
-Docker commands run in the VM, so paths in `docker run -v` and `docker build` refer to the VM, for example the worktree copy that `omac vm exec` runs in: `omac vm exec -- docker build -t app .`
+Docker commands run in the VM, so paths in `docker run -v` and `docker build` refer to the VM, for example the worktree copy that `omac vm exec` runs in: `omac vm exec -- docker build -t app .`, or `omac vm exec -- sh -c 'docker run --rm -v "$PWD":/src -w /src <image> ls'`, where `$PWD` is that copy.
 
 The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. Absolute paths and `..` are refused; to reach a sibling directory, run from the top level. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory.
 

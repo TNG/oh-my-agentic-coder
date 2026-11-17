@@ -11,7 +11,8 @@ The omac VM is one Linux virtual machine per computer that stays around
 between sessions. It runs Docker and builds that the sandbox cannot run, for
 example Testcontainers tests. It has no internet access by default, so the
 human brings in Docker images and build dependencies. A session started with
-`--vm` can then use it.
+`--vm` runs Docker and builds there through `omac vm exec`; the sandbox
+itself has no Docker.
 
 ## 2. Prerequisites
 
@@ -130,12 +131,13 @@ omac vm offline
   `foo` they run:
 
   ```sh
-  export ORG_GRADLE_PROJECT_foo="$(sed -n 's/^foo=//p' ~/.gradle/gradle.properties)"
+  export ORG_GRADLE_PROJECT_foo="$(sed -n 's/^foo[[:space:]]*[=:][[:space:]]*//p' ~/.gradle/gradle.properties)"
   omac vm exec --env ORG_GRADLE_PROJECT_foo --cwd backend -- ./gradlew check --no-daemon
   ```
 
-- Priming has to end with `BUILD SUCCESSFUL`. If it fails, every offline
-  build in a session fails too.
+- Priming has to end with `BUILD SUCCESSFUL`. Gradle stops at the first
+  failed task and skips the downloads of the tasks after it, so offline
+  builds in a session can then miss dependencies.
 
 ## 7. Sandbox grants
 

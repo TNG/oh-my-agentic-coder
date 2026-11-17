@@ -78,8 +78,10 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
   the VM. Wrap such a command in `sh -c '...'`, as in the examples below.
 - Run Docker commands and tests that use Testcontainers through
   `omac vm exec`; the sandbox has no Docker. Paths in `docker run -v` and
-  `docker build` refer to the VM, so use paths inside the worktree copy, for
-  example `omac vm exec -- docker build -t app .`.
+  `docker build` refer to the VM, so use paths inside the worktree copy:
+  `omac vm exec -- docker build -t app .`, or
+  `omac vm exec -- sh -c 'docker run --rm -v "$PWD":/src -w /src <image> ls'`,
+  where `$PWD` is the worktree copy.
 - Keep runs short: run focused tests (`--tests 'com.example.FooTest'`), do not
   run `clean`, and let the Gradle daemon keep running between runs.
 
@@ -109,13 +111,14 @@ instead.
 - **Dependencies do not resolve offline.** Gradle reports `Could not resolve`
   or `No cached version ... available for offline mode`. If the Gradle
   wrapper already fails with `UnknownHostException: services.gradle.org`
-  while downloading its distribution, the VM was never primed, for example
-  after `omac vm reset`. Do not drop `--offline`. Name the dependency and
-  the build file you changed, and ask the human to prime the VM from the
-  host, as described in "Prime the build caches" in [setup.md](setup.md).
-  They prime from a fresh clone, in a new folder, of a commit with your
-  change, and omac refuses `omac vm online` while a session is attached, so
-  they end this session first. Never look for the token yourself.
+  while downloading its distribution, the VM was not primed for this
+  project's Gradle version, for example after `omac vm reset` or a wrapper
+  upgrade. Do not drop `--offline`. Name the dependency and the build file
+  you changed, and ask the human to prime the VM from the host, as described
+  in "Prime the build caches" in [setup.md](setup.md). They prime from a
+  fresh clone, in a new folder, of a commit with your change, and omac
+  refuses `omac vm online` while a session is attached, so they end this
+  session first. Never look for the token yourself.
 - **A JDK or system package is missing.** Gradle reports `No matching
   toolchains found` or `Cannot find a Java installation`, or a command is
   not found. Name it, for example `temurin-21`, and ask the human to add it
