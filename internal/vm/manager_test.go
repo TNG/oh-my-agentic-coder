@@ -552,6 +552,9 @@ func TestUpCreateDropsStaleKnownHosts(t *testing.T) {
 	if err := os.WriteFile(m.Layout.KnownHosts, []byte(currentEntry), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	mustUp(t, m)
 	if got, _ := os.ReadFile(m.Layout.KnownHosts); string(got) != currentEntry {
 		t.Errorf("known_hosts after up on the existing VM = %q, want %q kept", got, currentEntry)
@@ -1554,6 +1557,21 @@ func TestPrepareAttachChecks(t *testing.T) {
 	}
 }
 
+func TestPrepareAttachNamesResetWhenSSHLoginIsRejected(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	mustUp(t, m)
+	ssh.fail = func(remote string) error {
+		if remote == dockerVersionCmd {
+			return errors.New("exit status 255: Host key verification failed.")
+		}
+		return nil
+	}
+	_, err := m.PrepareAttach(context.Background())
+	if !errors.Is(err, ErrSSHLoginRejected) || strings.Contains(err.Error(), "omac vm status") {
+		t.Fatalf("PrepareAttach = %v, want ErrSSHLoginRejected without the status hint", err)
+	}
+}
+
 func TestPrepareAttachRequiresLoadedFirewall(t *testing.T) {
 	m, _, ssh := newTestManager(t)
 	ctx := context.Background()
@@ -1580,7 +1598,7 @@ func TestStatusReportWrite(t *testing.T) {
 		Created: true, Running: true, Mode: ModeOffline, SSHPort: 42022,
 		Resources: Resources{CPUs: 8, Memory: "16GiB", Disk: "60GiB"},
 		Images:    []string{"index.docker.io/library/alpine:latest", "index.docker.io/library/busybox:1.36"},
-		// The agent user writes the registry and answers the Docker probe.
+		// The agent user writes the registry and answers the Docker check.
 		Worktrees: []string{"/Users/alice/proj (a1b2c3)", "/x\x1b]52;c;Zm9v\x07\nmode: online (s)"},
 		JDKs:      []string{"temurin-25"},
 		Docker:    &DockerVersion{APIVersion: "1.47", Version: "27.3.1\x1b[2J"},

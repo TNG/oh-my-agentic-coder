@@ -160,8 +160,6 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 			"systemctl --user enable --now docker",
 			"ssh-ed25519 AAAAagent",
 			"testcontainers.properties",
-			// The script prints the socket path with the uid as %s.
-			strings.Replace(guestDockerSocket, "$(id -u)", "%s", 1),
 		}},
 	}
 	for _, c := range checks {
@@ -170,6 +168,11 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 				t.Errorf("%s block lacks %q", c.name, want)
 			}
 		}
+	}
+	// DOCKER_HOST for the shells and the Testcontainers config, with the uid
+	// printed as %s.
+	if n := strings.Count(user, strings.Replace(guestDockerSocket, "$(id -u)", "%s", 1)); n != 2 {
+		t.Errorf("user block names the Docker socket %d times, want 2", n)
 	}
 	if strings.Contains(boot, "AAAAadmin") || strings.Contains(boot, "AAAAagent") {
 		t.Error("boot block must not carry pub keys")

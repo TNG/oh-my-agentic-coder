@@ -33,6 +33,9 @@ func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, 
 	defer cancel()
 	var out bytes.Buffer
 	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, dockerVersionCmd); err != nil {
+		if sshLoginRejected(err) {
+			return DockerVersion{}, fmt.Errorf("%w: %w", ErrSSHLoginRejected, err)
+		}
 		return DockerVersion{}, err
 	}
 	api, version, _ := strings.Cut(strings.TrimSpace(out.String()), " ")
@@ -56,8 +59,8 @@ func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Durati
 		if err == nil {
 			return nil
 		}
-		if sshLoginRejected(err) {
-			return fmt.Errorf("omac vm: %w: %w", ErrSSHLoginRejected, err)
+		if errors.Is(err, ErrSSHLoginRejected) {
+			return fmt.Errorf("omac vm: %w", err)
 		}
 		select {
 		case <-ctx.Done():

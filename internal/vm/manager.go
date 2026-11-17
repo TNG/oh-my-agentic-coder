@@ -237,7 +237,7 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 		return fmt.Errorf("omac vm: write lima config: %w", err)
 	}
 	// A new instance has new host keys, so an entry left by a VM deleted
-	// outside omac would fail every SSH check until the timeout.
+	// outside omac would make every SSH login fail.
 	if err := os.Remove(m.Layout.KnownHosts); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("omac vm: remove stale known_hosts: %w", err)
 	}
@@ -518,7 +518,7 @@ func (m *Manager) SetMode(ctx context.Context, mode string) error {
 		}
 	}
 	// A healthy VM already in the requested mode is left alone: a restart would
-	// kill its containers and the attached sessions' Docker connections.
+	// kill its containers, including those of attached sessions.
 	if prev == mode && m.verifyMode(ctx, st, mode) == nil {
 		fmt.Fprintf(m.Out, "omac vm: already %s\n", mode)
 		return nil
@@ -588,6 +588,9 @@ func (m *Manager) PrepareAttach(ctx context.Context) (AttachInfo, error) {
 		return AttachInfo{}, err
 	}
 	v, err := m.dockerVersion(ctx, st)
+	if errors.Is(err, ErrSSHLoginRejected) {
+		return AttachInfo{}, fmt.Errorf("omac vm: %w", err)
+	}
 	if err != nil {
 		return AttachInfo{}, fmt.Errorf("omac vm: Docker in the VM does not answer, so the session was not started; run `omac vm status` to see the VM's state: %w", err)
 	}
