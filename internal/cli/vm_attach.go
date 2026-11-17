@@ -153,9 +153,9 @@ var prepareVMAttach = func(ctx context.Context, env *Env) (vm.AttachInfo, *vmMar
 	return info, markers, nil
 }
 
-// vmAttachExitCode maps an attach failure to an exit code. Every VM state
-// the user fixes with `omac vm up` or `omac vm offline` is a missing
-// prerequisite of the session.
+// vmAttachExitCode maps an attach failure to an exit code. A missing Lima
+// and every VM state the user fixes with `omac vm up` or `omac vm offline`
+// are missing prerequisites of the session.
 func vmAttachExitCode(err error) int {
 	switch {
 	case errors.Is(err, vm.ErrLimaMissing),
