@@ -31,13 +31,23 @@ import (
 // the other one automatically, so a future flip in either direction self-heals
 // rather than reddening the matrix. Keeping the pin current is therefore not a
 // correctness requirement, only a way to spend one fewer probe round-trip.
+// The DeepSeek pin is trustedtokens.eu's exact catalog name (with the -1017
+// release suffix, see https://trustedtokens.eu/api/public/models). The bare
+// "deepseek-ai/DeepSeek-V4.1-Flash" is accepted on /chat/completions, but
+// codex, the one harness on /responses, failed with it on every leg.
+//
+// codex is pinned to GLM-5.3 instead: DeepSeek answers /responses on
+// trustedtokens.eu with HTTP 200 and burns tokens, but codex gets no message
+// or tool call out of the reply and exits silently (E2E: full runs
+// 43963600934 vs 43965294751, 2026-11-16). GLM-5.3 passed every codex stage.
+// The workflows resolve codex from this pin separately, see e2e.yml.
 var modelIDs = map[string]string{
-	"opencode":    "zai-org/GLM-5.3",
+	"opencode":    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 	"claude-code": "claude-sonnet-5-5",
 	"codex":       "zai-org/GLM-5.3",
-	"copilot":     "zai-org/GLM-5.3",
-	"pi":          "zai-org/GLM-5.3",
-	"codewhale":   "zai-org/GLM-5.3",
+	"copilot":     "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"pi":          "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+	"codewhale":   "deepseek-ai/DeepSeek-V4.1-Flash-1017",
 }
 
 // fallbackModels are tried, in order, when neither name variant of the
@@ -60,10 +70,11 @@ var modelIDs = map[string]string{
 // resolving. probe-model.sh now warns when no entry here is advertised, so the
 // rot surfaces on the next run instead of at the moment it is needed.
 // Ordered by "gives codex a chance": codex can only drive the gateway's
-// Responses API (see codexConfig), and that route was unhealthy for
-// DeepSeek-V4.1-Flash on 2026-09-22/23 — a fallback landing there reds codex
-// legs for certain. The other entries at least might work.
-var fallbackModels = []string{"tngtech/DeepSeek-TNG-R1T2-Chimera", "zai-org/GLM-5.3-Flash", "deepseek-ai/DeepSeek-V4.1-Flash"}
+// Responses API (see codexConfig). On the previous gateway (SkaiNet) that
+// route was unhealthy for DeepSeek-V4.1-Flash on 2026-09-22/23; whether
+// trustedtokens.eu serves it on /responses is what probe-model.sh's
+// responses check finds out per run.
+var fallbackModels = []string{"tngtech/DeepSeek-TNG-R1T2-Chimera", "zai-org/GLM-5.3-Flash", "zai-org/GLM-5.3"}
 
 // fallbackModelEnvVar overrides fallbackModels for a single run. Kept in sync
 // with scripts/probe-model.sh.

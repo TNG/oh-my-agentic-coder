@@ -14,9 +14,11 @@
 //
 // Required CI secrets / env vars:
 //
-//   SKAINET_TOKEN         — API key for the model provider (all harnesses except claude-code)
-//   SKAINET_INTERNAL      — Model provider base URL (responses API; codex, copilot, opencode)
-//   ANTHROPIC_BASE_URL    — Anthropic-compatible proxy URL (claude-code only)
+//   SKAINET_TOKEN         — API key for the model gateway (all harnesses except claude-code).
+//                           The name is historical: CI fills it with the trustedtokens.eu key.
+//   SKAINET_INTERNAL      — Model gateway base URL (CI: https://api.trustedtokens.eu/v1)
+//   ANTHROPIC_BASE_URL    — Anthropic-compatible proxy URL (claude-code only; SkaiNet)
+//   ANTHROPIC_AUTH_TOKEN  — API key for that proxy (claude-code only; SkaiNet)
 //
 // The sandbox profile is derived at runtime from SKAINET_INTERNAL /
 // ANTHROPIC_BASE_URL so the proxy allows the model API host.
@@ -37,7 +39,7 @@
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).
 //
 // claude-code is the only harness billed against a real external
-// Anthropic account (the others run against the internal SKAINET
+// Anthropic account (the others run against the trustedtokens.eu
 // gateway). Set E2E_SKIP_CLAUDE_CODE=1 to exclude it — useful for local
 // iteration without an ANTHROPIC_BASE_URL configured, or to avoid the
 // cost on a given run. Included by default.

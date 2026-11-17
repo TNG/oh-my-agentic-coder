@@ -88,8 +88,9 @@ inline findings and update one summary comment. It reviews non-draft PRs from
 branches in this repository targeting `main` when they are opened, updated,
 reopened, or marked ready for review. Fork PRs are skipped.
 
-Reviews use high effort and the existing `SKAINET_INTERNAL` (gateway base URL)
-and `SKAINET_TOKEN` repository secrets. The model follows the OpenCode pin in
+Reviews use high effort and the trustedtokens.eu gateway
+(`https://api.trustedtokens.eu/v1`) with the `TRUSTEDTOKENS_TOKEN` repository
+secret. The model follows the OpenCode pin in
 `internal/e2e/versions.go`, verified by `scripts/probe-model.sh` before each run.
 No separate GitHub token is needed. Each push can incur LLM costs; successful
 complete reviews record a checkpoint so later pushes review only new changes.

@@ -38,6 +38,7 @@
 #   SKAINET_TOKEN    | LLM_API_KEY  | MODEL_PROBE_TOKEN  bearer token
 #   E2E_MODEL_FALLBACK   override the fallback chain (comma/space separated)
 #   E2E_MODEL[_<HARNESS>]  the model override itself — see resolve-model.sh
+#   PROBE_RESPONSES=0    skip the /responses track (chat-wire callers)
 #
 # Without credentials this is a pure passthrough: it prints what
 # resolve-model.sh resolved and exits 0. Model-free jobs and local runs must not
@@ -122,6 +123,14 @@ responses_probe_one() {
 #                   when nothing on the chain answers on that wire.
 assess_responses() {
   local selected="$1" c verdict code
+  # PROBE_RESPONSES=0 skips this track: for a caller whose harnesses only use
+  # the chat wire, a /responses verdict (and its warnings about what codex
+  # will run) would describe a model nobody runs.
+  if [ "${PROBE_RESPONSES:-1}" = "0" ]; then
+    responses_wire="not-probed"
+    responses_model="$selected"
+    return 0
+  fi
   read -r verdict code <<EOF
 $(responses_probe_one "$selected")
 EOF

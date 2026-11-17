@@ -72,7 +72,7 @@ class OCRWorkflowTest(unittest.TestCase):
             "checkpoint_range": "true",
             "llm_url": "${{ steps.configure.outputs.url }}",
             "llm_model": "${{ steps.model.outputs.model }}",
-            "llm_auth_token": "${{ secrets.SKAINET_TOKEN }}",
+            "llm_auth_token": "${{ secrets.TRUSTEDTOKENS_TOKEN }}",
             "github_token": "${{ github.token }}",
             "full_review": "${{ contains(github.event.pull_request.labels.*.name, 'ocr-full-review') }}",
         }.items():
@@ -94,11 +94,14 @@ class OCRWorkflowTest(unittest.TestCase):
 
     def run_configure(self, base, token):
         configure = next(s for s in self.steps if s.get("id") == "configure")
+        # The gateway URL and key are defined once on the job, for both the
+        # configure and the model step.
+        self.assertNotIn("env", configure)
         self.assertEqual(
-            configure["env"],
+            {k: self.job["env"][k] for k in ("SKAINET_INTERNAL", "SKAINET_TOKEN")},
             {
-                "SKAINET_INTERNAL": "${{ secrets.SKAINET_INTERNAL }}",
-                "SKAINET_TOKEN": "${{ secrets.SKAINET_TOKEN }}",
+                "SKAINET_INTERNAL": "https://api.trustedtokens.eu/v1",
+                "SKAINET_TOKEN": "${{ secrets.TRUSTEDTOKENS_TOKEN }}",
             },
         )
         with tempfile.TemporaryDirectory() as directory:

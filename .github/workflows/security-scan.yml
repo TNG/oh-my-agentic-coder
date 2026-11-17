@@ -31,7 +31,7 @@ on:
       model:
         description: 'Model id for the strix agent, for THIS RUN ONLY. Leave it as it comes to use the scan''s own pin (the E2E_MODEL default below — keep the two in step). Whatever is resolved here still goes through the gateway probe, so the -TEE variant flip and the fallback chain apply.'
         type: string
-        default: 'zai-org/GLM-5.3'
+        default: 'deepseek-ai/DeepSeek-V4.1-Flash-1017'
 
 permissions:
   contents: read
@@ -52,10 +52,9 @@ jobs:
     # written. 350 is just under the 360-minute hosted-runner ceiling.
     timeout-minutes: 350
     env:
-      # SKAINET_INTERNAL is the same secret e2e.yml uses for the model
-      # provider base URL — reused here rather than duplicating the URL.
-      LLM_API_BASE: ${{ secrets.SKAINET_INTERNAL }}
-      LLM_API_KEY: ${{ secrets.SKAINET_TOKEN }}
+      # Same trustedtokens.eu gateway and key as e2e.yml's gateway harnesses.
+      LLM_API_BASE: https://api.trustedtokens.eu/v1
+      LLM_API_KEY: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
       GH_TOKEN: ${{ github.token }}
       # Read by scripts/probe-model.sh below. The scan pins its own model
       # rather than following opencode's harness pin in
@@ -63,7 +62,7 @@ jobs:
       # against: the model doing the scanning is chosen here. The same literal
       # is the `model` input's default above, so the dispatch form shows what
       # is about to run -- change both together.
-      E2E_MODEL: ${{ inputs.model || 'zai-org/GLM-5.3' }}
+      E2E_MODEL: ${{ inputs.model || 'deepseek-ai/DeepSeek-V4.1-Flash-1017' }}
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
