@@ -484,6 +484,9 @@ func redactProxyURL(raw string) string {
 //   - profile network.no_proxy (if non-empty)
 //   - env NO_PROXY / no_proxy (comma-separated, trimmed)
 //
+// Entries that can never match (e.g. "10.0.0.0/8") are dropped with a
+// warning instead of failing startup.
+//
 // Only proxyURL.Host is logged — never the userinfo (credentials).
 func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
 	proxyStr := p.Network.UpstreamProxy
@@ -519,11 +522,14 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 	}
 
 	var noProxy []string
+	noProxySource := "network.no_proxy"
 	if len(p.Network.NoProxy) > 0 {
 		noProxy = p.Network.NoProxy
 	} else {
+		noProxySource = "the NO_PROXY environment variable"
 		noProxyStr := os.Getenv("NO_PROXY")
 		if noProxyStr == "" {
+			noProxySource = "the no_proxy environment variable"
 			noProxyStr = os.Getenv("no_proxy")
 		}
 		if noProxyStr != "" {
@@ -533,10 +539,29 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 			}
 		}
 	}
+	noProxy = dropUnsupportedNoProxy(noProxy, noProxySource, stderr)
 
 	logf("omac sandbox: using upstream proxy %s", proxyURL.Host)
 
 	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, logf)
+}
+
+// dropUnsupportedNoProxy returns entries without those that can never
+// match a host (see netproxy.NoProxyEntryIgnoreReason), printing one
+// warning per dropped entry. These entries come from the user's shell or
+// grants file and are common in company networks (e.g. "10.0.0.0/8"), so
+// they must not block startup, but silently ignoring them would leave the
+// user guessing why those hosts still go through the upstream proxy.
+func dropUnsupportedNoProxy(entries []string, source string, stderr io.Writer) []string {
+	var kept []string
+	for _, e := range entries {
+		if reason := netproxy.NoProxyEntryIgnoreReason(e); reason != "" {
+			fmt.Fprintf(stderr, "omac sandbox: warning: ignoring %q in %s: %s. Hosts it was meant for still go through the upstream proxy.\n", strings.TrimSpace(e), source, reason)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
 }
 
 // resolvedDenial merges a profile's Denial override with the compiled-in

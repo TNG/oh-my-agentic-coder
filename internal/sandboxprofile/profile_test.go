@@ -1136,13 +1136,15 @@ func TestUpstreamProxyValidation(t *testing.T) {
 }
 
 func TestNoProxyValidation(t *testing.T) {
-	// Valid entries accepted.
-	p, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "10.0.0.0/8", ".local"]}}`))
+	// Non-empty entries accepted, including ones that can never match
+	// ("10.0.0.0/8", ".", a port, "<local>"): those must not block
+	// startup; the sandbox drops them with a warning at launch.
+	p, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "10.0.0.0/8", ".local", ".", "example.com:8443", "<local>"]}}`))
 	if err != nil {
 		t.Fatalf("Parse valid no_proxy should succeed: %v", err)
 	}
-	if len(p.Network.NoProxy) != 3 {
-		t.Errorf("NoProxy = %v, want 3 entries", p.Network.NoProxy)
+	if len(p.Network.NoProxy) != 6 {
+		t.Errorf("NoProxy = %v, want 6 entries", p.Network.NoProxy)
 	}
 	// Empty entry rejected.
 	if _, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", ""]}}`)); err == nil {
