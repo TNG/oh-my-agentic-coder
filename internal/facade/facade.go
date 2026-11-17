@@ -87,10 +87,10 @@ type Route struct {
 	// implement a discovery endpoint itself. Empty disables this.
 	SkillDir string
 
-	// Approvals is the skill's declared endpoint set (from the approved
-	// snapshot's omac.yaml). Nil means the skill declares none and is
-	// forwarded as before; non-nil means the gate admits only declared
-	// endpoints (see gate.go).
+	// Approvals is the skill's approvals block (from the approved snapshot's
+	// omac.yaml). Nil means the skill has no block and every request is
+	// forwarded. Otherwise a request asks the user unless its entry says
+	// `approval: none` (see gate.go).
 	Approvals *approval.Set
 
 	// State selects forward vs. stub behavior. The zero value ("") is
@@ -161,8 +161,8 @@ type Facade struct {
 	// sandboxdeny.Default().FacadeNote.
 	DenialNote string
 
-	// Approver answers the gate for endpoints declared approval: required.
-	// Nil means no answer is possible and such requests are denied.
+	// Approver answers the requests that ask. Nil means no dialog can be
+	// shown, and such requests get 503 approval-unavailable.
 	Approver Approver
 
 	// IntentRegistry records agent-declared access intents from
