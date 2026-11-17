@@ -76,7 +76,7 @@ func RemoteDir(slug string) string {
 func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix string, ok bool, err error) {
 	ctx = gitContext(ctx)
 	var out, stderr bytes.Buffer
-	err = run(ctx, "git", []string{"-C", dir, "rev-parse", "--show-toplevel", "--show-prefix"}, nil, &out, &stderr)
+	err = run(ctx, "git", gitArgs(dir, "rev-parse", "--show-toplevel", "--show-prefix"), nil, &out, &stderr)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && strings.Contains(stderr.String(), "not a git repository") {
 		return "", "", false, nil
@@ -85,10 +85,40 @@ func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix s
 		return "", "", false, gitError("rev-parse", err, &stderr)
 	}
 	lines := strings.Split(out.String(), "\n")
-	if len(lines) < 2 || !filepath.IsAbs(lines[0]) {
+	if len(lines) != 3 || lines[2] != "" || !filepath.IsAbs(lines[0]) {
 		return "", "", false, fmt.Errorf("omac vm exec: unexpected git rev-parse output %q", out.String())
 	}
-	return lines[0], strings.TrimSuffix(lines[1], "/"), true, nil
+	top = lines[0]
+	if err := checkTopLevel(dir, top); err != nil {
+		return "", "", false, err
+	}
+	return top, strings.TrimSuffix(lines[1], "/"), true, nil
+}
+
+// checkTopLevel refuses a top level that is not the directory holding the
+// .git entry nearest to dir: core.worktree in a config the sandbox can
+// write would otherwise make omac copy another directory. Without any
+// .git entry, the user's own environment (GIT_DIR) chose the repository.
+func checkTopLevel(dir, top string) error {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			a, errA := os.Stat(d)
+			b, errB := os.Stat(top)
+			if errA != nil || errB != nil || !os.SameFile(a, b) {
+				return fmt.Errorf("omac vm exec: git reports %s as the top level, but the repository is at %s (core.worktree?)", top, d)
+			}
+			return nil
+		}
+		if filepath.Dir(d) == d {
+			return nil
+		}
+	}
+}
+
+// gitArgs runs git in dir with core.fsmonitor off: the sandbox can write
+// git config in the worktree, and that setting runs a command.
+func gitArgs(dir string, args ...string) []string {
+	return append([]string{"-C", dir, "-c", "core.fsmonitor=false"}, args...)
 }
 
 // gitContext pins git's messages to English, which RepoRoot matches on.
@@ -137,7 +167,7 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string,
 
 func gitOutput(ctx context.Context, run CommandRunner, dir string, args ...string) (string, error) {
 	var out, stderr bytes.Buffer
-	if err := run(ctx, "git", append([]string{"-C", dir}, args...), nil, &out, &stderr); err != nil {
+	if err := run(ctx, "git", gitArgs(dir, args...), nil, &out, &stderr); err != nil {
 		return "", gitError(args[0], err, &stderr)
 	}
 	return out.String(), nil

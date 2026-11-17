@@ -95,6 +95,27 @@ func TestRepoRoot(t *testing.T) {
 	}
 }
 
+// A sandboxed agent can set core.worktree in the workdir's git config;
+// the copy must not then come from another directory.
+func TestRepoRootRefusesRedirectedWorktree(t *testing.T) {
+	other := newRepo(t, map[string]string{"secret.txt": "other client"})
+	top := newRepo(t, map[string]string{"a.go": "package a"})
+	git(t, top, "config", "core.worktree", other)
+	if got, _, _, err := RepoRoot(context.Background(), ExecRunner, top); err == nil {
+		t.Fatalf("RepoRoot = %q, nil; want an error for a top level outside the workdir's repository", got)
+	}
+}
+
+func TestRepoRootRejectsExtraLines(t *testing.T) {
+	run := func(_ context.Context, _ string, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "/w/re\npo\n\n")
+		return nil
+	}
+	if _, _, _, err := RepoRoot(context.Background(), run, "/w/re\npo"); err == nil {
+		t.Fatal("RepoRoot accepted a top level split by a newline")
+	}
+}
+
 func TestGitRunsWithCLocale(t *testing.T) {
 	var envs [][]string
 	run := func(ctx context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
@@ -195,20 +216,43 @@ func TestIgnoredPathsIncludesNestedSubmodules(t *testing.T) {
 	}
 }
 
-// A sandboxed agent can create a repository inside the worktree and set
-// its config; git must never run there on the host.
-func TestIgnoredPathsSkipsUntrackedClones(t *testing.T) {
-	top := newRepo(t, map[string]string{"src/a.go": "package a", "vendor/x/v.c": "x"})
-	clone := filepath.Join(top, "vendor/x")
-	git(t, clone, "init", "-q")
+// A sandboxed agent can edit git config inside the worktree; the host's git
+// calls must not run the command it plants.
+func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
-	git(t, clone, "config", "core.fsmonitor", "touch "+ShellQuote(marker)+"; false")
-
-	if _, err := IgnoredPaths(context.Background(), ExecRunner, top); err != nil {
-		t.Fatal(err)
+	plant := func(t *testing.T, repo string) {
+		git(t, repo, "config", "core.fsmonitor", "touch "+ShellQuote(marker)+"; false")
 	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("git ran the clone's core.fsmonitor command on the host")
+	lib := newRepo(t, map[string]string{"lib.go": "package lib"})
+	git(t, lib, "add", ".")
+	git(t, lib, "commit", "-qm", "init")
+	for name, setup := range map[string]func(t *testing.T, top string){
+		"top level": func(t *testing.T, top string) { plant(t, top) },
+		"submodule": func(t *testing.T, top string) {
+			git(t, top, "submodule", "add", "-q", lib, "libs/lib")
+			plant(t, filepath.Join(top, "libs/lib"))
+		},
+		"untracked clone": func(t *testing.T, top string) {
+			clone := filepath.Join(top, "vendor/x")
+			writeFiles(t, clone, map[string]string{"v.c": "x"})
+			git(t, clone, "init", "-q")
+			plant(t, clone)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_ = os.Remove(marker)
+			top := newRepo(t, map[string]string{"src/a.go": "package a"})
+			setup(t, top)
+			if _, _, _, err := RepoRoot(context.Background(), ExecRunner, top); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := IgnoredPaths(context.Background(), ExecRunner, top); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("git ran the planted core.fsmonitor command on the host")
+			}
+		})
 	}
 }
 
