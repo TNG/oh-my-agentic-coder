@@ -89,7 +89,7 @@ omac continue -s <id>      # specific session by ID
 
 ### omac resume
 
-Use this when you want to choose from a list of past sessions rather. Shows a numbered picker of recent sessions for the active workdir. `omac resume` accepts `--vm`, as `omac start` does.
+Use this when you want to choose from a list of past sessions. Shows a numbered picker of recent sessions for the active workdir. `omac resume` accepts `--vm`, as `omac start` does.
 
 ---
 

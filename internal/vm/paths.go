@@ -19,7 +19,7 @@ type Layout struct {
 	AgentKey    string // agent user, copied into the session temp dir at attach
 	StatePath   string // state.json
 	KnownHosts  string // ssh known_hosts for 127.0.0.1:<port>
-	SessionsDir string // one marker file per attached session, named by pid
+	SessionsDir string // one marker file per attached process, named by pid
 	LimaYAML    string // the rendered template handed to `limactl create`
 }
 

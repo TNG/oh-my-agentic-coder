@@ -197,7 +197,7 @@ func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) 
 // writeVMFiles creates vm/, vm/docker/ and vm/agent_key in tmpDir. Other
 // sandboxes may write tmpDir (on macOS every sandbox may write
 // /var/folders), so it creates instead of reusing, and resolves through
-// os.Root so a planted symlink cannot redirect the key outside tmpDir.
+// os.Root so a symlink planted inside tmpDir cannot redirect the key.
 func writeVMFiles(tmpDir string, key []byte) error {
 	root, err := os.OpenRoot(tmpDir)
 	if err != nil {

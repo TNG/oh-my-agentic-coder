@@ -330,7 +330,7 @@ Known limits:
 - On macOS another running session can also write this session's temp dir, for example a `config.json` in its `DOCKER_CONFIG` that makes this session's `docker` run a program of that session's choice.
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
 
-The VM's state lives in `~/.local/state/omac/vm` and includes the key for root access to the VM. The sandbox blocks this directory.
+The VM's state lives in `~/.local/state/omac/vm` (or `$XDG_STATE_HOME/omac/vm`) and includes the key for root access to the VM. The sandbox blocks this directory.
 
 ## Self-authored skills
 

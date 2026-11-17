@@ -372,7 +372,6 @@ func runServe(args []string, env *Env) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// omac VM (--vm): attach only, as in `omac start`.
 	var vmSess *vmSession
 	if parsed.vm {
 		vmSess, err = attachVM(ctx, env, sandboxTmp)
