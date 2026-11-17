@@ -95,13 +95,10 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			t.Fatalf("%s: exit = %d, want 0", arg, code)
 		}
 		out := stderr()
-		for _, verb := range []string{"up [--reprovision]", "down", "reset", "status", "online", "offline", "image add <ref>", "image list", "image rm <ref>"} {
+		for _, verb := range []string{"up [--reprovision]", "down", "reset", "status", "online", "offline", "image add <ref>", "image list", "image rm <ref>", "exec [--cwd <dir>]"} {
 			if !strings.Contains(out, "omac vm "+verb) {
 				t.Errorf("%s: usage lacks %q:\n%s", arg, verb, out)
 			}
-		}
-		if strings.Contains(out, "exec") {
-			t.Errorf("%s: usage mentions exec, reserved for a later release:\n%s", arg, out)
 		}
 	}
 }

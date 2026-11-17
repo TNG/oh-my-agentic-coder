@@ -210,6 +210,39 @@ func TestVMSandboxEnv(t *testing.T) {
 	}
 }
 
+func TestVMSandboxEnvCopiesKnownHosts(t *testing.T) {
+	key := testAgentKey(t)
+	src := filepath.Join(filepath.Dir(key), "known_hosts")
+	if err := os.WriteFile(src, []byte("[127.0.0.1]:31022 ssh-ed25519 AAAA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope := t.TempDir()
+	if _, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(scope, "vm", "known_hosts")
+	st, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("known_hosts copy: %v", err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("known_hosts mode = %v, want 0600", st.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "[127.0.0.1]:31022 ssh-ed25519 AAAA\n" {
+		t.Errorf("known_hosts content = %q", b)
+	}
+}
+
+func TestVMSandboxEnvWithoutKnownHosts(t *testing.T) {
+	scope := t.TempDir()
+	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: testAgentKey(t)}, scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(scope, "vm", "known_hosts")); !os.IsNotExist(err) {
+		t.Fatalf("known_hosts: %v, want absent", err)
+	}
+}
+
 func TestVMSandboxEnvMissingKey(t *testing.T) {
 	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: filepath.Join(t.TempDir(), "nope")}, t.TempDir()); err == nil {
 		t.Fatal("vmSandboxEnv succeeded without an agent key")
