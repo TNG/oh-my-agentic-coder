@@ -449,8 +449,8 @@ func (m *Manager) Reset(ctx context.Context) error {
 	return m.Up(ctx, false)
 }
 
-// SetMode switches to ModeOnline or ModeOffline with a restart. Going
-// online is refused while sessions are attached.
+// SetMode switches to ModeOnline or ModeOffline, restarting the VM unless it is
+// already in that mode. Going online is refused while sessions are attached.
 func (m *Manager) SetMode(ctx context.Context, mode string) error {
 	if mode != ModeOnline && mode != ModeOffline {
 		return fmt.Errorf("omac vm: unknown mode %q (want %s or %s)", mode, ModeOnline, ModeOffline)
