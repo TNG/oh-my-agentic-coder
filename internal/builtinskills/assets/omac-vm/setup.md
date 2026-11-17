@@ -61,8 +61,8 @@ omac vm image add postgres:16-alpine
 You can prepare that list. Search the project for image names, for example
 `DockerImageName.parse(`, `new PostgreSQLContainer(`, `GenericContainer(`,
 `image:` lines in docker-compose files and image strings in test
-configuration. Then give the human one `omac vm image add` line per image,
-with the full name and tag. Testcontainers also starts its own helper image
+configuration. Then give the human one `omac vm image add <image>` line per
+image, with the full name and tag. Testcontainers also starts its own helper image
 `testcontainers/ryuk:<version>`; the version depends on the Testcontainers
 library, and a failed test names the exact tag. Images that need a registry
 login work if `docker login` was done on the host.

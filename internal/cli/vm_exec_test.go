@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -616,23 +617,61 @@ func TestVMExecVerboseLogs(t *testing.T) {
 	}
 }
 
-// The omac-vm skill tells agents which commands to run, so a renamed flag
-// must fail here rather than in an agent's session.
-func TestVMExecSkillCommandsParse(t *testing.T) {
-	env, _, stderr := vmTestEnv(t)
-	for file, want := range map[string]int{"SKILL.md": 5, "setup.md": 2} {
-		text, err := os.ReadFile("../builtinskills/assets/omac-vm/" + file)
+var skillVMCommandRe = regexp.MustCompile("omac vm ([a-z][^`\n]*)")
+
+// The built-in skills tell agents and humans which `omac vm` commands to run,
+// so a renamed verb or flag must fail here rather than in their terminal.
+func TestBuiltinSkillVMCommandsParse(t *testing.T) {
+	bundles := os.DirFS("../builtinskills/assets")
+	found := 0
+	err := fs.WalkDir(bundles, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+			return err
+		}
+		text, err := fs.ReadFile(bundles, path)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		cmds := regexp.MustCompile("omac vm exec( [^`\n]*-- [^`\n]*)").FindAllStringSubmatch(string(text), -1)
-		if len(cmds) < want {
-			t.Errorf("found %d `omac vm exec` commands in %s, want at least %d", len(cmds), file, want)
-		}
-		for _, m := range cmds {
-			if _, _, ok := parseVMExecArgs(strings.Fields(m[1]), env); !ok {
-				t.Errorf("%s command does not parse: omac vm exec %s\n%s", file, m[1], stderr())
+		for _, m := range skillVMCommandRe.FindAllStringSubmatch(string(text), -1) {
+			args := strings.Fields(m[1])
+			for i, a := range args {
+				if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") {
+					args[i] = "placeholder" // such as <image>, which must parse as an image reference
+				}
 			}
+			if args[0] == "exec" {
+				if !slices.Contains(args, "--") {
+					continue // a mention of the verb, not a command
+				}
+				env, _, stderr := vmTestEnv(t)
+				if _, _, ok := parseVMExecArgs(args[1:], env); !ok {
+					t.Errorf("%s: command does not parse: omac vm %s\n%s", path, m[1], stderr())
+				}
+			} else {
+				useFakeVM(t, &fakeVMManager{})
+				env, _, stderr := vmTestEnv(t)
+				if code := runVM(args, env); code != ExitOK {
+					t.Errorf("%s: omac vm %s exits %d\n%s", path, m[1], code, stderr())
+				}
+			}
+			found++
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == 0 {
+		t.Fatal("found no `omac vm` commands in the built-in skills")
+	}
+}
+
+func TestOmacVMSkillNamesSessionVariable(t *testing.T) {
+	text, err := os.ReadFile("../builtinskills/assets/omac-vm/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), vm.EnvVMSSHPort) {
+		t.Errorf("SKILL.md does not mention %s", vm.EnvVMSSHPort)
 	}
 }
