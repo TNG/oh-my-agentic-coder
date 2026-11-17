@@ -480,16 +480,18 @@ func TestNoProxyEntryIgnoreReason(t *testing.T) {
 	}
 
 	ignored := map[string]string{
-		"10.0.0.0/8":       "IP ranges",
-		"fd00::/8":         "IP ranges",
-		"example.com:8443": "port",
-		"10.1.2.3:80":      "port",
-		"[::1]:443":        "port",
-		".":                "no domain",
-		"*.":               "no domain",
-		"<local>":          "not a host name",
-		"[::1]":            "not a host name",
-		"*example.com":     "not a host name",
+		"10.0.0.0/8":               "IP ranges",
+		"fd00::/8":                 "IP ranges",
+		"https://corp.example.com": "without scheme or path",
+		"example.com/api":          "without scheme or path",
+		"example.com:8443":         "port",
+		"10.1.2.3:80":              "port",
+		"[::1]:443":                "port",
+		"[::1]":                    "without them (::1)",
+		".":                        "no domain",
+		"*.":                       "no domain",
+		"<local>":                  "not a host name",
+		"*example.com":             "not a host name",
 	}
 	hosts := []string{"example.com", "sub.example.com", "localhost", "10.0.0.1", "10.1.2.3", "::1", "local"}
 	for e, want := range ignored {

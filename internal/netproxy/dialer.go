@@ -178,25 +178,33 @@ func normalizeNoProxyEntry(entry string) string {
 // Hosts reach the matcher as a bare hostname or IP address, never with
 // a port or brackets. Examples:
 //
-//	"10.0.0.0/8"       -> IP ranges are not supported
-//	"example.com:8443" -> ports are not supported
-//	".", "*."          -> no domain left after the prefix
-//	"<local>", "[::1]" -> not a host name or IP address
-//	"::1", "10.1.2.3"  -> "" (matches that literal address)
+//	"10.0.0.0/8"            -> IP ranges are not supported
+//	"https://example.com"   -> not a host name (scheme or path)
+//	"example.com:8443"      -> ports are not supported
+//	"[::1]"                 -> brackets are not supported
+//	".", "*."               -> no domain left after the prefix
+//	"<local>"               -> not a host name or IP address
+//	"::1", "10.1.2.3"       -> "" (matches that literal address)
 func NoProxyEntryIgnoreReason(entry string) string {
 	entry = strings.TrimSpace(entry)
 	if entry == "" || entry == "*" {
 		return ""
 	}
+	if _, err := netip.ParsePrefix(entry); err == nil {
+		return `IP ranges are not supported, list the host names instead (for example ".internal.example.com")`
+	}
 	if strings.Contains(entry, "/") {
-		return "IP ranges are not supported, omac matches on the host name before resolving it"
+		return `it is not a host name, write the bare host name without scheme or path (for example "example.com")`
 	}
 	if _, port, err := net.SplitHostPort(entry); err == nil && port != "" {
-		return "entries with a port are not supported"
+		return "ports are not supported, write the host name without the port"
+	}
+	if strings.HasPrefix(entry, "[") && strings.HasSuffix(entry, "]") {
+		return fmt.Sprintf("brackets are not supported, write the address without them (%s)", entry[1:len(entry)-1])
 	}
 	d := normalizeNoProxyEntry(entry)
 	if d == "" {
-		return "it names no domain"
+		return `it names no domain, write one such as ".example.com"`
 	}
 	if _, err := netip.ParseAddr(d); err == nil {
 		return ""

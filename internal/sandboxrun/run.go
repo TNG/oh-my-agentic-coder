@@ -521,7 +521,7 @@ func dropUnsupportedNoProxy(entries []string, source string, stderr io.Writer) [
 	var kept []string
 	for _, e := range entries {
 		if reason := netproxy.NoProxyEntryIgnoreReason(e); reason != "" {
-			fmt.Fprintf(stderr, "omac sandbox: warning: ignoring %q in %s: %s\n", strings.TrimSpace(e), source, reason)
+			fmt.Fprintf(stderr, "omac sandbox: warning: ignoring %q in %s: %s. Hosts it was meant for still go through the upstream proxy.\n", strings.TrimSpace(e), source, reason)
 			continue
 		}
 		kept = append(kept, e)

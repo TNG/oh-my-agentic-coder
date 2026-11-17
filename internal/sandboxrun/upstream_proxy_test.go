@@ -288,6 +288,9 @@ func TestResolveUpstreamProxyDropsUnsupportedNoProxy(t *testing.T) {
 				if !strings.HasPrefix(lines[i], want) {
 					t.Errorf("warning %d = %q, want prefix %q", i, lines[i], want)
 				}
+				if !strings.HasSuffix(lines[i], "still go through the upstream proxy.") {
+					t.Errorf("warning %d = %q, want it to name the effect", i, lines[i])
+				}
 			}
 		})
 	}
