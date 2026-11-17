@@ -17,7 +17,7 @@ A skill gives the agent a controlled path to an external service without exposin
    - You download a skill archive and extract it.
    - You create a skill yourself (see [Authoring skills](../skills/authoring.md).
 
-   **omac's built-in skills** (such as `omac-write-a-skill`) are treated separately: run `omac setup` once after installing a new harness to provision them. This only covers omac's own built-ins, not skills you add yourself.
+   **omac's built-in skills** (such as `omac-write-a-skill`) are treated separately: `omac start` installs them for the harness it starts, and `omac setup` for every harness it finds. This only covers omac's own built-ins, not skills you add yourself.
 
 2. **Register**: run `omac register <name>`. omac reads the skill's configuration, prompts you for any required API keys or settings, and stores them in your OS keychain. Nothing is written to disk in plaintext.
 

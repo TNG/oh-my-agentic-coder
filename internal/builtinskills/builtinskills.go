@@ -1,10 +1,9 @@
 // Package builtinskills ships skill bundles embedded in the omac binary and
 // materializes them onto disk.
 //
-// The built-ins are guidance-only skills (Markdown files, no omac.yaml).
-// omac deliberately ignores skill directories without an omac.yaml (see
-// internal/skillsource), so these bundles are NOT registered or activated
-// by omac; they are placed into a harness's own native skills directory and
+// The built-ins are guidance-only Markdown skills. omac deliberately ignores
+// skill directories without an omac.yaml (see internal/skillsource), so these
+// bundles are NOT registered or activated by omac; they are placed into a harness's own native skills directory and
 // surfaced by that harness's loader directly. Provisioning is therefore pure
 // file placement — see `omac setup`.
 //
