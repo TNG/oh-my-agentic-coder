@@ -138,7 +138,7 @@ func TestE2EProvenance(t *testing.T) {
 	}
 
 	// 2d. cache section: the default persistent workdir-scoped cache
-	// must be reported with a non-empty path and the eight-variable
+	// must be reported with a non-empty path and the eleven-variable
 	// environment map toolcache.Environment produces. The path is
 	// derived from the workdir, so it must be non-empty here.
 	if view.Cache.Path == "" {
@@ -153,6 +153,7 @@ func TestE2EProvenance(t *testing.T) {
 	for _, k := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
 		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+		"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
 		"OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
 	} {
 		if _, ok := view.Cache.Environment[k]; !ok {

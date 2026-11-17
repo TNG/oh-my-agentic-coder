@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -121,6 +122,55 @@ func TestInjectedToolCacheEnv(t *testing.T) {
 			if got[key] != value {
 				t.Errorf("%s = %q, want %q", key, got[key], value)
 			}
+		}
+	})
+}
+
+func TestToolBinPathEnv(t *testing.T) {
+	cacheEnv := toolcache.Environment("/cache", toolcache.ModePersistent)
+	bin := cacheEnv["UV_TOOL_BIN_DIR"]
+	sep := string(filepath.ListSeparator)
+	env := func(path string) func(string) string {
+		return func(k string) string {
+			if k == "PATH" {
+				return path
+			}
+			return ""
+		}
+	}
+
+	t.Run("appends UV_TOOL_BIN_DIR and keeps the existing PATH", func(t *testing.T) {
+		host := "/usr/bin" + sep + "/bin"
+		got := toolBinPathEnv(cacheEnv, env(host))
+		if want := host + sep + bin; got["PATH"] != want {
+			t.Errorf("PATH = %q, want %q", got["PATH"], want)
+		}
+	})
+
+	t.Run("no cache leaves PATH alone", func(t *testing.T) {
+		if got := toolBinPathEnv(map[string]string{}, env("/usr/bin")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("unset PATH stays unset", func(t *testing.T) {
+		if got := toolBinPathEnv(cacheEnv, env("")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("does not add the directory twice", func(t *testing.T) {
+		if got := toolBinPathEnv(cacheEnv, env(bin+sep+"/usr/bin")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("injected PATH reaches the child env", func(t *testing.T) {
+		host := "/usr/bin"
+		injected := toolBinPathEnv(cacheEnv, env(host))
+		out := sandboxprofile.FilterEnv([]string{"PATH=" + host}, sandboxprofile.DefaultAllowVars(), nil, injected)
+		if !slices.Contains(out, "PATH="+host+sep+bin) || slices.Contains(out, "PATH="+host) {
+			t.Errorf("child env = %v, want only PATH=%s%s%s", out, host, sep, bin)
 		}
 	})
 }

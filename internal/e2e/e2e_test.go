@@ -1249,9 +1249,10 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 }
 
 // assertCacheIsolation verifies the cache probe ran and proves omac
-// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the six tool cache
-// mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
-// PIP_CACHE_DIR, CARGO_HOME) and that the agent could write a marker
+// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the nine tool cache
+// and tool-state mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE,
+// NPM_CONFIG_CACHE, PIP_CACHE_DIR, CARGO_HOME, UV_CACHE_DIR,
+// UV_TOOL_DIR, UV_TOOL_BIN_DIR) and that the agent could write a marker
 // to the selected cache and read it back.
 //
 // The allow_vars fixture (allowance.go) only lists OMAC_* for cache
@@ -1292,6 +1293,7 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 	for _, varName := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
 		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+		"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
 	} {
 		val := extractEnv(output, varName+"=")
 		if val == "" || val == "<unset>" {
@@ -1304,6 +1306,19 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 				output+": "+varName+"="+val+" does not point under OMAC_CACHE_DIR="+cacheDir)
 			return
 		}
+	}
+	// omac appends UV_TOOL_BIN_DIR to the sandbox PATH exactly once.
+	// Where it ends up is checked by the sandboxrun unit tests: a harness
+	// may re-order or extend PATH in its own shell, so "not-last" is only
+	// logged here.
+	switch onPath := extractEnv(output, "UV_TOOL_BIN_DIR_ON_PATH="); onPath {
+	case "last":
+	case "not-last":
+		t.Logf("note: UV_TOOL_BIN_DIR is on PATH but not the last entry in the harness's shell")
+	default:
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": UV_TOOL_BIN_DIR_ON_PATH="+onPath+" (want it on PATH exactly once)")
+		return
 	}
 	if !strings.Contains(output, "CACHE_MARKER_WROTE:") {
 		failWithClassification(t, "cacheIsolation", fmSandboxFail,

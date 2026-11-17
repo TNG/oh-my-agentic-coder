@@ -530,11 +530,12 @@ func TestBuildProvenanceView_CacheSection(t *testing.T) {
 		t.Errorf("provenance should not create the cache dir %q", view.Cache.Path)
 	}
 
-	// All eight environment mappings must be present.
+	// All eleven environment mappings must be present.
 	env := view.Cache.Environment
 	for _, k := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE",
-		"PIP_CACHE_DIR", "CARGO_HOME", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
+		"PIP_CACHE_DIR", "CARGO_HOME", "UV_CACHE_DIR", "UV_TOOL_DIR",
+		"UV_TOOL_BIN_DIR", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
 	} {
 		if _, ok := env[k]; !ok {
 			t.Errorf("Cache.Environment missing %q; got %v", k, env)
@@ -611,7 +612,8 @@ func TestWriteProvenanceJSON_CacheSection(t *testing.T) {
 	}
 	for _, k := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE", "NPM_CONFIG_CACHE",
-		"PIP_CACHE_DIR", "CARGO_HOME", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
+		"PIP_CACHE_DIR", "CARGO_HOME", "UV_CACHE_DIR", "UV_TOOL_DIR",
+		"UV_TOOL_BIN_DIR", "OMAC_CACHE_DIR", "OMAC_CACHE_MODE",
 	} {
 		if _, ok := env[k]; !ok {
 			t.Errorf("cache.environment missing %q; got %v", k, env)

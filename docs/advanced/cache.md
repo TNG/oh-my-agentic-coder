@@ -3,7 +3,7 @@ title: Tool cache isolation
 description: How omac isolates tool caches per scope
 ---
 
-omac redirects the tool caches (npm, pip, cargo, Go, and others) into a directory it controls (`~/.cache/omac/`), rather than letting the agent use your real `~/.cache`. This isolation is **always on**, at every scope: the agent can never read or write your host's package caches directly.
+omac redirects the tool caches (npm, pip, cargo, Go, uv, and others) into a directory it controls (`~/.cache/omac/`), rather than letting the agent use your real `~/.cache`. This isolation is **always on**, at every scope: the agent can never read or write your host's package caches directly.
 ## Cache scopes
 
 The scope controls how widely a single omac cache directory is shared between different projects:
@@ -39,6 +39,27 @@ To set the scope for one project only, put this in a project-local config file; 
 ## Ephemeral cache
 
 `--ephemeral-cache` creates a temporary cache directory that is removed when the session ends. Use it for clean-room builds, or when the normal (persistent) cache cannot be set up safely.
+
+## uv
+
+uv keeps three writable directories outside the project. omac redirects all of them into its cache:
+
+| Variable | Points to | Holds |
+|---|---|---|
+| `UV_CACHE_DIR` | `$OMAC_CACHE_DIR/uv/cache` | Downloaded wheels and sdists |
+| `UV_TOOL_DIR` | `$OMAC_CACHE_DIR/uv/tools` | Environments created by `uvx` and `uv tool install` |
+| `UV_TOOL_BIN_DIR` | `$OMAC_CACHE_DIR/uv/bin` | Executables installed by `uv tool install` |
+
+`uvx` therefore works without any setup. omac also appends `UV_TOOL_BIN_DIR` to the end of the sandbox's `PATH`, so after `uv tool install ruff` you can run `ruff` directly. The directory goes last on purpose: it is writable by the agent and reused by later sessions, so nothing placed there can replace a host command such as `git`. If the host already has a command with the same name, that one wins; run `$UV_TOOL_BIN_DIR/<tool>` to get the uv-installed one. Because the tool environments live in the cache, `omac cache clear` removes them.
+
+uv's managed Python installs are **not** redirected by default. omac gives the sandbox read access to `~/.local/share/uv/python` (where uv keeps its managed interpreters), so interpreters you installed on the host with `uv python install` are reused. The rest of `~/.local/share/uv` stays unreadable, because uv can store index credentials there (`uv auth login`). If your sandbox profile was created before this change, add `~/.local/share/uv/python` to `filesystem.read` in `~/.config/omac/sandbox-profiles/default.json`; omac doesn't update existing profiles. `UV_PYTHON_INSTALL_DIR` stays unset because it is also uv's discovery location: pointing it at the cache would hide those host interpreters. To let uv download a missing interpreter, run these two lines inside the sandboxed session. They are lost when the session ends, don't work in your host shell (`$OMAC_CACHE_DIR` is only set inside omac), and make uv stop using the interpreters installed on the host.
+
+```bash
+export UV_PYTHON_INSTALL_DIR="$OMAC_CACHE_DIR/uv/python"
+export UV_PYTHON_BIN_DIR="$OMAC_CACHE_DIR/uv/bin"
+```
+
+Without that, `uv python install` fails with a write denial and uv can only use interpreters it can already find.
 
 ## Clearing caches
 

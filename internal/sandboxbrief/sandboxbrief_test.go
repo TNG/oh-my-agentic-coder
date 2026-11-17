@@ -21,6 +21,9 @@ func TestCacheGuidanceNamesPathModeAndAllVars(t *testing.T) {
 		"NPM_CONFIG_CACHE",
 		"PIP_CACHE_DIR",
 		"CARGO_HOME",
+		"UV_CACHE_DIR",
+		"UV_TOOL_DIR",
+		"UV_TOOL_BIN_DIR",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("CacheGuidance missing %q;\ngot:\n%s", want, got)
@@ -38,6 +41,22 @@ func TestCacheGuidanceExplainsHardcodedHostCachesDenied(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(got), "hardcoded") && !strings.Contains(strings.ToLower(got), "host") {
 		t.Errorf("CacheGuidance should mention hardcoded/host caches;\ngot:\n%s", got)
+	}
+}
+
+func TestCacheGuidanceExplainsHowToGetMissingPython(t *testing.T) {
+	got := CacheGuidance("/c", toolcache.ModePersistent)
+	for _, want := range []string{
+		"uv cannot download Python",
+		"installed on the host",
+		"UV_PYTHON_INSTALL_DIR=$OMAC_CACHE_DIR/uv/python",
+		"UV_PYTHON_BIN_DIR=$OMAC_CACHE_DIR/uv/bin",
+		"in this session",
+		"hides the host's interpreters",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CacheGuidance missing %q;\ngot:\n%s", want, got)
+		}
 	}
 }
 

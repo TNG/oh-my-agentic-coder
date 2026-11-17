@@ -123,6 +123,7 @@ func Run(opts Options) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	maps.Copy(cacheEnv, toolBinPathEnv(cacheEnv, os.Getenv))
 	maps.Copy(cacheEnv, zshTmpPrefixEnv(runtime.GOOS, grants, sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), os.Getenv))
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
@@ -322,6 +323,31 @@ func injectedToolCacheEnv(grants *Grants, getenv func(string) string) (map[strin
 		}
 	}
 	return nil, fmt.Errorf("OMAC_CACHE_DIR %q does not match an exact writable grant", dir)
+}
+
+// toolBinPathEnv appends UV_TOOL_BIN_DIR to the child's PATH, so a command
+// installed with `uv tool install ruff` can be run as plain `ruff`. uv's own
+// fix (`uv tool update-shell`) edits shell rc files the sandbox denies.
+//
+// The directory is appended, not prepended: it lives in the agent-writable
+// cache, which later sessions reuse, so a file placed there must never
+// shadow a host command such as `git`. Without a cache (no OMAC_CACHE_DIR,
+// e.g. --no-sandbox) cacheEnv is empty and PATH is left alone; the same
+// holds when PATH is unset or already contains the directory.
+//
+// Example: PATH=/usr/bin:/bin becomes /usr/bin:/bin:<cache>/uv/bin.
+func toolBinPathEnv(cacheEnv map[string]string, getenv func(string) string) map[string]string {
+	bin := cacheEnv["UV_TOOL_BIN_DIR"]
+	if bin == "" {
+		return nil
+	}
+	path := getenv("PATH")
+	// An unset PATH makes shells fall back to their built-in default;
+	// setting PATH to the cache dir alone would replace that default.
+	if path == "" || slices.Contains(filepath.SplitList(path), bin) {
+		return nil
+	}
+	return map[string]string{"PATH": path + string(filepath.ListSeparator) + bin}
 }
 
 // zshTmpPrefixEnv moves zsh's heredoc and here-string temp files from
