@@ -125,10 +125,11 @@ omac vm offline
   usually long-lived. The human creates a short-lived read-only token,
   exports it as `TOKEN` and hands it to Gradle under the property's name.
   Gradle reads a property `foo` also from the environment variable
-  `ORG_GRADLE_PROJECT_foo`:
+  `ORG_GRADLE_PROJECT_foo`. The wrapper runs under `bash` because the VM's
+  `sh` drops variables with a dot in their name:
 
   ```sh
-  omac vm exec --env TOKEN --cwd backend -- sh -c 'env "ORG_GRADLE_PROJECT_gpr.key=$TOKEN" ./gradlew check --no-daemon'
+  omac vm exec --env TOKEN --cwd backend -- sh -c 'env "ORG_GRADLE_PROJECT_gpr.key=$TOKEN" bash ./gradlew check --no-daemon'
   ```
 
 - Priming has to end with `BUILD SUCCESSFUL`. Gradle stops at the first
