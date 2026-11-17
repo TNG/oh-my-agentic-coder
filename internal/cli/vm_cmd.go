@@ -169,10 +169,6 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
-	envs, err := vm.ResolveEnv(a.envs, os.LookupEnv)
-	if err != nil {
-		return vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: "))
-	}
 	conn, err := resolveVMConn(env)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err) // ErrNotCreated already says to run `omac vm up`
@@ -181,10 +177,14 @@ func runVMExec(args []string, env *Env) int {
 		}
 		return ExitIOError
 	}
-	if len(envs) > 0 {
+	if len(a.envs) > 0 {
 		if code, ok := checkVMExecEnvAllowed(env, conn); !ok {
 			return code
 		}
+	}
+	envs, err := vm.ResolveEnv(a.envs, os.LookupEnv)
+	if err != nil {
+		return vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: "))
 	}
 	var logf func(string, ...any)
 	if a.verbose {

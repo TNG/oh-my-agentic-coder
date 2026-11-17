@@ -94,23 +94,47 @@ func TestVMExecEnvFromHost(t *testing.T) {
 }
 
 func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
+	// The sandbox filters most host variables, so the refusal must come
+	// before "not set", or the agent goes looking for the secret.
+	for _, spec := range []string{"A=1", "OMAC_TEST_SURELY_UNSET_VAR"} {
+		t.Run(spec, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			resolveVMConn = func(*Env) (vm.ConnInfo, error) {
+				return vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}, FromSandbox: true}, nil
+			}
+			env, _, stderr := vmTestEnv(t)
+			if code := runVM([]string{"exec", "--env", spec, "--", "true"}, env); code != ExitMisuse {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+			}
+			if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
+				t.Errorf("stderr lacks the reason:\n%s", stderr())
+			}
+			if strings.Contains(stderr(), "not set") {
+				t.Errorf("stderr asks for the variable although --env is refused:\n%s", stderr())
+			}
+			if len(*calls) != 0 {
+				t.Errorf("runVMExecFn called despite the refusal")
+			}
+			// Without --env, exec from the sandbox works.
+			if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+				t.Fatalf("exit without --env = %d; stderr:\n%s", code, stderr())
+			}
+		})
+	}
+}
+
+func TestVMExecEnvUnreadableStateIsIOError(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
-	resolveVMConn = func(*Env) (vm.ConnInfo, error) {
-		return vm.ConnInfo{Target: vm.SSHTarget{User: "agent", Port: 42022}, FromSandbox: true}, nil
-	}
+	loadVMState = func() (*vm.State, error) { return nil, errors.New("state.json: permission denied") }
 	env, _, stderr := vmTestEnv(t)
-	if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitMisuse {
-		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+	if code := runVM([]string{"exec", "--env", "A=1", "--", "true"}, env); code != ExitIOError {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitIOError, stderr())
 	}
-	if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
-		t.Errorf("stderr lacks the reason:\n%s", stderr())
+	if !strings.Contains(stderr(), "state.json: permission denied") {
+		t.Errorf("stderr lacks the cause:\n%s", stderr())
 	}
 	if len(*calls) != 0 {
-		t.Errorf("runVMExecFn called despite the refusal")
-	}
-	// Without --env, exec from the sandbox works.
-	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
-		t.Fatalf("exit without --env = %d; stderr:\n%s", code, stderr())
+		t.Errorf("runVMExecFn called without knowing the VM's mode")
 	}
 }
 
@@ -149,14 +173,12 @@ func TestVMExecWithoutSeparator(t *testing.T) {
 
 func TestVMExecMisuse(t *testing.T) {
 	for name, args := range map[string][]string{
-		"no command":       {"exec"},
-		"empty after --":   {"exec", "--cwd", "x", "--"},
-		"cwd no value":     {"exec", "--cwd"},
-		"unknown flag":     {"exec", "--bogus", "--", "true"},
-		"env unset":        {"exec", "--env", "OMAC_TEST_SURELY_UNSET_VAR", "--", "true"},
-		"env invalid name": {"exec", "--env", "1BAD=x", "--", "true"},
-		"cwd leaves":       {"exec", "--cwd", "../x", "--", "true"},
-		"cwd absolute":     {"exec", "--cwd=/etc", "--", "true"},
+		"no command":     {"exec"},
+		"empty after --": {"exec", "--cwd", "x", "--"},
+		"cwd no value":   {"exec", "--cwd"},
+		"unknown flag":   {"exec", "--bogus", "--", "true"},
+		"cwd leaves":     {"exec", "--cwd", "../x", "--", "true"},
+		"cwd absolute":   {"exec", "--cwd=/etc", "--", "true"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
@@ -166,6 +188,24 @@ func TestVMExecMisuse(t *testing.T) {
 			}
 			env, _, stderr := vmTestEnv(t)
 			if code := runVM(args, env); code != ExitMisuse {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+			}
+			if len(*calls) != 0 {
+				t.Fatalf("runVMExecFn called on misuse")
+			}
+		})
+	}
+}
+
+func TestVMExecEnvMisuse(t *testing.T) {
+	for name, spec := range map[string]string{
+		"unset":        "OMAC_TEST_SURELY_UNSET_VAR",
+		"invalid name": "1BAD=x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			env, _, stderr := vmTestEnv(t)
+			if code := runVM([]string{"exec", "--env", spec, "--", "true"}, env); code != ExitMisuse {
 				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
 			}
 			if len(*calls) != 0 {
