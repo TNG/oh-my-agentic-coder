@@ -246,7 +246,9 @@ const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--ver
                                Copies the worktree (the git top level) into the VM, one way, skipping
                                .git, .env files and what git ignores. Runs the command there, in the
                                current directory or in <dir> relative to it. Results such as build
-                               output stay in the VM and are not copied back.`
+                               output stay in the VM and are not copied back. --env works only from
+                               the host while the VM is online, to prime build caches. --verbose
+                               prints which directory is copied where.`
 
 func printVMExecUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:\n"+vmExecUsage)
