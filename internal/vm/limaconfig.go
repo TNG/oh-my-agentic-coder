@@ -29,6 +29,9 @@ const (
 	RulesetFile = "/etc/omac-vmguard.nft"
 	// GuardTable is the nftables table defined by Ruleset().
 	GuardTable = "omac-vmguard"
+	// guestDockerSocket is rootless dockerd's only API endpoint, as a
+	// DOCKER_HOST value that the agent user's shell expands.
+	guestDockerSocket = "unix:///run/user/$(id -u)/docker.sock"
 )
 
 // heredocEnd terminates the heredoc that writes the ruleset in the boot

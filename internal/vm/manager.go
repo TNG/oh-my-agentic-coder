@@ -127,7 +127,7 @@ func reprovisionCmd(pkgs []string) string {
 // non-interactive ssh command does not read the DOCKER_HOST export in
 // ~/.bashrc.
 func dockerCmd(args string) string {
-	return "docker -H unix:///run/user/$(id -u)/docker.sock " + args
+	return "docker -H " + guestDockerSocket + " " + args
 }
 
 func (m *Manager) agentTarget(st *State) SSHTarget {

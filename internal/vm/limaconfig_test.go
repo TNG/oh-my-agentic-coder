@@ -160,6 +160,8 @@ func TestRenderLimaConfigProvisionOrder(t *testing.T) {
 			"systemctl --user enable --now docker",
 			"ssh-ed25519 AAAAagent",
 			"testcontainers.properties",
+			// The script prints the socket path with the uid as %s.
+			strings.Replace(guestDockerSocket, "$(id -u)", "%s", 1),
 		}},
 	}
 	for _, c := range checks {

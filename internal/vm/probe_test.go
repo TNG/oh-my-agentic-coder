@@ -38,7 +38,7 @@ func TestDockerVersionParsesOutput(t *testing.T) {
 	if len(*remotes) != 1 || (*remotes)[0] != dockerVersionCmd {
 		t.Errorf("ssh commands = %q, want only %q", *remotes, dockerVersionCmd)
 	}
-	if !strings.Contains(dockerVersionCmd, "unix:///run/user/$(id -u)/docker.sock") || strings.Contains(dockerVersionCmd, "tcp://") {
+	if !strings.Contains(dockerVersionCmd, "-H "+guestDockerSocket+" ") {
 		t.Errorf("dockerVersionCmd = %q, want the rootless Unix socket", dockerVersionCmd)
 	}
 }
