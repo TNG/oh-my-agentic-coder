@@ -785,8 +785,7 @@ func TestConcurrentNewInstancesGetDistinctPorts(t *testing.T) {
 // Lima fails later with an unclear error.
 func TestUpRefusesStatePathTooLongForSocket(t *testing.T) {
 	m, lima, _ := newTestManager(t)
-	sock := len(filepath.Join(m.Layout.LimaHome, InstanceName, "ssh.sock")) + len(".XXXXXXXXXXXXXXXX")
-	m.Deps.MaxSocketPath = sock - 1
+	m.Deps.MaxSocketPath = 40
 	err := m.Up(context.Background(), false)
 	if err == nil || !strings.Contains(err.Error(), m.Layout.Root) || !strings.Contains(err.Error(), "XDG_STATE_HOME") {
 		t.Fatalf("Up = %v, want a too-long error naming the state path and XDG_STATE_HOME", err)
@@ -794,8 +793,36 @@ func TestUpRefusesStatePathTooLongForSocket(t *testing.T) {
 	if slices.Contains(lima.verbs(), "create") {
 		t.Error("limactl create ran despite the refusal")
 	}
-	m.Deps.MaxSocketPath = sock
+	if _, err := os.Stat(m.Layout.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state directory left behind (err %v); vm list would show the VM", err)
+	}
+}
+
+// The master socket is <LimaHome>/omac/ssh.sock plus 17 bytes: for the
+// root /s, "/s/lima/omac/ssh.sock" (21 bytes) gives 38.
+func TestCheckSocketPathLimit(t *testing.T) {
+	m := &Manager{Layout: NewLayout("/s")}
+	for limit, wantErr := range map[int]bool{37: true, 38: false, 0: false} {
+		m.Deps.MaxSocketPath = limit
+		if err := m.checkSocketPath(); (err != nil) != wantErr {
+			t.Errorf("limit %d: err = %v, want error %v", limit, err, wantErr)
+		}
+	}
+}
+
+// A leftover state.json keeps its block only while no host process
+// listens in it, like a newly picked block.
+func TestUpLeftoverStateLeavesOccupiedBlock(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	if err := SaveState(m.Layout.StatePath, &State{Version: StateVersion, SSHPort: 42030, PortBlock: 1, Mode: ModeOffline}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := PortBlockRange(1)
+	m.Deps.PortFree = func(p int) bool { return p != first+50 }
 	mustUp(t, m)
+	if st := mustState(t, m); st.PortBlock == 1 {
+		t.Errorf("port block = 1, want another one (a host process listens in block 1)")
+	}
 }
 
 func TestFirstInstanceGetsBlockZero(t *testing.T) {

@@ -44,8 +44,8 @@ type Deps struct {
 	Host     HostResources
 	Alive    func(int) bool
 	HostUser string // host login name, mapped to the VM user by AgentUserName
-	// MaxSocketPath is the longest Unix socket path the host accepts; 0
-	// skips the check.
+	// MaxSocketPath is the longest Unix socket path a VM's state may need;
+	// 0 skips the check.
 	MaxSocketPath int
 
 	// Zero means 15m, 5m and 2s.
@@ -64,7 +64,8 @@ func RealDeps() Deps {
 		Host:     DetectHost(),
 		Alive:    ProcessAlive,
 		HostUser: hostUserName(),
-		// macOS: sun_path holds 104 bytes including the NUL; Linux allows more.
+		// macOS's sun_path holds 104 bytes with the NUL; Linux allows more,
+		// but one limit for both keeps the check simple.
 		MaxSocketPath: 103,
 	}
 }
@@ -77,7 +78,7 @@ func (m *Manager) checkSocketPath() error {
 	}
 	n := len(filepath.Join(m.Layout.LimaHome, InstanceName, "ssh.sock")) + len(".XXXXXXXXXXXXXXXX")
 	if n > m.Deps.MaxSocketPath {
-		return fmt.Errorf("omac vm: the state path %s is too long for the VM's ssh socket (%d bytes, at most %d); use a shorter VM name or a shorter $XDG_STATE_HOME", m.Layout.Root, n, m.Deps.MaxSocketPath)
+		return fmt.Errorf("omac vm: the state path %s is too long for the VM's ssh socket (%d bytes, at most %d); use a shorter $XDG_STATE_HOME or, for a VM other than omac, a shorter name", m.Layout.Root, n, m.Deps.MaxSocketPath)
 	}
 	return nil
 }
@@ -176,6 +177,13 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	}
 	aptPkgs := append(slices.Clone(cfg.Packages), jdkPkgs...)
 	res := ResolveResources(cfg, m.Deps.Host)
+	// Without LIMA_HOME no instance exists yet; refuse before any state is
+	// written, so a refused VM leaves nothing behind.
+	if !isDir(m.Layout.LimaHome) {
+		if err := m.checkSocketPath(); err != nil {
+			return err
+		}
+	}
 	if err := EnsureKeys(ctx, m.Layout, m.Deps.Run); err != nil {
 		return err
 	}
@@ -214,14 +222,11 @@ func (m *Manager) loadOrInitState(cfg UserConfig, instanceExists bool) (*State, 
 	if instanceExists {
 		return m.loadState()
 	}
-	if err := m.checkSocketPath(); err != nil {
-		return nil, err
-	}
-	// A leftover state.json belongs to a VM that is gone: keep its port while
-	// it is free, and replace an unloadable file, since no instance can be
+	// A leftover state.json belongs to a VM that is gone: keep its ports while
+	// they are free, and replace an unloadable file, since no instance can be
 	// inconsistent with it.
 	st, err := LoadState(m.Layout.StatePath)
-	if err == nil && st != nil && m.Deps.PortFree(st.SSHPort) {
+	if err == nil && st != nil && m.Deps.PortFree(st.SSHPort) && blockFree(st.PortBlock, m.Deps.PortFree) {
 		return st, nil
 	}
 	unlock, err := lockPortPick()
