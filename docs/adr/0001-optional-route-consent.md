@@ -3,7 +3,7 @@ title: "ADR 0001: Optional consent per sidecar route"
 description: Introduction of an opt-in per-route skill approval mechanism and its configuration format.
 ---
 
-Status: proposed. Tracked in [#455](https://github.com/TNG/oh-my-agentic-coder/issues/455), builds on [#428](https://github.com/TNG/oh-my-agentic-coder/issues/428).
+Status: accepted. Tracked in [#455](https://github.com/TNG/oh-my-agentic-coder/issues/455), builds on [#428](https://github.com/TNG/oh-my-agentic-coder/issues/428).
 
 ## Context
 
