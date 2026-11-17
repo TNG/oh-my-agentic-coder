@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func gitIn(t *testing.T, dir string, args ...string) {
@@ -125,5 +126,56 @@ func TestLoadProjectMapRejectsBadFiles(t *testing.T) {
 				t.Errorf("error %q does not name %s", err, path)
 			}
 		})
+	}
+}
+
+func TestProjectKeyFromSymlinkedWorktree(t *testing.T) {
+	repo, worktree := repoWithWorktree(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(worktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := ProjectKey(link); got != repo {
+		t.Errorf("ProjectKey(symlink to worktree) = %q, want %q", got, repo)
+	}
+}
+
+// Two spellings of one directory would otherwise let map iteration order
+// decide which VM a project gets.
+func TestLoadProjectMapRejectsKeysForTheSameDirectory(t *testing.T) {
+	repo, _ := repoWithWorktree(t)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	path := writeProjectMap(t, repo+": a\n"+link+": b\n")
+	_, err := LoadProjectMap(path)
+	if err == nil {
+		t.Fatal("LoadProjectMap accepted two keys for one directory")
+	}
+	for _, want := range []string{path, repo, link} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+}
+
+// A git that hangs, e.g. on a stalled network mount, must not hang omac.
+func TestProjectKeyGivesUpOnHangingGit(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	orig := gitTimeout
+	gitTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { gitTimeout = orig })
+	dir := canonicalPath(t.TempDir())
+	start := time.Now()
+	if got := ProjectKey(dir); got != dir {
+		t.Errorf("ProjectKey = %q, want %q", got, dir)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("ProjectKey took %v", d)
 	}
 }
