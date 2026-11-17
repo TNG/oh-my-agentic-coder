@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -20,7 +21,7 @@ type commandEnvKey struct{}
 // withCommandEnv adds NAME=VALUE entries to the environment of every
 // command ExecRunner starts with the returned context.
 func withCommandEnv(ctx context.Context, kv ...string) context.Context {
-	return context.WithValue(ctx, commandEnvKey{}, kv)
+	return context.WithValue(ctx, commandEnvKey{}, append(slices.Clone(commandEnv(ctx)), kv...))
 }
 
 func commandEnv(ctx context.Context) []string {

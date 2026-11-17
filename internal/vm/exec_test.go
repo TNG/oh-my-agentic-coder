@@ -126,6 +126,13 @@ func TestExecRunnerAppliesCommandEnv(t *testing.T) {
 	}
 }
 
+func TestWithCommandEnvKeepsEarlierEntries(t *testing.T) {
+	ctx := withCommandEnv(withCommandEnv(context.Background(), "LC_ALL=C"), "A=b")
+	if got, want := commandEnv(ctx), []string{"LC_ALL=C", "A=b"}; !slices.Equal(got, want) {
+		t.Fatalf("commandEnv = %q, want %q", got, want)
+	}
+}
+
 func TestRepoRootFailsOnOtherGitErrors(t *testing.T) {
 	run := func(_ context.Context, _ string, _ []string, _ io.Reader, _, stderr io.Writer) error {
 		_, _ = io.WriteString(stderr, "fatal: detected dubious ownership in repository at '/w/repo'\n")
