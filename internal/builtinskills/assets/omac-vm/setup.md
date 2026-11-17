@@ -46,7 +46,9 @@ safe to run again.
 Projects that must not see each other belong in separate VMs. Each extra VM
 has its own name and its own file `~/.config/omac/vms/<name>.yaml`; the human
 adds `--name <name>` to every `omac vm` command below and starts sessions with
-`omac start --vm=<name>`. Without a name, everything uses the default VM `omac`.
+`omac start --vm=<name>`. Without a name, everything uses the default VM `omac`,
+except that `omac start --vm` and `omac vm exec` first look up the project in
+`~/.config/omac/vm-projects.yaml`.
 
 ## 4. Create the VM
 

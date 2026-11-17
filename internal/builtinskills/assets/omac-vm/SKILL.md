@@ -34,8 +34,9 @@ cannot do either.
 The human may run several VMs. Your session is attached to one, named in
 `OMAC_VM_NAME`; `omac vm exec` uses it without `--name`. In the `omac vm`
 commands you hand to the human for the host (`image add`, `online`, `offline`,
-`up --reprovision`), add `--name <the value of OMAC_VM_NAME>` unless it is
-`omac`.
+`exec`, `up --reprovision`), add `--name <the value of OMAC_VM_NAME>` unless
+it is `omac`. On the host, `omac vm exec` without `--name` may pick another
+VM.
 
 Containers in the VM are reachable from the host only on published ports in
 the range `OMAC_VM_PORT_FIRST` to `OMAC_VM_PORT_LAST`. Read both variables and
@@ -160,7 +161,8 @@ module's directory, for example `api/target/surefire-reports/`.
   [setup.md](setup.md). They prime from a fresh clone, in a new folder, of a
   commit with your change, and omac refuses `omac vm online` while a session
   is attached, so they end this session first. Never look for the registry
-  token the build needs yourself.
+  token the build needs yourself. Ask them to add `--name` to the host
+  commands as described in "Which VM, and which ports".
 - **The build wrapper cannot download its build tool.** The wrapper fails to
   download its own distribution before the build starts, with an unknown
   host: the one in the wrapper's `distributionUrl`, usually

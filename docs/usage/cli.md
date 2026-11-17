@@ -233,15 +233,15 @@ omac vm reset                  # delete the VM and create it anew
 You need Lima; omac is tested with Lima 2.1 (`brew install lima` on macOS; on Linux the release tarball from the Lima GitHub releases or Homebrew on Linux, plus QEMU).
 Because the VM has no network, `docker pull` inside it fails. Instead, `omac vm image add` downloads the image on your host and loads it into the VM, once per image.
 
-Each VM has its own block of 100 ports. The VM created first gets 30000 to 30099, the next one 30100 to 30199, and so on up to 10 VMs (see [Several VMs](#several-vms-and-the-project-map)). `omac vm list` shows the block; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the block (for example `docker run -p 30000:5432 postgres:16` in the VM with block 30000 to 30099) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the block stay inside the VM; use `omac vm exec` to reach them from the VM side.
+Each VM has its own block of 100 ports: 30000 to 30099, 30100 to 30199, and so on up to 10 VMs. A new VM gets the lowest block that no other VM holds and no host process listens in (see [Several VMs](#several-vms-and-the-project-map)). `omac vm list` shows the block; a session gets it as `OMAC_VM_PORT_FIRST` and `OMAC_VM_PORT_LAST`. Container ports published in the block (for example `docker run -p 30000:5432 postgres:16` in the VM with block 30000 to 30099) are reachable from your host on `127.0.0.1` at the same port, not from inside the sandbox. Ports outside the block stay inside the VM; use `omac vm exec` to reach them from the VM side.
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages, Java versions and a setup script, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml` (`vms/<name>.yaml` with `--name <name>`) and runs its setup script again, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages, Java versions and a setup script, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
 #### Several VMs and the project map
 
-The VM called `omac` is the default. To keep projects apart, create more VMs, for example one per client or per team. The verbs `up`, `down`, `reset`, `status`, `online`, `offline`, `image` and `exec` take `--name <name>`; without it they act on the default VM. A name is a lowercase letter followed by up to 15 lowercase letters, digits or `-`. Each VM has its own state, images, build caches, copied worktrees and port block, and at most 10 VMs can exist.
+The VM called `omac` is the default. To keep projects apart, create more VMs, for example one per client or per team. The verbs `up`, `down`, `reset`, `status`, `online`, `offline`, `image` and `exec` take `--name <name>`; without it they act on the default VM. A name is a lowercase letter followed by up to 15 lowercase letters, digits or `-`; `true` and `false` are reserved. Each VM has its own state, images, build caches, copied worktrees and port block, and at most 10 VMs can exist.
 
 ```bash
 omac vm up --name acme                  # create and provision a second VM
@@ -273,11 +273,23 @@ A session picks its VM in this order:
 2. The entry for the project in `vm-projects.yaml`.
 3. The default VM `omac`.
 
-A bare `--vm` skips step 1. `omac vm exec` follows the same order, with `--name <name>` as step 1, except inside a session, where it always uses the session's VM.
+A bare `--vm` skips step 1. `omac vm exec` follows the same order, with `--name <name>` as step 1, except inside a session, where it always uses the session's VM and refuses a different `--name`.
 
-omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. For such a worktree the key is the directory the command runs in, so a session or `omac vm exec` started in a subdirectory of the worktree does not match; use the worktree path itself. Keys must be absolute paths. A relative key, an invalid VM name or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
+`omac serve --vm` picks the VM once, for the directory it starts in (or `--workdir`), and every project the server opens uses that VM. To keep projects of different VMs apart, run one server per VM.
+
+omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. For such a worktree the key is the directory the command runs in, so a session or `omac vm exec` started in a subdirectory of the worktree does not match; use the worktree path itself. Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 
 Projects in the same VM can read each other's copies, see [The omac VM](../security.md#the-omac-vm). Put projects that must not see each other into different VMs.
+
+omac has no command that deletes a VM. To delete the VM `acme`, for example to free its port block, stop it and remove its state directory, which holds the VM's disk:
+
+```bash
+omac vm down --name acme
+LIMA_HOME=~/.local/state/omac/vms/acme/lima limactl delete -f omac
+rm -rf ~/.local/state/omac/vms/acme ~/.config/omac/vms/acme.yaml
+```
+
+If `XDG_STATE_HOME` is set, the state directory is `$XDG_STATE_HOME/omac/vms/acme` instead. The default VM `omac` keeps its state in `~/.local/state/omac/vm`. Remove the VM's entries from `vm-projects.yaml` too.
 
 `omac vm exec` runs a command inside the VM on a copy of your worktree (the git top level), for example a Gradle build that needs more memory or tools than the sandbox has. It works from your host and from inside a session started with `--vm`. The built-in skill `omac-vm` (see [Built-in skills](./skills.md#built-in-skills)) tells the agent in such a session how to use it and when to ask you for help.
 

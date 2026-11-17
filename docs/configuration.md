@@ -13,6 +13,7 @@ description: omac configuration files and options
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 | `vm.yaml`, `vms/<name>.yaml` | Size, extra packages and setup script of the omac VM and of each named VM (user-global only); see [omac VM](#omac-vm-vmyaml) | User                                  |
+| `vm-projects.yaml` | Which VM the sessions of each project use (user-global only); see [Several VMs and the project map](./usage/cli.md#several-vms-and-the-project-map) | User                                  |
 
 These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
 
@@ -198,17 +199,19 @@ setup: |            # shell script run as root at provisioning; default: none
   npm install --global pnpm
 ```
 
+`memory` and `disk` need a unit, such as `16GiB`, `512MiB` or `16G`; a plain number is an error.
+
 The 12GiB cap for the default memory comes from testing with a large Java project: its full test suite, including Testcontainers, ran well with 12GiB. The values above are examples, not recommendations.
 
 When omac creates the VM or reprovisions it, each `jdks` entry installs the matching Adoptium package: `temurin-25` installs `temurin-25-jdk`. An entry is either `temurin-<version>`, where the version has no leading zero, or the package name itself, such as `temurin-25-jdk`. An unknown field is an error, so a typo does not silently fall back to the defaults.
 
-omac applies this file only when it creates the VM or reprovisions it. After changing `packages` or `jdks`, run `omac vm up --reprovision`. After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
+omac applies this file only when it creates the VM or reprovisions it. After changing `packages`, `jdks` or `setup`, run `omac vm up --reprovision` (add `--name <name>` for a VM configured in `vms/<name>.yaml`). After changing `cpus`, `memory` or `disk`, run `omac vm reset`, which deletes the VM, its imported images and its keys, then creates it anew; add the images again afterwards.
 
 ### Setup script
 
 `setup` is a shell script (run with `bash`) for anything `packages` and `jdks` cannot express, for example installing Node packages or tools from a download. omac runs it as root inside the VM, with network access, during provisioning: on the first `omac vm up` and on `omac vm up --reprovision`, after the packages and JDKs are installed. It runs again each time you reprovision, so write it to be safe to repeat. For example, `npm install --global pnpm` can run twice, while appending a line to a file would add it twice.
 
-If the script fails, omac prints its output, and the VM stays online. Fix the script and run `omac vm up` again, which provisions once more. Until provisioning succeeds the VM does not switch offline, so a session cannot attach to it.
+If the script fails, omac prints the end of its output, and the VM stays online. The same holds if you interrupt it. Fix the script and run `omac vm up` again, which provisions once more. Until provisioning succeeds the VM does not switch offline, so a session cannot attach to it.
 
 `setup` is read only from your own config file, never from a project. A repository cannot add a script that runs as root in your VM.
 
