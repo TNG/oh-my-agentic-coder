@@ -187,6 +187,6 @@ By default, a write error emits a warning and the run continues.
 
 If your network routes outbound traffic through a proxy, omac picks it up automatically from `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` in your shell environment — you do not need to configure anything. omac's own network filtering runs first, then allowed traffic is forwarded through the proxy.
 
-`NO_PROXY` entries (and `network.no_proxy` in the grants file) accept `example.com`, `.example.com` and `*.example.com`. All three match the domain itself and its subdomains. A lone `*` matches every host. Matching hosts skip the proxy, but omac's allowlist still applies to them. Unsupported entries, such as IP ranges (`10.0.0.0/8`), entries with a port (`example.com:8443`) or `<local>`, are ignored with a warning.
+`NO_PROXY` entries (and `network.no_proxy` in the grants file) accept `example.com`, `.example.com` and `*.example.com`. All three match the domain itself and its subdomains. A lone `*` matches every host, and a single IP address such as `10.1.2.3` matches requests to that address. Matching hosts skip the proxy, but omac's allowlist still applies to them. Unsupported entries, such as IP ranges (`10.0.0.0/8`), entries with a port (`example.com:8443`) or `<local>`, are ignored with a warning at every start. If `network.no_proxy` is set, the `NO_PROXY` environment variable is not read.
 
 If you need omac to use a different proxy than what your shell environment specifies, set `network.upstream_proxy` and `network.no_proxy` in the sandbox grants file.
