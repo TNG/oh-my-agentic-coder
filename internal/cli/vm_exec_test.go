@@ -197,21 +197,29 @@ func TestVMExecMisuse(t *testing.T) {
 	}
 }
 
+// On the host, a bad --env is reported even while the VM is offline, so
+// the user fixes it before restarting the VM with `omac vm online`.
 func TestVMExecEnvMisuse(t *testing.T) {
-	for name, spec := range map[string]string{
-		"unset":        "OMAC_TEST_SURELY_UNSET_VAR",
-		"invalid name": "1BAD=x",
+	for name, tc := range map[string]struct{ spec, want string }{
+		"unset":        {"OMAC_TEST_SURELY_UNSET_VAR", "OMAC_TEST_SURELY_UNSET_VAR is not set"},
+		"invalid name": {"1BAD=x", "invalid environment variable name"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			calls := useFakeVMExec(t, nil, 0, nil)
-			env, _, stderr := vmTestEnv(t)
-			if code := runVM([]string{"exec", "--env", spec, "--", "true"}, env); code != ExitMisuse {
-				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
-			}
-			if len(*calls) != 0 {
-				t.Fatalf("runVMExecFn called on misuse")
-			}
-		})
+		for _, mode := range []string{vm.ModeOnline, vm.ModeOffline} {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				calls := useFakeVMExec(t, nil, 0, nil)
+				loadVMState = func() (*vm.State, error) { return &vm.State{Mode: mode}, nil }
+				env, _, stderr := vmTestEnv(t)
+				if code := runVM([]string{"exec", "--env", tc.spec, "--", "true"}, env); code != ExitMisuse {
+					t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+				}
+				if !strings.Contains(stderr(), tc.want) {
+					t.Errorf("stderr lacks %q:\n%s", tc.want, stderr())
+				}
+				if len(*calls) != 0 {
+					t.Fatalf("runVMExecFn called on misuse")
+				}
+			})
+		}
 	}
 }
 

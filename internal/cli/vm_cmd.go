@@ -177,14 +177,9 @@ func runVMExec(args []string, env *Env) int {
 		}
 		return ExitIOError
 	}
-	if len(a.envs) > 0 {
-		if code, ok := checkVMExecEnvAllowed(env, conn); !ok {
-			return code
-		}
-	}
-	envs, err := vm.ResolveEnv(a.envs, os.LookupEnv)
-	if err != nil {
-		return vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: "))
+	envs, code, ok := resolveVMExecEnv(env, conn, a.envs)
+	if !ok {
+		return code
 	}
 	var logf func(string, ...any)
 	if a.verbose {
@@ -218,22 +213,32 @@ func runVMExec(args []string, env *Env) int {
 	return code
 }
 
-// checkVMExecEnvAllowed limits --env to priming: from the host, while the
-// VM is online, which also means no session is attached.
-func checkVMExecEnvAllowed(env *Env, conn vm.ConnInfo) (int, bool) {
+// resolveVMExecEnv limits --env to priming: from the host, while the VM is
+// online, which also means no session is attached. A sandbox is refused
+// before any lookup, since it filters most variables and "not set" would
+// send the agent looking for the secret; on the host a bad --env is
+// reported before the user brings the VM online for nothing.
+func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int, bool) {
+	if len(specs) == 0 {
+		return nil, ExitOK, true
+	}
 	const reason = "--env is for priming from the host while the VM is online"
 	if conn.FromSandbox {
-		return vmExecMisuse(env, reason), false
+		return nil, vmExecMisuse(env, reason), false
+	}
+	envs, err := vm.ResolveEnv(specs, os.LookupEnv)
+	if err != nil {
+		return nil, vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: ")), false
 	}
 	st, err := loadVMState()
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
-		return ExitIOError, false
+		return nil, ExitIOError, false
 	}
 	if st == nil || st.Mode != vm.ModeOnline {
-		return vmExecMisuse(env, reason+"; run `omac vm online` first"), false
+		return nil, vmExecMisuse(env, reason+"; run `omac vm online` first"), false
 	}
-	return ExitOK, true
+	return envs, ExitOK, true
 }
 
 func vmExecMisuse(env *Env, msg string) int {
