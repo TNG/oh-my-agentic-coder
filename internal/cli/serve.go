@@ -316,17 +316,14 @@ func runServe(args []string, env *Env) int {
 	// drives our provisioning and is inherited by the sandboxed child;
 	// an explicit value is respected. The dir is granted read+write in
 	// the sandbox in the --for-opencode-desktop block below.
-	if forDesktop {
-		defer vm.PinStateHome(vmStateHome(os.Getenv("XDG_STATE_HOME")))()
+	restoreVMState, dir, err := setDesktopStateHome(forDesktop)
+	defer restoreVMState()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
+		return ExitIOError
 	}
-	if dir, set := resolveDesktopStateDir(forDesktop); set {
-		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
-			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
-			return ExitIOError
-		}
-		if verbose {
-			fmt.Fprintf(env.Stderr, "[verbose] --for-opencode-desktop: XDG_STATE_HOME=%s\n", dir)
-		}
+	if dir != "" && verbose {
+		fmt.Fprintf(env.Stderr, "[verbose] --for-opencode-desktop: XDG_STATE_HOME=%s\n", dir)
 	}
 
 	rtDir, err := createRuntimeDirServe(env.Workdir)
@@ -800,6 +797,21 @@ func resolveDesktopStateDir(forDesktop bool) (dir string, setEnv bool) {
 		return d, true
 	}
 	return "", false
+}
+
+// setDesktopStateHome sets XDG_STATE_HOME as resolveDesktopStateDir decides
+// and returns the directory it set, "" for none. It also pins the VM state
+// to where `omac vm up` created it (see vmStateHome); restore undoes the pin.
+func setDesktopStateHome(forDesktop bool) (restore func(), dir string, err error) {
+	restore = func() {}
+	if forDesktop {
+		restore = vm.PinStateHome(vmStateHome(os.Getenv("XDG_STATE_HOME")))
+	}
+	dir, set := resolveDesktopStateDir(forDesktop)
+	if !set {
+		return restore, "", nil
+	}
+	return restore, dir, os.Setenv("XDG_STATE_HOME", dir)
 }
 
 // vmStateHome is the XDG_STATE_HOME the VM state is found under in

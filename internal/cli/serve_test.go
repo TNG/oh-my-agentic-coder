@@ -19,6 +19,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // stageSkillWithSecret writes a workdir-local skill whose omac.yaml
@@ -846,6 +847,30 @@ func TestVMStateHome(t *testing.T) {
 		if got := vmStateHome(c.xdg); got != c.want {
 			t.Errorf("vmStateHome(%q) = %q, want %q", c.xdg, got, c.want)
 		}
+	}
+}
+
+// A manual `serve --for-opencode-desktop` sets XDG_STATE_HOME to the
+// Desktop folder; the VM state must still resolve where `omac vm up`
+// created it.
+func TestSetDesktopStateHomeKeepsVMState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	desktop := filepath.Join(home, ".config", "ai.opencode.desktop")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	os.Unsetenv("XDG_STATE_HOME")
+	restore, dir, err := setDesktopStateHome(true)
+	defer restore()
+	if err != nil || dir != desktop || os.Getenv("XDG_STATE_HOME") != desktop {
+		t.Fatalf("dir = %q, err = %v, XDG_STATE_HOME = %q; want %s", dir, err, os.Getenv("XDG_STATE_HOME"), desktop)
+	}
+	root, err := vm.InstanceRoot(vm.DefaultVMName)
+	if want := filepath.Join(home, ".local", "state", "omac", "vm"); err != nil || root != want {
+		t.Errorf("VM state = %q, %v; want %s", root, err, want)
 	}
 }
 
