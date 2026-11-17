@@ -177,9 +177,9 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	}
 	aptPkgs := append(slices.Clone(cfg.Packages), jdkPkgs...)
 	res := ResolveResources(cfg, m.Deps.Host)
-	// Without LIMA_HOME no instance exists yet; refuse before any state is
-	// written, so a refused VM leaves nothing behind.
-	if !isDir(m.Layout.LimaHome) {
+	// Without its directory under LIMA_HOME no instance exists yet; refuse
+	// before any state is written, so a refused VM leaves nothing behind.
+	if !isDir(filepath.Join(m.Layout.LimaHome, InstanceName)) {
 		if err := m.checkSocketPath(); err != nil {
 			return err
 		}

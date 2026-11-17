@@ -800,6 +800,22 @@ func TestUpRefusesStatePathTooLongForSocket(t *testing.T) {
 	}
 }
 
+// `limactl list` and `limactl delete` leave LIMA_HOME behind without an
+// instance, so its existence does not mean the path was ever accepted.
+func TestUpChecksSocketPathWithEmptyLimaHome(t *testing.T) {
+	m, lima, _ := newTestManager(t)
+	if err := os.MkdirAll(m.Layout.LimaHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m.Deps.MaxSocketPath = 40
+	if err := m.Up(context.Background(), false); err == nil {
+		t.Fatal("Up accepted a state path too long for the socket")
+	}
+	if slices.Contains(lima.verbs(), "create") {
+		t.Error("limactl create ran despite the refusal")
+	}
+}
+
 // The master socket is <LimaHome>/omac/ssh.sock plus 17 bytes: for the
 // root /s, "/s/lima/omac/ssh.sock" (21 bytes) gives 38.
 func TestCheckSocketPathLimit(t *testing.T) {
