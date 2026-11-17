@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func gitIn(t *testing.T, dir string, args ...string) {
@@ -160,22 +159,60 @@ func TestLoadProjectMapRejectsKeysForTheSameDirectory(t *testing.T) {
 	}
 }
 
-// A git that hangs, e.g. on a stalled network mount, must not hang omac.
-func TestProjectKeyGivesUpOnHangingGit(t *testing.T) {
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin)
-	orig := gitTimeout
-	gitTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { gitTimeout = orig })
-	dir := canonicalPath(t.TempDir())
-	start := time.Now()
-	if got := ProjectKey(dir); got != dir {
-		t.Errorf("ProjectKey = %q, want %q", got, dir)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("ProjectKey took %v", d)
+}
+
+// The sandbox can write the project, .git included. Whatever it writes
+// there must not make the project's key another repository's, or the next
+// bare --vm session would log in to that repository's VM.
+func TestProjectKeyIgnoresPlantedGitPointers(t *testing.T) {
+	other, otherWorktree := repoWithWorktree(t)
+	admin := filepath.Join(other, ".git", "worktrees", filepath.Base(otherWorktree))
+
+	t.Run("commondir in a .git directory", func(t *testing.T) {
+		repo, _ := repoWithWorktree(t)
+		writeFile(t, filepath.Join(repo, ".git", "commondir"), filepath.Join(other, ".git")+"\n")
+		if got := ProjectKey(repo); got != repo {
+			t.Errorf("ProjectKey = %q, want %q", got, repo)
+		}
+	})
+	t.Run(".git file naming another worktree's admin dir", func(t *testing.T) {
+		dir := canonicalPath(t.TempDir())
+		writeFile(t, filepath.Join(dir, ".git"), "gitdir: "+admin+"\n")
+		if got := ProjectKey(dir); got != dir {
+			t.Errorf("ProjectKey = %q, want %q", got, dir)
+		}
+	})
+	t.Run("forged admin dir inside the project", func(t *testing.T) {
+		dir := canonicalPath(t.TempDir())
+		fake := filepath.Join(dir, "fake")
+		writeFile(t, filepath.Join(dir, ".git"), "gitdir: "+fake+"\n")
+		writeFile(t, filepath.Join(fake, "gitdir"), filepath.Join(dir, ".git")+"\n")
+		writeFile(t, filepath.Join(fake, "commondir"), filepath.Join(other, ".git")+"\n")
+		if got := ProjectKey(dir); got != dir {
+			t.Errorf("ProjectKey = %q, want %q", got, dir)
+		}
+	})
+}
+
+// A submodule's .git file has no back-pointer; the submodule is its own
+// project, also from a subdirectory.
+func TestProjectKeySubmoduleSubdirectory(t *testing.T) {
+	repo, _ := repoWithWorktree(t)
+	sub := filepath.Join(repo, "sub")
+	writeFile(t, filepath.Join(sub, ".git"), "gitdir: ../.git/modules/sub\n")
+	inner := filepath.Join(sub, "src")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := ProjectKey(inner); got != sub {
+		t.Errorf("ProjectKey = %q, want %q", got, sub)
 	}
 }

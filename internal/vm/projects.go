@@ -1,19 +1,16 @@
 package vm
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/prefs"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
 // ProjectMapPath is ~/.config/omac/vm-projects.yaml (honoring
@@ -29,9 +26,10 @@ func ProjectMapPath() string {
 // LoadProjectMap reads the file that maps a project path to the name of the
 // VM its sessions use. A missing file is an empty map. Keys must be absolute
 // paths and values valid VM names; any other content is an error naming path.
-// A key has to be the repository root that ProjectKey returns: a worktree
-// or a subdirectory as a key never matches. Keys are returned canonicalized
-// like ProjectKey's result, and two keys for one directory are an error.
+// A key has to be a path ProjectKey returns, such as a repository's root:
+// a subdirectory or a linked worktree as a key never matches. Keys are
+// returned canonicalized like ProjectKey's result, and two keys for one
+// directory are an error.
 func LoadProjectMap(path string) (map[string]string, error) {
 	if path == "" {
 		return map[string]string{}, nil
@@ -76,36 +74,32 @@ func canonicalPath(p string) string {
 	return p
 }
 
-// gitTimeout bounds the git call of ProjectKey, so a stalled network mount
-// cannot hang omac.
-var gitTimeout = 5 * time.Second
-
-// ProjectKey is the path a directory is looked up by in the project map: the
-// directory that holds the .git of its repository, so every worktree of one
-// repository shares an entry, else the directory itself.
+// ProjectKey is the path a directory is looked up by in the project map:
+// the nearest directory at or above dir that holds a .git, else dir itself.
+// A linked worktree maps to the directory of its repository's .git instead,
+// so all worktrees of a repository share an entry. A .git file counts as a
+// linked worktree only when sandboxrun.ResolveWorktreeCommonDir verifies it:
+// the sandbox can write .git, and git would follow a planted commondir or
+// gitdir into another repository, and so into that repository's VM.
 func ProjectKey(dir string) string {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		abs = dir
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", abs, "rev-parse", "--git-common-dir")
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		return canonicalPath(abs)
+	for d := abs; ; d = filepath.Dir(d) {
+		fi, err := os.Lstat(filepath.Join(d, ".git"))
+		if err == nil {
+			if !fi.IsDir() {
+				if common, _, ok := sandboxrun.ResolveWorktreeCommonDir(d); ok && filepath.Base(common) == ".git" {
+					return canonicalPath(filepath.Dir(common))
+				}
+			}
+			return canonicalPath(d)
+		}
+		if filepath.Dir(d) == d {
+			return canonicalPath(abs)
+		}
 	}
-	common := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(abs, common)
-	}
-	common = filepath.Clean(common)
-	if filepath.Base(common) != ".git" {
-		// A bare repository or a submodule: no work tree sits above it.
-		return canonicalPath(abs)
-	}
-	return canonicalPath(filepath.Dir(common))
 }
 
 // MappedInstance returns the VM the project map assigns to dir's repository;

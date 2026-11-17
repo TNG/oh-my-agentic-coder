@@ -334,7 +334,7 @@ Known limits:
 
 Separate VMs for separate projects:
 - Each named VM (`omac vm up --name <name>`) has its own disk, Docker, images, copies and ports. The sandbox of a session opens only the SSH port of its own VM, so it cannot connect to another VM and cannot read the copies in it. On macOS a session can read the key copies of other running sessions, including those of other VMs (see the table above), but they are useless without a way to reach that VM's port, which holds unless your sandbox profile opens all loopback ports (`open_port: [0]`).
-- The project map (`vm-projects.yaml`) trusts the `.git` file or directory of the directory you start in. If you run `--vm` inside an untrusted unpacked directory with a crafted `.git` file, it can select one of your existing VMs, but never create one.
+- The project map (`vm-projects.yaml`) finds a project by its `.git`. omac follows a `.git` file to another repository only after checking that this repository lists the worktree. So an agent that writes into `.git` cannot move its next session into another project's VM.
 - Projects in the same VM are not separated from each other. They log in as the same guest user and share one Docker, so they can read and change each other's copies, images and containers. Choose the VMs by what may see what.
 - `omac serve --vm` picks one VM when it starts, and every project the server opens uses it. Run one server per VM to keep their projects apart.
 

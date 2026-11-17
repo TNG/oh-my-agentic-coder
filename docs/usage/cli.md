@@ -277,7 +277,13 @@ A bare `--vm` skips step 1. `omac vm exec` follows the same order, with `--name 
 
 `omac serve --vm` picks the VM once, for the directory it starts in (or `--workdir`), and every project the server opens uses that VM. To keep projects of different VMs apart, run one server per VM.
 
-omac looks a project up by the directory that holds its `.git`, so all git worktrees of one repository share the repository's entry. A bare repository (one without a working directory of its own, with worktrees checked out elsewhere) has no such directory, so each of its worktrees needs its own entry. For such a worktree the key is the directory the command runs in, so a session or `omac vm exec` started in a subdirectory of the worktree does not match; use the worktree path itself. Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
+omac looks a project up by the nearest directory, at or above the one a command runs in, that holds a `.git`:
+
+- All git worktrees of one repository share the entry of the repository's directory.
+- A worktree of a bare repository (one without a working directory of its own) and a git submodule each use the directory that holds their own `.git`, so each needs its own entry.
+- Outside git, the key is the directory the command runs in.
+
+Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 
 Projects in the same VM can read each other's copies, see [The omac VM](../security.md#the-omac-vm). Put projects that must not see each other into different VMs.
 
