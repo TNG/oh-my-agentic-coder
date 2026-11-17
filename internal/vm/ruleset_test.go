@@ -32,7 +32,7 @@ func TestRulesetShape(t *testing.T) {
 
 func TestRulesetNormalizesWindowsCheckout(t *testing.T) {
 	saved := vmguardRuleset
-	vmguardRuleset = strings.ReplaceAll(saved, "\n", "\r\n")
+	vmguardRuleset = strings.ReplaceAll(strings.ReplaceAll(saved, "\r\n", "\n"), "\n", "\r\n")
 	t.Cleanup(func() { vmguardRuleset = saved })
 
 	got := Ruleset()
