@@ -314,7 +314,7 @@ func DesktopStorePaths() []string {
 	return out
 }
 
-// absEnv returns the environment variable name if it holds an absolute
+// absEnv returns the environment variable's value if it holds an absolute
 // path, else "". The XDG Base Directory spec says to ignore relative
 // values: XDG_STATE_HOME=state counts as unset.
 func absEnv(name string) string {
