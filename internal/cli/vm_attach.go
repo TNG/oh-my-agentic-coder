@@ -25,9 +25,9 @@ type vmSession struct {
 
 // attachVM registers the session with the VM, checks that the VM can take
 // it, and prepares the agent's files in <tmpDir>/vm. tmpDir must be the
-// session's private temp dir, which is removed when the session ends: it
-// holds a copy of the agent's SSH key. The VM is never booted or stopped
-// here; it outlives every session.
+// session's temp dir, removed when omac exits normally, because it holds a
+// copy of the agent's SSH key. The VM is never booted or stopped here; it
+// outlives every session.
 func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) {
 	info, markers, err := prepareVMAttach(ctx, env)
 	if err != nil {
@@ -174,32 +174,50 @@ var vmEnvNames = []string{"DOCKER_HOST", "DOCKER_CONFIG", "OMAC_VM_HOST", "OMAC_
 
 // vmSandboxEnv creates <tmpDir>/vm with a copy of the agent key (the
 // original lives in host-only VM state) and an empty DOCKER_CONFIG, and
-// returns the variables that point the agent at the VM. Mkdir, not MkdirAll:
-// an existing directory, possibly a planted symlink, is refused.
+// returns the variables that point the agent at the VM.
 func vmSandboxEnv(info vm.AttachInfo, tmpDir string) (map[string]string, error) {
-	dir := filepath.Join(tmpDir, "vm")
-	dockerDir := filepath.Join(dir, "docker")
-	for _, d := range []string{dir, dockerDir} {
-		if err := os.Mkdir(d, 0o700); err != nil {
-			return nil, err
-		}
-	}
 	key, err := os.ReadFile(info.AgentKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("agent key: %w", err)
 	}
-	keyPath := filepath.Join(dir, "agent_key")
-	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
-		return nil, fmt.Errorf("agent key copy: %w", err)
+	if err := writeVMFiles(tmpDir, key); err != nil {
+		return nil, err
 	}
+	dir := filepath.Join(tmpDir, "vm")
 	return map[string]string{
 		"DOCKER_HOST":      info.DockerHost(),
-		"DOCKER_CONFIG":    dockerDir,
+		"DOCKER_CONFIG":    filepath.Join(dir, "docker"),
 		"OMAC_VM_HOST":     "127.0.0.1",
 		"OMAC_VM_SSH_PORT": strconv.Itoa(info.SSHPort),
-		"OMAC_VM_SSH_KEY":  keyPath,
+		"OMAC_VM_SSH_KEY":  filepath.Join(dir, "agent_key"),
 		"OMAC_VM_USER":     info.User,
 	}, nil
+}
+
+// writeVMFiles creates vm/, vm/docker/ and vm/agent_key in tmpDir. Other
+// sandboxes may write tmpDir (on macOS every sandbox may write
+// /var/folders), so it creates instead of reusing, and resolves through
+// os.Root so a planted symlink cannot redirect the key outside tmpDir.
+func writeVMFiles(tmpDir string, key []byte) error {
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, d := range []string{"vm", filepath.Join("vm", "docker")} {
+		if err := root.Mkdir(d, 0o700); err != nil {
+			return err
+		}
+	}
+	f, err := root.OpenFile(filepath.Join("vm", "agent_key"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("agent key copy: %w", err)
+	}
+	if _, err := f.Write(key); err != nil {
+		f.Close()
+		return fmt.Errorf("agent key copy: %w", err)
+	}
+	return f.Close()
 }
 
 // vmProfileMisuse returns why plan cannot carry a --vm session, or "".
