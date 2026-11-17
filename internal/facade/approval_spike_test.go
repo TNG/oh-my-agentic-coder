@@ -1,18 +1,16 @@
 package facade
 
-// Characterization of the facade as the approval gate (#428) will find it:
-// what the sidecar receives today, whether a request held before forwarding
-// still streams, and whether a client disconnect is visible while held.
+// Facade behaviour the approval gate relies on: what the sidecar receives,
+// whether a request held before forwarding still streams, and whether a
+// client disconnect is visible while a request is held.
 
 import (
 	"bufio"
-	"context"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -139,48 +137,29 @@ func TestSpike_ChunkedUploadIsNotBuffered(t *testing.T) {
 	}
 }
 
-// Whether the request context ends when the client goes away while the
-// handler is held, for a GET and for a POST whose body was not read.
+// A request held for a dialog must see the client go away, so the dialog can
+// be dropped instead of waiting for its timeout.
 func TestSpike_ClientDisconnectWhileHeld(t *testing.T) {
-	var mu sync.Mutex
-	ended := map[string]time.Duration{}
+	started := make(chan struct{})
+	ended := make(chan struct{})
 	addr := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+		close(started)
 		select {
 		case <-r.Context().Done():
-			mu.Lock()
-			ended[r.Method] = time.Since(start)
-			mu.Unlock()
-		case <-time.After(1500 * time.Millisecond):
+			close(ended)
+		case <-time.After(5 * time.Second):
 		}
 	}))
-	for _, c := range []struct{ method, body string }{
-		{"GET", ""},
-		{"POST", "Content-Length: 1000\r\n"},
-	} {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		io.WriteString(conn, c.method+" /x HTTP/1.1\r\nHost: x\r\n"+c.body+"\r\n")
-		if c.method == "POST" {
-			io.WriteString(conn, "partial") // body never completes
-		}
-		time.Sleep(200 * time.Millisecond)
-		conn.Close()
-		time.Sleep(1700 * time.Millisecond)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	for _, m := range []string{"GET", "POST"} {
-		if d, ok := ended[m]; ok {
-			t.Logf("%s: context ended %v after the handler started (client left at 200ms)", m, d)
-		} else {
-			t.Logf("%s: context did NOT end; handler held to its timeout", m)
-		}
-	}
-	if _, ok := ended["GET"]; !ok {
+	io.WriteString(conn, "GET /x HTTP/1.1\r\nHost: x\r\n\r\n")
+	<-started
+	conn.Close()
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
 		t.Error("a held GET does not see the client disconnect")
 	}
-	_ = context.Background
 }
