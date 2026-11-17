@@ -213,7 +213,7 @@ omac cache clear --all  # remove all caches not currently in use
 The omac VM is one long-lived Linux virtual machine per computer, which omac creates and manages with [Lima](https://lima-vm.io). Docker runs inside it. The VM sees none of your host files and has no network access, except while `omac vm up` or `omac vm up --reprovision` sets it up and while it is online.
 
 ```bash
-omac vm up                     # create and provision once, then switch offline (needs network once)
+omac vm up                     # create, provision and switch offline (needs network once); later: start the VM in its last mode
 omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
