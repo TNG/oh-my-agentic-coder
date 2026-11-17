@@ -65,7 +65,8 @@ configuration. Then give the human one `omac vm image add <image>` line per
 image, with the full name and tag. Testcontainers also starts its own helper image
 `testcontainers/ryuk:<version>`; the version depends on the Testcontainers
 library, and a failed test names the exact tag. Images that need a registry
-login work if `docker login` was done on the host.
+login work if `docker login` was done on the host. The host pulls with that
+login, so the human should check each image name before importing it.
 
 ## 6. Prime the build caches
 
@@ -73,10 +74,13 @@ Builds run with `--offline` in the VM, so their dependencies must be
 downloaded once while the VM is online. No session may be attached, because
 omac refuses `omac vm online` while one is.
 
-The priming build runs the worktree as it is now, online and with the
-token, including what an agent changed. Before priming, the human should
-review `git status` and `git diff`, above all build scripts, the Gradle
-wrapper properties and settings files, or prime from a commit they trust.
+The priming build runs the VM's copy of the project online and with the
+token. That copy can hold files an agent wrote only in the VM, or deleted on
+the host after they were copied, so `git status` on the host does not show
+everything. Prime from a fresh clone of a commit the human trusts, in a
+folder no session has used: the VM keeps a separate copy for each folder.
+Files a session left in the VM user's home, such as a Gradle init script, go
+away only with `omac vm reset`.
 
 ```sh
 omac vm online
@@ -86,25 +90,27 @@ omac vm offline
 
 - If the build fails, still run `omac vm offline`: omac refuses `--vm`
   sessions while the VM is online.
-- Run it from the project directory. `--cwd` is the module with the build,
+- Run it from the fresh clone. `--cwd` is the module with the build,
   relative to the current directory.
 - Use the task that runs all checks (`check` or the project's own), not only
   `test`: Gradle downloads the tools behind tasks such as Checkstyle or
   Spotless only when those tasks run.
 - `--env NAME` passes a token from the host's shell. Leave it out if the
   downloads need none. Use a short-lived, read-only token, because anything
-  a session left behind in the VM runs online with it. `--no-daemon` makes sure no
-  Gradle daemon keeps the token afterwards.
+  a session left behind in the VM runs online with it. `--no-daemon` makes
+  sure no Gradle daemon keeps the token afterwards.
 
 ## 7. Sandbox grants
 
-The session must be able to read `~/.gitconfig`, otherwise `omac vm exec`
-fails at `git rev-parse`. The default grants allow it. If the human edited the
-sandbox grants file `~/.config/omac/sandbox-profiles/default.json`,
-`filesystem.read` must list `~/.gitconfig`, its symlink target if it is a
-symlink, and every file it `[include]`s. The agent can read every file
-granted this way, so move tokens out of them first, for example a token in
-a `url.<base>.insteadOf` URL.
+The session must be able to read `~/.gitconfig` and every file it includes
+(`[include]`, `[includeIf]`), otherwise `omac vm exec` fails at
+`git rev-parse` with an error that names the file. The default grants cover
+`~/.gitconfig` only. If it is a symlink or includes other files, the human
+adds the symlink target and every included file to `filesystem.read` in the
+sandbox grants file `~/.config/omac/sandbox-profiles/default.json`. The
+agent can read every granted file, so tokens must be moved out of them
+first, for example a token in a `url.<base>.insteadOf` URL, an
+`http.<url>.extraHeader` or an inline credential helper.
 
 ## 8. Start a session with the VM
 
@@ -114,13 +120,13 @@ omac start --vm
 
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
 refuses `--vm` while the VM is online, with `--no-sandbox`, with
-`omac serve --no-inner`, and with launcher
-profiles that use a sandbox other than omac's own. Once the human has started
+`omac serve --no-inner`, and with launcher profiles that use a sandbox other
+than omac's own. Once the human has started
 the session, offer to check the connection with `omac vm exec -- true`.
 
 ## 9. Day-to-day
 
-- New dependency in the build: end the session and prime again (step 6).
+- New dependency in the build: end the session and prime again, see "Prime the build caches" above.
 - New image: `omac vm image add <image>`; this works while sessions run.
 - New JDK or package: add it to `vm.yaml`, end the session, run
   `omac vm up --reprovision`.

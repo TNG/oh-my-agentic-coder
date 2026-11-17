@@ -103,8 +103,9 @@ instead.
   or `No cached version ... available for offline mode`. Do not drop
   `--offline`. Ask the human to prime the VM from the host, as described in
   "Prime the build caches" in [setup.md](setup.md). omac refuses `omac vm online` while a
-  session is attached, so they end this session first. Tell them which build
-  files you changed: priming runs your changes online with their token.
+  session is attached, so they end this session first. Priming runs the
+  VM's copy of the project online with their token; that section says how
+  to prime from a clean copy.
 - **A JDK or system package is missing.** Gradle reports `No matching
   toolchains found` or `Cannot find a Java installation`, or a command is
   not found. Name it, for example
@@ -112,6 +113,6 @@ instead.
   `~/.config/omac/vm.yaml`, end this session and run
   `omac vm up --reprovision` on the host.
 - **`omac vm exec` fails at `git rev-parse` with an error about
-  `~/.gitconfig`.** The session cannot read `~/.gitconfig`, so every git
-  command in it fails. Ask the human to grant it as described in "Sandbox
+  `~/.gitconfig` or a file it includes.** The session cannot read that
+  file, so every git command in it fails. Ask the human to grant it as described in "Sandbox
   grants" in [setup.md](setup.md), then restart the session.
