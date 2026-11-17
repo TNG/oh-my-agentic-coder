@@ -141,6 +141,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
 		return launchOpts{}, ExitMisuse
 	}
+	if err := checkVMNameAfterSpace(ourArgs); err != nil {
+		fmt.Fprintf(env.Stderr, "omac %s: %v\n", cmdName, err)
+		return launchOpts{}, ExitMisuse
+	}
 	if code, ok := parseWithHarnessArgsHint(fs, cmdName, ourArgs, env); !ok {
 		return launchOpts{}, code
 	}

@@ -162,6 +162,18 @@ func (f *vmFlag) Set(s string) error {
 	return nil
 }
 
+// checkVMNameAfterSpace refuses `--vm <name>`: the flag would attach to
+// another VM than <name> and pass <name> to the harness. args are the
+// arguments before "--".
+func checkVMNameAfterSpace(args []string) error {
+	for i := 0; i+1 < len(args); i++ {
+		if (args[i] == "--vm" || args[i] == "-vm") && !isFlag(args[i+1]) && vm.ValidateName(args[i+1]) == nil {
+			return fmt.Errorf("--vm takes a VM name only with '=': write --vm=%s, or put harness arguments after --", args[i+1])
+		}
+	}
+	return nil
+}
+
 const vmFlagUsage = "Attach to an omac VM, --vm[=<name>]: its SSH port is opened for the sandbox, so 'omac vm exec' runs Docker, Gradle and tests there. Without a name, the VM that vm-projects.yaml assigns to the project, else 'omac'. Requires 'omac vm up' and offline mode."
 
 // vmSelection is the VM a session attaches to and why.

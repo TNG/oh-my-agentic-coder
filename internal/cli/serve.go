@@ -113,6 +113,10 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve:", err)
 		return serveParse{}, false
 	}
+	if err := checkVMNameAfterSpace(ourArgs); err != nil {
+		fmt.Fprintln(env.Stderr, "omac serve:", err)
+		return serveParse{}, false
+	}
 	if _, ok := parseWithHarnessArgsHint(fs, "serve", ourArgs, env); !ok {
 		return serveParse{}, false
 	}

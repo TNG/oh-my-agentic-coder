@@ -99,6 +99,42 @@ func TestVMFlagForms(t *testing.T) {
 	}
 }
 
+// --vm=true and --vm=false are the bool forms, so a VM with such a name
+// could be created but never selected.
+func TestVMFlagWordsAreNoVMNames(t *testing.T) {
+	for _, word := range []string{"true", "false"} {
+		var f vmFlag
+		if err := f.Set(word); err != nil || f.name != "" {
+			t.Fatalf("Set(%q) = %v, name %q; want the bool form", word, err, f.name)
+		}
+		if vm.ValidateName(word) == nil {
+			t.Errorf("ValidateName(%q) accepts a word --vm reads as a bool", word)
+		}
+	}
+}
+
+// A bool-style flag cannot take the next token, so `--vm acme` would attach
+// to the mapped or default VM and hand "acme" to the harness.
+func TestVMFlagRefusesNameAfterSpace(t *testing.T) {
+	for _, args := range [][]string{{"--vm", "acme"}, {"-vm", "acme", "--verbose"}} {
+		env, _, stderr := vmTestEnv(t)
+		if _, code := parseLaunchArgs("start", args, env); code != ExitMisuse {
+			t.Errorf("start %v: code = %d, want %d", args, code, ExitMisuse)
+		}
+		if !strings.Contains(stderr(), "--vm=acme") {
+			t.Errorf("start %v: stderr lacks the --vm=acme advice:\n%s", args, stderr())
+		}
+		if _, ok := parseServeArgs(args, devnullEnv(t)); ok {
+			t.Errorf("serve %v: accepted", args)
+		}
+	}
+	for _, args := range [][]string{{"--vm", "--", "acme"}, {"--vm", "Not_A_Name"}} {
+		if _, code := parseLaunchArgs("start", args, devnullEnv(t)); code != ExitOK {
+			t.Errorf("start %v: code = %d, want ok", args, code)
+		}
+	}
+}
+
 func TestVMFlagKeepsLaterFlags(t *testing.T) {
 	opts, code := parseLaunchArgs("start", []string{"--vm", "--verbose"}, devnullEnv(t))
 	if code != ExitOK || !opts.vm || !opts.verbose {
