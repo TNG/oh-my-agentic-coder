@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 )
@@ -218,8 +219,6 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 	}
 }
 
-// DialogText is built only from what omac observed and declared; the
-// description is the skill author's one sentence and is shown as such.
 // ruleKind is what an answer is stored under besides the rule text: a
 // declared entry ("required"), or an exact unlisted route ("unlisted"). An
 // answer for one is never read as an answer for the other.
@@ -230,24 +229,30 @@ func ruleKind(r facade.ApprovalRequest) string {
 	return "required"
 }
 
+// DialogText is built only from what omac observed and declared; the
+// description is the skill author's one sentence and is shown as such.
+// Every value stays on its own line: the agent's method, path and query are
+// shown as printable ASCII, and the skill's text has its line breaks
+// flattened. Otherwise either could add a line that looks like omac's, such
+// as a second "Declared:" or "Covers:".
 func DialogText(r facade.ApprovalRequest) string {
 	var b strings.Builder
 	b.WriteString("The sandboxed agent wants a skill's sidecar to do this:\n\n")
-	fmt.Fprintf(&b, "    Skill:    %s\n", clip(r.Skill, 80))
-	fmt.Fprintf(&b, "    Request:  %s %s\n", clip(r.Method, 16), clip(r.Path, 160))
-	if q := MaskQuery(r.RawQuery); q != "" {
+	fmt.Fprintf(&b, "    Skill:    %s\n", oneLine(clip(r.Skill, 80)))
+	fmt.Fprintf(&b, "    Request:  %s %s\n", clip(printableASCII(r.Method), 16), clip(printableASCII(r.Path), 160))
+	if q := MaskQuery(printableASCII(r.RawQuery)); q != "" {
 		fmt.Fprintf(&b, "    Query:    %s\n", q)
 	}
 	switch {
 	case r.Unlisted:
 		b.WriteString("    Declared: no, the skill does not list this route\n")
 	case r.Description != "":
-		fmt.Fprintf(&b, "    Declared: %s\n", clip(r.Description, 200))
+		fmt.Fprintf(&b, "    Declared: %s\n", oneLine(clip(r.Description, 200)))
 	}
 	if !r.Unlisted && r.Match != r.Method+" "+r.Path {
 		// "for the session" and "always" cover the whole declared entry,
 		// not just the request above.
-		fmt.Fprintf(&b, "    Covers:   %s\n", clip(r.Match, 160))
+		fmt.Fprintf(&b, "    Covers:   %s\n", oneLine(clip(r.Match, 160)))
 	}
 	b.WriteString("    Body:     not shown\n\n")
 	b.WriteString("Allow it?")
@@ -286,6 +291,32 @@ func credentialLike(key string) bool {
 		}
 	}
 	return false
+}
+
+// printableASCII percent-escapes every byte outside "!" to "~", so text the
+// agent chose has no spaces, line breaks or look-alike characters:
+// "x=1\u3000Declared:" becomes "x=1%E3%80%80Declared:".
+func printableASCII(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c > ' ' && c < 0x7f {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// oneLine replaces line breaks, other whitespace, control and format
+// characters with a plain space.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func clip(s string, n int) string {

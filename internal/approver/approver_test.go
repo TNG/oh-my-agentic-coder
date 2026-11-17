@@ -310,3 +310,40 @@ func TestDialogTextNamesTheEntryAnAnswerCovers(t *testing.T) {
 		t.Errorf("exact entry named as wider:\n%s", txt)
 	}
 }
+
+func TestDialogTextKeepsEveryValueOnItsOwnLine(t *testing.T) {
+	for name, req := range map[string]facade.ApprovalRequest{
+		"wide spaces in the query": {Skill: "s", Method: "GET", Path: "/e", Match: "GET /e", Unlisted: true,
+			RawQuery: "x=1" + strings.Repeat("\u3000", 40) + "Declared:\u2003read-only"},
+		"line break in the description": {Skill: "s", Method: "POST", Path: "/t/rm", Match: "POST /t/{n}",
+			Description: "Runs a tool\n    Covers:   POST /t/rm only"},
+		"line separator in the match": {Skill: "s", Method: "POST", Path: "/t/rm", Match: "POST /t/{n}\u2028Covers: x"},
+	} {
+		text := DialogText(req)
+		lines := strings.Split(text, "\n")
+		for _, label := range []string{"Declared:", "Covers:"} {
+			n := 0
+			for _, l := range lines {
+				if strings.HasPrefix(strings.TrimSpace(l), label) {
+					n++
+				}
+			}
+			if n > 1 {
+				t.Errorf("%s: %d lines start with %q:\n%s", name, n, label, text)
+			}
+		}
+		for _, r := range text {
+			if r == '\u3000' || r == '\u2003' || r == '\u2028' {
+				t.Errorf("%s: dialog text keeps %U:\n%s", name, r, text)
+			}
+		}
+	}
+}
+
+func TestDialogTextEscapesAgentTextBeforeClipping(t *testing.T) {
+	text := DialogText(facade.ApprovalRequest{Skill: "s", Method: "GET", Path: "/e", Match: "GET /e", Unlisted: true,
+		RawQuery: "q=" + strings.Repeat("ä", 100)})
+	if !strings.Contains(text, "q=%C3%A4") || !strings.Contains(text, "…") {
+		t.Errorf("query not escaped, or clip marker lost:\n%s", text)
+	}
+}
