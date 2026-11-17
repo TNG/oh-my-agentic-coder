@@ -30,8 +30,12 @@ const DefaultVMName = "omac"
 var vmNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,15}$`)
 
 // ValidateName accepts the names a VM may have: a lowercase letter, then up
-// to 15 lowercase letters, digits or hyphens.
+// to 15 lowercase letters, digits or hyphens. "true" and "false" are
+// reserved, because `--vm=true` and `--vm=false` switch the flag on and off.
 func ValidateName(name string) error {
+	if name == "true" || name == "false" {
+		return fmt.Errorf("invalid VM name %q: true and false are reserved", name)
+	}
 	if !vmNameRE.MatchString(name) {
 		return fmt.Errorf("invalid VM name %q: use a lowercase letter, then up to 15 lowercase letters, digits or '-'", name)
 	}
