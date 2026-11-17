@@ -141,7 +141,7 @@ func (m *Manager) rootTarget(st *State) SSHTarget {
 
 // Up creates, provisions and starts the VM, ending offline with the
 // firewall verified. With reprovision, an existing VM reinstalls its
-// packages from vm.yaml. A VM whose state says online is left online
+// packages and JDKs from vm.yaml. A VM whose state says online is left online
 // unless its provisioning never finished; see upOnline.
 func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if _, err := FindLimactl(m.Deps.LookPath); err != nil {
@@ -155,7 +155,6 @@ func (m *Manager) Up(ctx context.Context, reprovision bool) error {
 	if err != nil {
 		return err
 	}
-	// The guest installs vm.yaml packages and JDK packages in one apt run.
 	aptPkgs := append(slices.Clone(cfg.Packages), jdkPkgs...)
 	res := ResolveResources(cfg, m.Deps.Host)
 	if err := EnsureKeys(ctx, m.Layout, m.Deps.Run); err != nil {

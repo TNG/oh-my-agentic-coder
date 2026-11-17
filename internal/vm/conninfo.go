@@ -90,7 +90,7 @@ func ConnFromState(l Layout, hostUser string) (ConnInfo, error) {
 }
 
 // ResolveConn prefers the session environment and falls back to the state
-// directory only when no OMAC_VM_* connection is exported.
+// directory only when OMAC_VM_SSH_PORT is unset.
 func ResolveConn(getenv func(string) string, l Layout, hostUser string) (ConnInfo, error) {
 	if ci, ok, err := ConnFromEnv(getenv); ok {
 		return ci, err

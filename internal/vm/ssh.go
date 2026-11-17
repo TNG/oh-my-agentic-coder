@@ -35,7 +35,8 @@ func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stder
 }
 
 // SSHArgs are the ssh options shared by every connection: only the given
-// key, a dedicated known_hosts file, and no interactive prompts.
+// key, a dedicated known_hosts file, and no interactive prompts; plus -t
+// when t.TTY is set.
 func SSHArgs(t SSHTarget) []string {
 	args := []string{
 		"-i", t.KeyPath,

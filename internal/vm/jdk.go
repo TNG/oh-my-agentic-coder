@@ -6,8 +6,6 @@ import (
 	"slices"
 )
 
-// jdkPattern matches the vm.yaml jdk names: "temurin-25" or the apt
-// package name "temurin-25-jdk".
 var jdkPattern = regexp.MustCompile(`^temurin-([1-9][0-9]{0,2})(-jdk)?$`)
 
 // JDKPackages maps vm.yaml jdk names to the apt packages from the Adoptium

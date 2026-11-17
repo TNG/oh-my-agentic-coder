@@ -175,9 +175,9 @@ func WriteExcludeFile(dir string, ignored []string) (string, error) {
 	return path, nil
 }
 
-// RsyncArgs copies workdir's contents into remoteDir in the VM. It never
-// deletes on the remote side, and the flags work with both Apple's
-// openrsync and rsync 3.x.
+// RsyncArgs are the rsync arguments that copy workdir's contents into
+// remoteDir in the VM. They never delete on the remote side and work with
+// both Apple's openrsync and rsync 3.x.
 func RsyncArgs(workdir, excludeFile string, t SSHTarget, remoteDir string) []string {
 	t.TTY = false // a terminal would garble rsync's protocol stream
 	return []string{
@@ -206,7 +206,9 @@ func ValidateCwd(cwd string) error {
 }
 
 // RemoteCommand is the shell line that runs cmd in remoteDir/cwd with envs
-// ("NAME=VALUE") set. Every user-controlled part is single-quoted.
+// ("NAME=VALUE") set. The directory and the values are single-quoted,
+// command words are quoted where needed, and names must be shell
+// identifiers.
 func RemoteCommand(remoteDir, cwd string, envs []string, cmd []string) (string, error) {
 	if len(cmd) == 0 {
 		return "", errors.New("omac vm exec: no command given")
