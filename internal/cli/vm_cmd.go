@@ -55,22 +55,22 @@ func runVM(args []string, env *Env) int {
 			reprovision = true
 		}
 		op = func(ctx context.Context, m vmManager, _ *Env) error { return m.Up(ctx, reprovision) }
-	case "down", "reset", "status", "online", "offline":
-		if len(rest) > 0 {
-			return vmMisuse(env, fmt.Sprintf("%s takes no arguments", verb))
-		}
-		op = vmNoArgOp(verb)
 	case "image":
 		var code int
 		if op, code = parseVMImage(rest, env); op == nil {
 			return code
 		}
-	// "exec" is reserved for the next PR (run a command against the VM's Docker).
 	case "help", "-h", "--help":
 		printVMUsage(env)
 		return ExitOK
 	default:
-		return vmMisuse(env, fmt.Sprintf("unknown verb %q", verb))
+		var known bool
+		if op, known = vmNoArgOps[verb]; !known {
+			return vmMisuse(env, fmt.Sprintf("unknown verb %q", verb))
+		}
+		if len(rest) > 0 {
+			return vmMisuse(env, fmt.Sprintf("%s takes no arguments", verb))
+		}
 	}
 
 	// Errors print as returned: most Manager errors already start with
@@ -85,31 +85,26 @@ func runVM(args []string, env *Env) int {
 	if err := op(ctx, m, env); err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		if errors.Is(err, vm.ErrLimaMissing) {
-			fmt.Fprintln(env.Stderr, "omac vm: install Lima first, e.g. `brew install lima`")
+			fmt.Fprintln(env.Stderr, "omac vm: install Lima first, see https://lima-vm.io/docs/installation/")
 		}
 		return vmExitCode(err)
 	}
 	return ExitOK
 }
 
-func vmNoArgOp(verb string) vmOp {
-	switch verb {
-	case "down":
-		return func(ctx context.Context, m vmManager, _ *Env) error { return m.Down(ctx) }
-	case "reset":
-		return func(ctx context.Context, m vmManager, _ *Env) error { return m.Reset(ctx) }
-	case "status":
-		return func(ctx context.Context, m vmManager, env *Env) error {
-			r, err := m.Status(ctx)
-			if err != nil {
-				return err
-			}
-			r.Write(env.Stdout)
-			return nil
+var vmNoArgOps = map[string]vmOp{
+	"down":  func(ctx context.Context, m vmManager, _ *Env) error { return m.Down(ctx) },
+	"reset": func(ctx context.Context, m vmManager, _ *Env) error { return m.Reset(ctx) },
+	"status": func(ctx context.Context, m vmManager, env *Env) error {
+		r, err := m.Status(ctx)
+		if err != nil {
+			return err
 		}
-	default: // online, offline
-		return func(ctx context.Context, m vmManager, _ *Env) error { return m.SetMode(ctx, verb) }
-	}
+		r.Write(env.Stdout)
+		return nil
+	},
+	"online":  func(ctx context.Context, m vmManager, _ *Env) error { return m.SetMode(ctx, vm.ModeOnline) },
+	"offline": func(ctx context.Context, m vmManager, _ *Env) error { return m.SetMode(ctx, vm.ModeOffline) },
 }
 
 // parseVMImage validates `omac vm image …`; a nil op comes with the exit code.
@@ -173,7 +168,8 @@ func printVMUsage(env *Env) {
 	fmt.Fprintln(env.Stderr, `omac vm — persistent Lima VM that runs Docker for omac sessions
 
 Usage:
-  omac vm up [--reprovision]   Create or start the VM offline; --reprovision reinstalls the packages from vm.yaml.
+  omac vm up [--reprovision]   Create or start the VM. A new VM ends offline; a VM switched online stays online.
+                               --reprovision reinstalls the packages from vm.yaml, then switches offline.
   omac vm down                 Stop the VM.
   omac vm reset                Delete the VM with all its host-side state and create it anew.
   omac vm status               Show whether the VM runs, its mode, ports, resources, images and sessions.

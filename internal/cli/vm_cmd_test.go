@@ -13,7 +13,9 @@ import (
 )
 
 // fakeVMManager records every call; err (if set) is returned by all methods.
+// built counts how often useFakeVM's factory handed it out.
 type fakeVMManager struct {
+	built  int
 	calls  []string
 	err    error
 	report vm.StatusReport
@@ -50,7 +52,7 @@ func (f *fakeVMManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 func useFakeVM(t *testing.T, fake *fakeVMManager) {
 	t.Helper()
 	orig := newVMManager
-	newVMManager = func(*Env) (vmManager, error) { return fake, nil }
+	newVMManager = func(*Env) (vmManager, error) { fake.built++; return fake, nil }
 	t.Cleanup(func() { newVMManager = orig })
 }
 
@@ -150,6 +152,7 @@ func TestVMMisuse(t *testing.T) {
 		{"image", "add"},
 		{"image", "add", "a", "b"},
 		{"image", "rm"},
+		{"image", "rm", "a", "b"},
 		{"image", "list", "extra"},
 		{"image", "bogus"},
 		{"bogus"},
@@ -158,12 +161,15 @@ func TestVMMisuse(t *testing.T) {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			fake := &fakeVMManager{}
 			useFakeVM(t, fake)
-			env, _, _ := vmTestEnv(t)
+			env, _, stderr := vmTestEnv(t)
 			if code := runVM(args, env); code != ExitMisuse {
 				t.Fatalf("exit = %d, want %d", code, ExitMisuse)
 			}
-			if len(fake.calls) != 0 {
-				t.Fatalf("calls = %v, want none", fake.calls)
+			if fake.built != 0 {
+				t.Fatalf("manager built %d times, want 0: misuse must be caught before the VM is touched", fake.built)
+			}
+			if out := stderr(); !strings.Contains(out, "omac vm: ") || !strings.Contains(out, "Usage:") {
+				t.Fatalf("stderr lacks the error line or usage:\n%s", out)
 			}
 		})
 	}
@@ -202,7 +208,7 @@ func TestVMErrorMapping(t *testing.T) {
 		want       int
 		wantStderr string
 	}{
-		{fmt.Errorf("%w: exec: not found", vm.ErrLimaMissing), ExitPrerequisiteMissing, "brew install lima"},
+		{fmt.Errorf("%w: exec: not found", vm.ErrLimaMissing), ExitPrerequisiteMissing, "lima-vm.io/docs/installation"},
 		{vm.ErrNotCreated, ExitMisuse, "omac vm up"},
 		{vm.ErrNotRunning, ExitMisuse, "not running"},
 		{vm.ErrOnline, ExitMisuse, "omac vm offline"},
