@@ -63,7 +63,7 @@ func LoadUserConfig(path string) (UserConfig, error) {
 		return UserConfig{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if cfg.CPUs < 0 {
-		return UserConfig{}, fmt.Errorf("%s: cpus must be positive, got %d", path, cfg.CPUs)
+		return UserConfig{}, fmt.Errorf("validate %s: cpus must not be negative, got %d", path, cfg.CPUs)
 	}
 	return cfg, nil
 }
