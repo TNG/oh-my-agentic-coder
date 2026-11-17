@@ -25,8 +25,9 @@ func ExecRunner(ctx context.Context, name string, args []string, stdin io.Reader
 }
 
 // EnsureKeys creates the state directory with mode 0700 and generates the
-// admin and agent ed25519 key pairs with ssh-keygen. A key whose private
-// file already exists is left alone.
+// admin and agent ed25519 key pairs with ssh-keygen. A pair is left alone only
+// when both its private key and its .pub file exist; a half-written pair is
+// removed and generated again.
 func EnsureKeys(ctx context.Context, l Layout, run CommandRunner) error {
 	if err := os.MkdirAll(l.Root, 0o700); err != nil {
 		return fmt.Errorf("omac vm: create %s: %w", l.Root, err)

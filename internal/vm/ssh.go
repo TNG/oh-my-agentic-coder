@@ -21,6 +21,8 @@ type SSHRunner func(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, s
 
 // DefaultSSH runs the ssh binary found on $PATH.
 func DefaultSSH(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, stderr io.Writer, remote string) error {
+	// OpenSSH reparses options after the destination; "--" protects remote
+	// commands starting with "-". See TestDashDashAfterDestinationEndsOptionParsing.
 	args := append(SSHArgs(t), t.User+"@127.0.0.1", "--", remote)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.Stdin = stdin

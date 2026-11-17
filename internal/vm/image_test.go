@@ -178,3 +178,15 @@ func TestCranePullMissingTagLeavesNoFile(t *testing.T) {
 		t.Errorf("files left behind after failed pull: %v", entries)
 	}
 }
+
+func TestCranePullRejectsDigestBeforePulling(t *testing.T) {
+	ref := "127.0.0.1:1/img@sha256:" + strings.Repeat("a", 64)
+	tarPath := filepath.Join(t.TempDir(), "img.tar")
+	err := CranePull(context.Background(), ref, tarPath)
+	if err == nil || !strings.Contains(err.Error(), "use a tag") {
+		t.Fatalf("CranePull(%q) = %v, want an error asking for a tag", ref, err)
+	}
+	if _, statErr := os.Stat(tarPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("tar path exists after a rejected reference (stat err = %v)", statErr)
+	}
+}
