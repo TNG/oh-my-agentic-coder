@@ -84,6 +84,16 @@ func TestSaveStateCreatesPrivateDirAndFile(t *testing.T) {
 	}
 }
 
+func TestLoadStateRejectsNewerVersion(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(p, []byte(`{"version": 99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadState(p); err == nil {
+		t.Error("state.json from a newer omac accepted")
+	}
+}
+
 func TestLoadStateRejectsCorruptJSON(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {

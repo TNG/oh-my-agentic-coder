@@ -46,6 +46,9 @@ func LoadState(path string) (*State, error) {
 	if st.Version == 0 {
 		st.Version = StateVersion
 	}
+	if st.Version > StateVersion {
+		return nil, fmt.Errorf("omac vm: %s has version %d, this omac knows up to %d; update omac", path, st.Version, StateVersion)
+	}
 	return &st, nil
 }
 

@@ -46,7 +46,8 @@ type LimaInputs struct {
 var (
 	agentUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	packagePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+-]*$`)
-	sizePattern      = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[A-Za-z]*$`)
+	// Lima reads a bare number as bytes, so a unit is required.
+	sizePattern = regexp.MustCompile(`(?i)^[0-9]+(\.[0-9]+)?[kmgtp]i?b?$`)
 )
 
 // RenderLimaConfig returns the Lima YAML for the omac VM. Values that end up

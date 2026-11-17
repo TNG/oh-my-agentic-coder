@@ -62,6 +62,9 @@ func LoadUserConfig(path string) (UserConfig, error) {
 	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return UserConfig{}, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if cfg.CPUs < 0 {
+		return UserConfig{}, fmt.Errorf("%s: cpus must be positive, got %d", path, cfg.CPUs)
+	}
 	return cfg, nil
 }
 

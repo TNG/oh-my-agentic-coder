@@ -320,6 +320,8 @@ func TestRenderLimaConfigValidation(t *testing.T) {
 		"cpus zero":               func(in *LimaInputs) { in.Resources.CPUs = 0 },
 		"memory with yaml escape": func(in *LimaInputs) { in.Resources.Memory = "8GiB\nmounts: [{location: ~}]" },
 		"empty disk":              func(in *LimaInputs) { in.Resources.Disk = "" },
+		"memory without unit":     func(in *LimaInputs) { in.Resources.Memory = "8" },
+		"disk with unknown unit":  func(in *LimaInputs) { in.Resources.Disk = "60GiBx" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

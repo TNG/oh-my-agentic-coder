@@ -38,6 +38,14 @@ func TestLoadUserConfigRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestLoadUserConfigRejectsNegativeCPUs(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "vm.yaml")
+	os.WriteFile(p, []byte("cpus: -2\n"), 0o600)
+	if _, err := LoadUserConfig(p); err == nil {
+		t.Error("negative cpus accepted")
+	}
+}
+
 func TestResolveResourcesDefaults(t *testing.T) {
 	gib := uint64(1) << 30
 	cases := []struct {
