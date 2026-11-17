@@ -306,10 +306,34 @@ func (m *Manager) create(ctx context.Context, st *State, cfg UserConfig, aptPkgs
 }
 
 // setupCmd reads the setup script from stdin, so its content never passes
-// through a shell command line.
-const setupCmd = "bash -s"
+// through a shell command line. The provisioned marker is absent while the
+// script runs, so a setup that fails or is interrupted provisions again on
+// the next `omac vm up`.
+const setupCmd = "rm -f " + ProvisionedMarker + " && bash -s && touch " + ProvisionedMarker
 
 const maxSetupOutput = 4096
+
+// tailWriter keeps about the last maxSetupOutput bytes written to it.
+type tailWriter struct {
+	b       []byte
+	dropped bool
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.b = append(w.b, p...)
+	if len(w.b) > 2*maxSetupOutput {
+		w.b = append(w.b[:0], w.b[len(w.b)-maxSetupOutput:]...)
+		w.dropped = true
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string {
+	if w.dropped {
+		return capOutput("…" + string(w.b))
+	}
+	return string(w.b)
+}
 
 // capOutput keeps the end of s, where a failing script says why.
 func capOutput(s string) string {
@@ -323,21 +347,20 @@ func capOutput(s string) string {
 	return "…" + s[cut:]
 }
 
-// runSetup runs the user's setup script as root. On failure it removes the
-// provisioned marker, so the next `omac vm up` provisions again, and
-// returns the script's output.
+// runSetup runs the user's setup script as root. On failure it returns the
+// end of the script's output.
 func (m *Manager) runSetup(ctx context.Context, st *State, script string) error {
 	if strings.TrimSpace(script) == "" {
 		return nil
 	}
 	fmt.Fprintln(m.Out, "omac vm: running setup…")
-	var out bytes.Buffer
-	err := m.ssh(ctx, m.rootTarget(st), strings.NewReader(script), &out, setupCmd)
+	t := m.rootTarget(st)
+	m.Log("ssh %s@127.0.0.1 %s", t.User, setupCmd)
+	var out tailWriter
+	err := m.Deps.SSH(ctx, t, strings.NewReader(script), &out, &out, setupCmd)
 	if err == nil {
 		return nil
 	}
-	_ = m.ssh(ctx, m.rootTarget(st), nil, nil, "rm -f "+ProvisionedMarker)
-	// err already carries the script's stderr, so the cap covers both streams.
 	detail := err.Error()
 	if s := strings.TrimSpace(out.String()); s != "" {
 		detail = s + "\n" + detail

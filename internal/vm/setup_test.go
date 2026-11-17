@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -197,6 +198,41 @@ func TestSetupFailureWithHugeStderrYieldsCappedError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "apt error") || !strings.Contains(err.Error(), "omac vm up") {
 		t.Errorf("error lost the tail or the hint: %.200s", err)
+	}
+}
+
+// Ctrl-C during the script cancels ctx, so no cleanup command could run
+// afterwards; the marker must already be gone while the script runs.
+func TestInterruptedSetupLeavesNoMarker(t *testing.T) {
+	m, _, ssh := newTestManager(t)
+	writeConfig(t, m, "setup: |\n  sleep 600\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ssh.fail = func(remote string) error {
+		if remote == setupCmd {
+			cancel()
+			return errors.New("signal: killed")
+		}
+		return nil
+	}
+	if err := m.Up(ctx, false); err == nil {
+		t.Fatal("Up succeeded")
+	}
+	if _, g := ssh.snapshot(); g.provisioned {
+		t.Error("marker present after an interrupted setup; the next up would skip setup")
+	}
+}
+
+func TestSetupOutputKeepsOnlyTheEnd(t *testing.T) {
+	var w tailWriter
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&w, "line %d %s\n", i, strings.Repeat("x", 100))
+	}
+	if len(w.b) > 2*maxSetupOutput {
+		t.Errorf("kept %d bytes, want at most %d", len(w.b), 2*maxSetupOutput)
+	}
+	if got := w.String(); !strings.HasPrefix(got, "…") || !strings.Contains(got, "line 999 ") {
+		t.Errorf("output lost the end or the cut mark: %.80q", got)
 	}
 }
 

@@ -160,6 +160,10 @@ type fakeSSH struct {
 }
 
 func (f *fakeSSH) run(ctx context.Context, t SSHTarget, stdin io.Reader, stdout, _ io.Writer, remote string) error {
+	// exec.CommandContext refuses to start once ctx is done.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if f.lima != nil && f.lima.status() != StatusRunning {
 		return errors.New("exit status 255: ssh: connect to host 127.0.0.1: Connection refused")
 	}
@@ -175,17 +179,25 @@ func (f *fakeSSH) run(ctx context.Context, t SSHTarget, stdin io.Reader, stdout,
 	defer f.mu.Unlock()
 	_, hasDeadline := ctx.Deadline()
 	f.calls = append(f.calls, sshCall{t, remote, in, hasDeadline})
+	g := &f.guest
+	// A command that removes the marker first does so even when the rest of
+	// it fails.
+	if strings.HasPrefix(remote, "rm -f "+ProvisionedMarker+" && ") {
+		g.provisioned = false
+	}
 	if f.fail != nil {
 		if err := f.fail(remote); err != nil {
 			return err
 		}
 	}
-	g := &f.guest
 	if i := strings.Index(remote, " > "+PackagesFile); i >= 0 {
 		g.packages = strings.Trim(strings.TrimPrefix(remote[:i], `printf '%s\n' `), "'")
 	}
 	if strings.Contains(remote, "rm -f "+ProvisionedMarker) {
 		g.provisioned = false
+	}
+	if strings.HasSuffix(remote, " && touch "+ProvisionedMarker) {
+		g.provisioned = true
 	}
 	switch {
 	case strings.Contains(remote, writeModeCmd(ModeOnline)):
