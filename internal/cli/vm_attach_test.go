@@ -211,26 +211,36 @@ func TestVMSandboxEnv(t *testing.T) {
 	}
 }
 
-func TestVMSandboxEnvCopiesKnownHosts(t *testing.T) {
-	key := testAgentKey(t)
-	src := filepath.Join(filepath.Dir(key), "known_hosts")
-	if err := os.WriteFile(src, []byte("[127.0.0.1]:31022 ssh-ed25519 AAAA\n"), 0o644); err != nil {
-		t.Fatal(err)
+// The host's pinned known_hosts must end up where ssh inside the sandbox
+// looks for it, or the sandbox silently trusts the first key it sees.
+func TestVMSandboxEnvKnownHostsReachesSandboxSSH(t *testing.T) {
+	layout := vm.NewLayout(t.TempDir())
+	const pinned = "[127.0.0.1]:31022 ssh-ed25519 AAAA\n"
+	for path, content := range map[string]string{layout.AgentKey: "PRIVATE KEY\n", layout.KnownHosts: pinned} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	scope := t.TempDir()
-	if _, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: key}, scope); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(scope, "vm", "known_hosts")
-	st, err := os.Stat(dst)
+	vars, err := vmSandboxEnv(vm.AttachInfo{SSHPort: 31022, User: "alice", AgentKeyPath: layout.AgentKey}, t.TempDir())
 	if err != nil {
-		t.Fatalf("known_hosts copy: %v", err)
+		t.Fatal(err)
+	}
+	conn, ok, err := vm.ConnFromEnv(func(k string) string { return vars[k] })
+	if err != nil || !ok {
+		t.Fatalf("ConnFromEnv = %v, %v", ok, err)
+	}
+	st, err := os.Stat(conn.Target.KnownHosts)
+	if err != nil {
+		t.Fatalf("known_hosts where sandbox ssh reads it: %v", err)
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Errorf("known_hosts mode = %v, want 0600", st.Mode().Perm())
 	}
-	if b, _ := os.ReadFile(dst); string(b) != "[127.0.0.1]:31022 ssh-ed25519 AAAA\n" {
-		t.Errorf("known_hosts content = %q", b)
+	if b, _ := os.ReadFile(conn.Target.KnownHosts); string(b) != pinned {
+		t.Errorf("known_hosts content = %q, want %q", b, pinned)
 	}
 }
 
