@@ -40,24 +40,26 @@ func WorktreeSlug(absWorkdir string) string {
 	return base + "-" + hex.EncodeToString(sum[:4])
 }
 
-// rsyncPattern makes name match only itself as one line of an rsync
-// exclude file. rsync honors backslash escapes only in patterns that
-// contain a wildcard, so a name without one stays as is: "a\b" is literal,
-// "foo[1]" → `foo\[1\]`. A line cannot hold a line break, so "?" matches
-// it instead: "a\nb" → "a?b".
+// rsyncPattern turns name into one line of an rsync exclude file that
+// matches name literally. rsync honors backslash escapes only in patterns
+// that contain a wildcard, so a name without one stays as is: "a\b" is
+// literal, "foo[1]" → `foo\[1\]`. A line cannot hold a line break, so
+// "?" stands in for it and also matches names that have any other
+// character there: "a\nb" → "a?b".
 func rsyncPattern(name string) string {
 	if !strings.ContainsAny(name, "*?[\r\n") {
 		return name
 	}
 	var b strings.Builder
-	for _, r := range name {
+	for i := range len(name) { // bytes: file names need not be UTF-8
+		c := name[i]
 		switch {
-		case r == '\r' || r == '\n':
-			r = '?'
-		case strings.ContainsRune(`*?[]\`, r):
+		case c == '\r' || c == '\n':
+			c = '?'
+		case strings.IndexByte(`*?[]\`, c) >= 0:
 			b.WriteByte('\\')
 		}
-		b.WriteRune(r)
+		b.WriteByte(c)
 	}
 	return b.String()
 }

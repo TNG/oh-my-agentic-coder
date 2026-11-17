@@ -252,6 +252,9 @@ func TestWriteExcludeFileAnchorsIgnoredPaths(t *testing.T) {
 		{"brackets escaped", "foo[1]", `/foo\[1\]`},
 		{"wildcards and backslash escaped", `a*b?\c`, `/a\*b\?\\c`},
 		{"backslash kept without wildcard", `plain\name`, `/plain\name`},
+		{"line feed", "a\nb", "/a?b"},
+		{"carriage return", "a\rb[1]", `/a?b\[1\]`},
+		{"bytes that are not UTF-8", "out\xff[1]", "/out\xff\\[1\\]"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			lines := readExcludeFile(t, []string{c.ignored})
