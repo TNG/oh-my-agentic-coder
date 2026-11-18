@@ -1493,3 +1493,24 @@ func TestExecRejectsBadInputBeforeCopy(t *testing.T) {
 		})
 	}
 }
+
+// The omac-vm skill quotes these messages, so the agent can match them
+// against real output.
+func TestOmacVMSkillQuotesExecMessages(t *testing.T) {
+	text, err := os.ReadFile("../builtinskills/assets/omac-vm/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return nil }
+	untracked := refuseUntrackedPrefix(context.Background(), run, "<top>", "<dir>")
+	if untracked == nil {
+		t.Fatal("refuseUntrackedPrefix = nil, want the refusal")
+	}
+	for _, msg := range []string{untracked.Error(), connectionHint} {
+		quoted, _, _ := strings.Cut(strings.TrimPrefix(msg, "omac vm exec: "), ";")
+		quoted, _, _ = strings.Cut(quoted, " (")
+		if !strings.Contains(string(text), quoted) {
+			t.Errorf("SKILL.md does not quote %q", quoted)
+		}
+	}
+}
