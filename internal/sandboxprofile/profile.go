@@ -147,11 +147,11 @@ type Network struct {
 	AllowDomain []string `json:"allow_domain,omitempty"`
 	DenyDomain  []string `json:"deny_domain,omitempty"`
 	// ListenPort: TCP ports the child may bind/listen on; entries are
-	// ints or "A-B" range strings.
+	// ints, numeric strings, or "A-B" range strings.
 	ListenPort PortList `json:"listen_port,omitempty"`
 	// AllowTCPConnect: direct outbound TCP to ANY host on these ports
 	// (kernel cannot constrain the destination host). E.g. 22 for SSH.
-	// Entries are ints or "A-B" range strings.
+	// Entries are ints, numeric strings, or "A-B" range strings.
 	AllowTCPConnect PortList `json:"allow_tcp_connect,omitempty"`
 	// OpenPort: localhost TCP, both connect and bind (bridge port).
 	OpenPort []int `json:"open_port,omitempty"`
@@ -381,9 +381,12 @@ func (p *Profile) Validate() error {
 		ports []int
 		// open_port alone accepts the 0 sentinel.
 		allowZero bool
+		// capTotal applies to the range-accepting fields only: open_port
+		// is a plain integer list whose behavior must stay unchanged.
+		capTotal bool
 	}{
-		{name: "listen_port", ports: p.Network.ListenPort},
-		{name: "allow_tcp_connect", ports: p.Network.AllowTCPConnect},
+		{name: "listen_port", ports: p.Network.ListenPort, capTotal: true},
+		{name: "allow_tcp_connect", ports: p.Network.AllowTCPConnect, capTotal: true},
 		{name: "open_port", ports: p.Network.OpenPort, allowZero: true},
 	} {
 		for _, port := range group.ports {
@@ -394,7 +397,7 @@ func (p *Profile) Validate() error {
 				return fmt.Errorf("sandbox profile: network.%s contains invalid port %d", group.name, port)
 			}
 		}
-		if len(group.ports) > maxExpandedPorts {
+		if group.capTotal && len(group.ports) > maxExpandedPorts {
 			return fmt.Errorf("sandbox profile: network.%s expands to %d ports, above the %d-port limit", group.name, len(group.ports), maxExpandedPorts)
 		}
 	}

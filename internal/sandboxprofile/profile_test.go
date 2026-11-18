@@ -166,6 +166,11 @@ func TestParsePortRangeValidationErrors(t *testing.T) {
 			want:   []string{"network.listen_port", "expands to 1200 ports", "1000-port limit"},
 		},
 		{
+			name:   "allow_tcp_connect entries summing above the cap",
+			config: `{"network": {"allow_tcp_connect": ["1-600", "601-1200"]}}`,
+			want:   []string{"network.allow_tcp_connect", "expands to 1200 ports", "1000-port limit"},
+		},
+		{
 			name:   "single port above the field maximum",
 			config: `{"network": {"allow_tcp_connect": [70000]}}`,
 			want:   []string{"network.allow_tcp_connect", "invalid port 70000"},
@@ -797,6 +802,18 @@ func TestValidateOpenPortZeroSentinel(t *testing.T) {
 	// Out-of-range ports are still rejected for open_port.
 	if err := (&Profile{Network: Network{OpenPort: []int{70000}}}).Validate(); err == nil {
 		t.Error("open_port 70000 must be rejected")
+	}
+}
+
+func TestValidateOpenPortAboveRangeCapIsAccepted(t *testing.T) {
+	ports := make([]int, 0, maxExpandedPorts+1)
+	for port := 1; port <= maxExpandedPorts+1; port++ {
+		ports = append(ports, port)
+	}
+	// open_port is a plain integer list, not a range-expanded field, so the
+	// 1000-port cap does not apply and its behavior stays as before.
+	if err := (&Profile{Network: Network{OpenPort: ports}}).Validate(); err != nil {
+		t.Errorf("open_port with %d ports rejected: %v", len(ports), err)
 	}
 }
 
