@@ -331,7 +331,7 @@ Known limits:
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
 
 What `omac vm exec` shares with the VM:
-- It copies the worktree (the git top level) into the VM. It skips `.git`, the `.env` files the sandbox hides, and the paths git ignores. Untracked files that git does not ignore are copied. The copies stay in the VM until `omac vm reset`.
+- It copies the worktree (the git top level) into the VM. It skips `.git`, the `.env` files the sandbox hides, and the paths git ignores. Untracked files that git does not ignore are copied. Outside a git repository it copies the current directory, and only `.git` and the hidden `.env` files stay out. The copies stay in the VM until `omac vm reset`.
 - All `--vm` sessions log in to the VM as the same user. So every session can read and change every copy, including the copies of other projects.
 - Values passed with `--env` are part of the ssh command line on your host. While the command runs, other processes of yours can read them in the host's process list, and on Linux so can other users unless `/proc` is mounted with `hidepid`. They are briefly visible in the VM's process list too.
 - A command run while the VM is online has network access. For example, a build that runs during priming can download dependencies, and it could also send data out.
