@@ -112,6 +112,28 @@ func TestRepoRootRefusesRedirectedWorktree(t *testing.T) {
 	}
 }
 
+// The agent renames the link's target right after git read it; the
+// core.worktree check must not fall back to the link's own path.
+func TestRepoRootRefusesWorkdirThatMovesAway(t *testing.T) {
+	other := newRepo(t, map[string]string{"secret.txt": "other client"})
+	top := newRepo(t, map[string]string{"src/b.go": "package b"})
+	git(t, top, "config", "core.worktree", other)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Join(top, "src"), link); err != nil {
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		err := ExecRunner(ctx, name, args, stdin, stdout, stderr)
+		if renameErr := os.Rename(filepath.Join(top, "src"), filepath.Join(top, "moved")); renameErr != nil {
+			t.Error(renameErr)
+		}
+		return err
+	}
+	if got, _, _, err := RepoRoot(context.Background(), run, link); err == nil {
+		t.Fatalf("RepoRoot(%s) = %q, nil; want an error once the workdir moved", link, got)
+	}
+}
+
 func TestRepoRootRejectsExtraLines(t *testing.T) {
 	run := func(_ context.Context, _ string, _ []string, _ io.Reader, stdout, _ io.Writer) error {
 		_, _ = io.WriteString(stdout, "/w/re\npo\n\n")
@@ -123,18 +145,19 @@ func TestRepoRootRejectsExtraLines(t *testing.T) {
 }
 
 func TestGitRunsWithCLocale(t *testing.T) {
+	repo := testDir(t, "repo")
 	var envs [][]string
 	run := func(ctx context.Context, _ string, args []string, _ io.Reader, stdout, _ io.Writer) error {
 		envs = append(envs, commandEnv(ctx))
 		if slices.Contains(args, "rev-parse") {
-			_, _ = io.WriteString(stdout, "/w/repo\n\n")
+			_, _ = io.WriteString(stdout, repo+"\n\n")
 		}
 		return nil
 	}
-	if _, _, _, err := RepoRoot(context.Background(), run, "/w/repo"); err != nil {
+	if _, _, _, err := RepoRoot(context.Background(), run, repo); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err != nil {
+	if _, err := IgnoredPaths(context.Background(), run, repo); err != nil {
 		t.Fatal(err)
 	}
 	for i, env := range envs {
