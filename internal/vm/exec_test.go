@@ -245,7 +245,7 @@ func TestIgnoredPathsIncludesNestedSubmodules(t *testing.T) {
 	}
 }
 
-// echo in /bin/sh may turn the backslash in x\ty into a tab.
+// A backslash in a submodule path must reach git unchanged.
 func TestIgnoredPathsKeepsBackslashInSubmodulePath(t *testing.T) {
 	lib := newRepo(t, map[string]string{".gitignore": "out/\n", "lib.go": "package lib"})
 	git(t, lib, "add", ".")
@@ -892,6 +892,93 @@ func TestExecCopiesTheCheckedRootAfterASwap(t *testing.T) {
 	}
 }
 
+// The agent replaces the workdir with a link to another project after git
+// read it, before omac opens the copy root.
+func TestExecRefusesWorkdirSwappedAfterGit(t *testing.T) {
+	root, other := testDir(t, "proj"), testDir(t, "other")
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	o := f.opts(root, io.Discard)
+	o.Run = func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		err := f.run(ctx, name, args, stdin, stdout, stderr)
+		if name == "git" {
+			if renameErr := os.Rename(root, root+".old"); renameErr != nil {
+				t.Error(renameErr)
+			}
+			if linkErr := os.Symlink(other, root); linkErr != nil {
+				t.Error(linkErr)
+			}
+		}
+		return err
+	}
+	if _, err := Exec(context.Background(), o); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("Exec = %v, want a refusal", err)
+	}
+	if f.rsync != nil || len(f.remotes) != 0 {
+		t.Fatalf("copied after the swap: rsync=%q ssh=%q", f.rsync, f.remotes)
+	}
+}
+
+func TestExecHardensEveryGitCall(t *testing.T) {
+	top := filepath.Dir(testDir(t, "repo/backend"))
+	f := &execFakes{top: top, prefix: "backend/"}
+	var calls int
+	o := f.opts(filepath.Join(top, "backend"), io.Discard)
+	o.Run = func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if name == "git" {
+			calls++
+			env := commandEnv(ctx)
+			if !slices.Contains(args, "core.fsmonitor=false") || !slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") {
+				t.Errorf("git %q with env %q lacks the hardening of runGit", args, env)
+			}
+		}
+		return f.run(ctx, name, args, stdin, stdout, stderr)
+	}
+	if _, err := Exec(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 4 { // rev-parse, the tracked files, ignored files, submodules
+		t.Fatalf("git ran %d times, want at least 4", calls)
+	}
+}
+
+func TestRefuseProtectedOverlapNeedsTheOpenedRoot(t *testing.T) {
+	opened, other := testDir(t, "a"), testDir(t, "b")
+	dir, err := os.Open(opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := refuseProtectedOverlap(other, dir, nil); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("refuseProtectedOverlap with a path that is not the opened directory = %v, want an error", err)
+	}
+}
+
+func TestRefuseUntrackedPrefixFailsOnGitError(t *testing.T) {
+	run := func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return exitErr(t, 128) }
+	if err := refuseUntrackedPrefix(context.Background(), run, "/w/repo", "svc"); err == nil {
+		t.Fatal("refuseUntrackedPrefix with a failing git = nil error")
+	}
+}
+
+func TestInDirRestoresAfterAnError(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.Open(testDir(t, "d"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	boom := errors.New("boom")
+	if err := inDir(dir, func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("inDir = %v, want %v", err, boom)
+	}
+	if after, _ := os.Getwd(); after != wd {
+		t.Fatalf("working directory after a failed fn = %s, want %s", after, wd)
+	}
+}
+
 func TestExecRefusesWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	f := &execFakes{notRepo: exitErr(t, 128)}
@@ -914,6 +1001,7 @@ func TestExecRefusesDirectoryGitDoesNotTrack(t *testing.T) {
 		"wt/w/a.go":          "package w",
 		"sv*/a.go":           "package n",
 		"build/reports/x.md": "x",
+		"--cached/a.go":      "package c",
 	})
 	git(t, top, "add", ".gitignore", "svc")
 	git(t, top, "commit", "-qm", "init")
@@ -930,7 +1018,8 @@ func TestExecRefusesDirectoryGitDoesNotTrack(t *testing.T) {
 	}{
 		{".worktrees/w", "", true},
 		{"wt/w", "", true},
-		{"sv*", "", true}, // not a glob that matches svc
+		{"sv*", "", true},      // not a glob that matches svc
+		{"--cached", "", true}, // a directory, not an option of git ls-files
 		{"svc", "", false},
 		{"", "build/reports", false}, // --cwd names a directory in the VM's copy
 	} {
@@ -1023,7 +1112,8 @@ func TestExecRsyncConnectionFailure(t *testing.T) {
 func TestExecInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Ctrl-C cancels the context while the command runs.
+	// Ctrl-C stops ssh, which then exits 255; that must not read as a lost
+	// connection.
 	f := &execFakes{onCmd: cancel, cmdErr: exitErr(t, 255)}
 	code, err := Exec(ctx, f.opts(testDir(t, "repo"), io.Discard))
 	if code != 130 || !errors.Is(err, ErrInterrupted) {
@@ -1053,6 +1143,8 @@ func TestExecRejectsBadInputBeforeCopy(t *testing.T) {
 		"empty cmd":        func(o *ExecOpts) { o.Cmd = nil },
 		"quote in key":     func(o *ExecOpts) { o.Conn.Target.KeyPath = "/Users/o'brien/key" },
 		"quote in hosts":   func(o *ExecOpts) { o.Conn.Target.KnownHosts = "/Users/o'brien/known_hosts" },
+		"relative key":     func(o *ExecOpts) { o.Conn.Target.KeyPath = "state/key" },
+		"relative hosts":   func(o *ExecOpts) { o.Conn.Target.KnownHosts = "known_hosts" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &execFakes{}

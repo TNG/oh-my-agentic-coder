@@ -75,9 +75,8 @@ func RemoteDir(slug string) string {
 // tree. Any other git failure, such as "detected dubious ownership", is an
 // error: copying everything could leak what .gitignore keeps out.
 func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix string, ok bool, err error) {
-	ctx = gitContext(ctx)
 	var out, stderr bytes.Buffer
-	err = run(ctx, "git", gitArgs(dir, "rev-parse", "--show-toplevel", "--show-prefix"), nil, &out, &stderr)
+	err = runGit(ctx, run, dir, &out, &stderr, "rev-parse", "--show-toplevel", "--show-prefix")
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && strings.Contains(stderr.String(), "not a git repository") {
 		return "", "", false, nil
@@ -124,15 +123,14 @@ func checkTopLevel(dir, top string) error {
 	}
 }
 
-// gitArgs runs git in dir with core.fsmonitor off: the sandbox can write
-// git config in the worktree, and that setting runs a command.
-func gitArgs(dir string, args ...string) []string {
-	return append([]string{"-C", dir, "-c", "core.fsmonitor=false"}, args...)
-}
-
-// gitContext pins git's messages to English, which RepoRoot matches on.
-func gitContext(ctx context.Context) context.Context {
-	return withCommandEnv(ctx, "LC_ALL=C")
+// runGit runs every git command of exec, in dir. core.fsmonitor is off
+// because the sandbox can write git config in the worktree and that
+// setting runs a command. Messages are in English, which RepoRoot matches
+// on, and pathspecs are literal, so a directory named "sv*" matches only
+// itself.
+func runGit(ctx context.Context, run CommandRunner, dir string, stdout, stderr io.Writer, args ...string) error {
+	ctx = withCommandEnv(ctx, "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1")
+	return run(ctx, "git", append([]string{"-C", dir, "-c", "core.fsmonitor=false"}, args...), nil, stdout, stderr)
 }
 
 // IgnoredPaths lists the paths git ignores in the repository at top and in
@@ -140,7 +138,6 @@ func gitContext(ctx context.Context) context.Context {
 // listed once, with a trailing slash. Git does not run in an untracked
 // clone inside top, so the clone's own ignore rules are not applied.
 func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string, error) {
-	ctx = gitContext(ctx)
 	var paths []string
 	roots := []string{""} // repositories to read, relative to top: "", "libs/lib/"
 	for len(roots) > 0 {
@@ -175,7 +172,7 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string,
 
 func gitOutput(ctx context.Context, run CommandRunner, dir string, args ...string) (string, error) {
 	var out, stderr bytes.Buffer
-	if err := run(ctx, "git", gitArgs(dir, args...), nil, &out, &stderr); err != nil {
+	if err := runGit(ctx, run, dir, &out, &stderr, args...); err != nil {
 		return "", gitError(args[0], err, &stderr)
 	}
 	return out.String(), nil
@@ -330,14 +327,22 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if err := ValidateCwd(o.Cwd); err != nil {
 		return 1, err
 	}
-	// rsync's -e parser does not understand the '\'' that ShellQuote emits.
 	for _, p := range []string{o.Conn.Target.KeyPath, o.Conn.Target.KnownHosts} {
+		// rsync's -e parser does not understand the '\'' that ShellQuote emits.
 		if strings.Contains(p, "'") {
 			return 1, fmt.Errorf("omac vm exec: %q contains a single quote, which rsync cannot pass to ssh", p)
+		}
+		// rsync's ssh starts in the copy root, where the agent picks the files.
+		if p != "" && !filepath.IsAbs(p) {
+			return 1, fmt.Errorf("omac vm exec: ssh file %q must be an absolute path", p)
 		}
 	}
 	// "repo/" and "repo" get the same slug and registry line.
 	root := filepath.Clean(o.Workdir)
+	workdirInfo, err := os.Stat(root)
+	if err != nil {
+		return 1, fmt.Errorf("omac vm exec: %w", err)
+	}
 	cwd := o.Cwd
 	top, prefix, isRepo, err := RepoRoot(ctx, o.Run, root)
 	if err != nil {
@@ -346,10 +351,10 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	var ignored []string
 	if isRepo {
 		root, cwd = top, path.Join(prefix, cwd)
-		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
+		if err := refuseUntrackedPrefix(ctx, o.Run, top, prefix); err != nil {
 			return 1, err
 		}
-		if err := refuseUntrackedPrefix(ctx, o.Run, top, prefix); err != nil {
+		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
 			return 1, err
 		}
 	}
@@ -361,6 +366,16 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 	defer rootDir.Close()
+	// git read the workdir by path; the agent may have swapped it since.
+	err = inDir(rootDir, func() error {
+		if fi, err := os.Stat(path.Join(".", prefix)); err != nil || !os.SameFile(fi, workdirInfo) {
+			return fmt.Errorf("omac vm exec: %s changed while omac read it", o.Workdir)
+		}
+		return nil
+	})
+	if err != nil {
+		return 1, err
+	}
 	if !isRepo {
 		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and the files the sandbox hides, such as .env\n", root)
 	}
@@ -410,7 +425,6 @@ func refuseUntrackedPrefix(ctx context.Context, run CommandRunner, top, prefix s
 	if prefix == "" {
 		return nil
 	}
-	ctx = withCommandEnv(ctx, "GIT_LITERAL_PATHSPECS=1")
 	tracked, err := gitOutput(ctx, run, top, "ls-files", "-z", "--", prefix)
 	if err != nil {
 		return err
@@ -421,14 +435,10 @@ func refuseUntrackedPrefix(ctx context.Context, run CommandRunner, top, prefix s
 	return nil
 }
 
-// openCopyRoot opens root for rsync to copy from, and fails when it
-// contains or lies in a path the sandbox protects, such as ~/.ssh or the
-// VM's admin key: every --vm session can read the copy. The check applies
-// to the opened directory, so swapping root for a symlink afterwards does
-// not change what is copied. Paths are compared by file identity, so a
-// symlink or another spelling of the same directory counts too. A protected
-// path that cannot be stat'ed, as inside the sandbox, is still found
-// through its parents, unless it is a symlink.
+// openCopyRoot opens root for rsync to copy from and applies
+// refuseProtectedOverlap to the opened directory, so swapping root for a
+// symlink afterwards does not change what is copied. Directories below
+// root are read by path and stay open to such a swap.
 func openCopyRoot(root string) (*os.File, error) {
 	protected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
 	for _, p := range protected {
@@ -447,6 +457,12 @@ func openCopyRoot(root string) (*os.File, error) {
 	return dir, nil
 }
 
+// refuseProtectedOverlap fails when dir, opened from root, contains or lies
+// in a protected path, such as ~/.ssh or the VM's admin key: every --vm
+// session can read the copy. Paths are compared by file identity, so a
+// symlink or another spelling of the same directory counts too. A
+// protected path that cannot be stat'ed, as inside the sandbox, is still
+// found through its parents, unless it is a symlink.
 func refuseProtectedOverlap(root string, dir *os.File, protected []string) error {
 	rootInfo, err := dir.Stat()
 	if err != nil {
@@ -485,21 +501,19 @@ func refuseProtectedOverlap(root string, dir *os.File, protected []string) error
 // a command fn starts reads "." from dir however its path changes. The
 // working directory is shared by all goroutines, so nothing may resolve a
 // relative path while fn runs.
-func inDir(dir *os.File, fn func() error) (err error) {
-	prev, err := os.Open(".")
+func inDir(dir *os.File, fn func() error) error {
+	prev, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
 	}
-	defer prev.Close()
 	if err := dir.Chdir(); err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
 	}
-	defer func() {
-		if cerr := prev.Chdir(); cerr != nil && err == nil {
-			err = fmt.Errorf("omac vm exec: %w", cerr)
-		}
-	}()
-	return fn()
+	err = fn()
+	if cerr := os.Chdir(prev); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("omac vm exec: %w", cerr))
+	}
+	return err
 }
 
 // hasAncestor reports whether path or one of its parents is dir.
