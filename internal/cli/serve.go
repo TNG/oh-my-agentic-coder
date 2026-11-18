@@ -187,8 +187,8 @@ func runServe(args []string, env *Env) int {
 	openPorts := parsed.openPorts
 
 	// An empty value usually means a failed lookup, e.g. a missing keychain
-	// item in OMAC_SERVE_PASSWORD="$(security …)". Falling back to a random
-	// password would hide that from the user.
+	// item in OMAC_SERVE_PASSWORD="$(security …)". Starting the server without
+	// the password would hide that from the user.
 	if passwordSet && password == "" {
 		fmt.Fprintf(env.Stderr, "omac serve: %s is set but empty; set a password or unset it.\n",
 			sandboxprofile.ServePasswordEnv)

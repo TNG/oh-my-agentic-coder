@@ -43,8 +43,6 @@ Without a password from omac, the server's protection depends on the OpenCode ve
   omac serve: opencode server on 127.0.0.1:4096 has no password, so any local process can use it; to require a password, set OMAC_SERVE_PASSWORD.
   ```
 
-Checked with OpenCode 1.18.29, 1.19.6, 2.0.20 and 2.3.2.
-
 To protect the server with OpenCode 1.x, or to keep a stable password across restarts with 2.x, set a password used only for this server:
 
 ```bash
