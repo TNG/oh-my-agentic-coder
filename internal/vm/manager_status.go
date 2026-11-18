@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const guestListTimeout = 10 * time.Second
@@ -165,12 +166,15 @@ func writeList(w io.Writer, key string, items []string) {
 // the VM cannot send terminal escape sequences or forge extra lines:
 // "a\x1b[2J" → `a\x1b[2J`.
 func printable(s string) string {
-	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
 		return s
 	}
 	var b strings.Builder
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case unicode.IsPrint(r):
 			b.WriteRune(r)
 		case r == '\n':
@@ -180,6 +184,7 @@ func printable(s string) string {
 		default:
 			fmt.Fprintf(&b, `\u%04x`, r)
 		}
+		i += size
 	}
 	return b.String()
 }

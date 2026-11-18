@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 func mustUp(t *testing.T, m *Manager) {
@@ -1567,5 +1569,25 @@ func TestStatusReportWrite(t *testing.T) {
 	StatusReport{}.Write(&b)
 	if !strings.Contains(b.String(), "status: not created") {
 		t.Errorf("empty report = %q", b.String())
+	}
+}
+
+func TestPrintable(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text, ünïcode":   "plain text, ünïcode",
+		"a\x1b[2J":              `a\x1b[2J`,
+		"line\nforged":          `line\nforged`,
+		"del\x7f":               `del\x7f`,
+		"c1 \u009b2J":           `c1 \x9b2J`,
+		"lone byte \x9b2J":      `lone byte \x9b2J`,
+		"cut-off rune \xe2\x82": `cut-off rune \xe2\x82`,
+	} {
+		got := printable(in)
+		if got != want {
+			t.Errorf("printable(%q) = %q, want %q", in, got, want)
+		}
+		if !utf8.ValidString(got) || strings.IndexFunc(got, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+			t.Errorf("printable(%q) = %q, which a terminal could act on", in, got)
+		}
 	}
 }
