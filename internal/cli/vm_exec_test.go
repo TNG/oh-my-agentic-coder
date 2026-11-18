@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -144,8 +146,9 @@ func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 
 const tokenConfirmPrompt = "Press Enter to continue, Ctrl-C to stop.\n"
 
-// useTerminalStdin replaces env.Stdin with a terminal that yields input.
-func useTerminalStdin(t *testing.T, env *Env, input string) {
+// useFakeTerminalStdin makes env.Stdin read input, and makes the terminal
+// check accept it and env.Stderr, where the prompt goes.
+func useFakeTerminalStdin(t *testing.T, env *Env, input string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "stdin")
 	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
@@ -157,14 +160,14 @@ func useTerminalStdin(t *testing.T, env *Env, input string) {
 	}
 	t.Cleanup(func() { f.Close() })
 	env.Stdin = f
-	useTerminals(t, f)
+	useTerminals(t, f, env.Stderr)
 }
 
 func TestVMExecEnvOnTerminalWaitsForEnter(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
 	t.Setenv("MY_REPO_TOKEN", "x")
 	env, _, stderr := vmTestEnv(t)
-	useTerminalStdin(t, env, "\n")
+	useFakeTerminalStdin(t, env, "\n")
 	var stderrAtRun string
 	runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
 		*calls = append(*calls, o)
@@ -182,32 +185,78 @@ func TestVMExecEnvOnTerminalWaitsForEnter(t *testing.T) {
 	}
 }
 
-func TestVMExecEnvOnTerminalStopsAtEndOfInput(t *testing.T) {
-	calls := useFakeVMExec(t, nil, 0, nil)
-	t.Setenv("MY_REPO_TOKEN", "x")
-	env, _, stderr := vmTestEnv(t)
-	useTerminalStdin(t, env, "")
-	if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != 130 {
-		t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
-	}
-	if len(*calls) != 0 {
-		t.Errorf("the command ran after end of input")
-	}
-	if !strings.HasSuffix(stderr(), tokenConfirmPrompt+vm.ErrInterrupted.Error()+"\n") {
-		t.Errorf("stderr:\n%s\nwant the prompt, then %q", stderr(), vm.ErrInterrupted)
+// Only a bare Enter is consent: a typed "n" or a pasted next command line
+// must not send the token.
+func TestVMExecEnvOnTerminalStopsWithoutBareEnter(t *testing.T) {
+	for name, input := range map[string]string{
+		"end of input":       "",
+		"typed n":            "n\n",
+		"pasted next line":   "omac vm offline\n",
+		"line without Enter": "y",
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			t.Setenv("MY_REPO_TOKEN", "x")
+			env, _, stderr := vmTestEnv(t)
+			useFakeTerminalStdin(t, env, input)
+			if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != 130 {
+				t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+			}
+			if len(*calls) != 0 {
+				t.Errorf("the command ran")
+			}
+			if !strings.HasSuffix(stderr(), tokenConfirmPrompt+vm.ErrInterrupted.Error()+"\n") {
+				t.Errorf("stderr:\n%s\nwant the prompt, then %q", stderr(), vm.ErrInterrupted)
+			}
+		})
 	}
 }
 
-func TestWaitForEnterStopsOnInterrupt(t *testing.T) {
+func TestVMExecEnvOnTerminalStopsOnCtrlC(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	t.Setenv("MY_REPO_TOKEN", "x")
+	env, _, stderr := vmTestEnv(t)
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { r.Close(); w.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if waitForEnter(ctx, r) {
-		t.Fatal("waitForEnter = true after interrupt, want false")
+	env.Stdin = r
+	useTerminals(t, r, env.Stderr)
+	done := make(chan int, 1)
+	go func() { done <- runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.HasSuffix(stderr(), tokenConfirmPrompt) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no prompt; stderr:\n%s", stderr())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != 130 {
+		t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+	}
+	if len(*calls) != 0 {
+		t.Errorf("the command ran after Ctrl-C")
+	}
+	if !strings.HasSuffix(stderr(), tokenConfirmPrompt+"\n"+vm.ErrInterrupted.Error()+"\n") {
+		t.Errorf("stderr:\n%s\nwant the prompt, a newline after the ^C echo, then %q", stderr(), vm.ErrInterrupted)
+	}
+}
+
+// A prompt written to a redirected stderr would wait for a reason nobody sees.
+func TestVMExecEnvWithRedirectedStderrDoesNotPrompt(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	t.Setenv("MY_REPO_TOKEN", "x")
+	env, _, stderr := vmTestEnv(t)
+	useTerminals(t, env.Stdin)
+	if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
+	}
+	if len(*calls) != 1 || strings.Contains(stderr(), tokenConfirmPrompt) {
+		t.Errorf("calls = %d, stderr:\n%s\nwant 1 call and no prompt", len(*calls), stderr())
 	}
 }
 
@@ -230,7 +279,7 @@ func TestVMExecEnvWithoutTerminalDoesNotPrompt(t *testing.T) {
 func TestVMExecWithoutEnvOnTerminalDoesNotPrompt(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
 	env, _, stderr := vmTestEnv(t)
-	useTerminalStdin(t, env, "")
+	useFakeTerminalStdin(t, env, "")
 	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
 		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
 	}

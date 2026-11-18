@@ -187,9 +187,12 @@ func runVMExec(args []string, env *Env) int {
 	printVMExecTokenNotice(env.Stderr, envNames(envs))
 	// Nothing is copied or sent before this point, so the human can still
 	// stop and run `omac vm reset` as the notice says.
-	if len(envs) > 0 && isTerminal(env.Stdin) {
+	if len(envs) > 0 && isTerminal(env.Stdin) && isTerminal(env.Stderr) {
 		fmt.Fprintln(env.Stderr, "Press Enter to continue, Ctrl-C to stop.")
 		if !waitForEnter(ctx, env.Stdin) {
+			if ctx.Err() != nil {
+				fmt.Fprintln(env.Stderr) // end the line the terminal's ^C echo started
+			}
 			fmt.Fprintln(env.Stderr, vm.ErrInterrupted)
 			return 130
 		}
@@ -278,20 +281,21 @@ func printVMExecTokenNotice(w io.Writer, names []string) {
 		"files that session left in the VM run with %s.\n", list, tokens)
 }
 
-// waitForEnter reports whether r delivered a newline before end of input
-// or ctx ended. It reads one byte at a time, so the command run afterwards
-// gets the rest of r.
+// waitForEnter reports whether the first line read from r is empty, so a
+// typed "n" or a pasted next command does not count as consent. It is false
+// at end of input or when ctx ends. It reads one byte at a time, so the
+// command run afterwards gets the rest of r.
 func waitForEnter(ctx context.Context, r io.Reader) bool {
 	entered := make(chan bool, 1)
 	go func() {
 		b := make([]byte, 1)
-		for {
+		for empty := true; ; empty = false {
 			if _, err := r.Read(b); err != nil {
 				entered <- false
 				return
 			}
 			if b[0] == '\n' {
-				entered <- true
+				entered <- empty
 				return
 			}
 		}
