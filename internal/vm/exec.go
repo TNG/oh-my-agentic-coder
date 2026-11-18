@@ -297,6 +297,9 @@ func ResolveEnv(specs []string, lookupEnv func(string) (string, bool)) ([]string
 // cancelled, typically by Ctrl-C.
 var ErrInterrupted = errors.New("omac vm exec: interrupted")
 
+// ExitInterrupted is the exit code that goes with ErrInterrupted.
+const ExitInterrupted = 130
+
 // ExecOpts configures Exec. Workdir must be absolute; Cwd is relative to it.
 type ExecOpts struct {
 	Workdir string
@@ -436,7 +439,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	target.TTY = o.TTY
 	err = o.SSH(ctx, target, o.Stdin, o.Stdout, o.Stderr, remote)
 	if ctx.Err() != nil {
-		return 130, ErrInterrupted
+		return ExitInterrupted, ErrInterrupted
 	}
 	if code := exitCode(err); code > 0 && code != 255 {
 		return code, nil
@@ -578,15 +581,14 @@ func hasAncestor(path string, dir os.FileInfo) bool {
 	}
 }
 
-// connectionHint explains ssh's exit status 255. It names the host because
-// `omac vm status` fails in a session: the sandbox blocks the VM's state
-// directory.
+// connectionHint names the host because `omac vm status` fails in a
+// session: the sandbox blocks the VM's state directory.
 const connectionHint = "connection lost or remote command killed (is the VM running? run `omac vm status` on the host)"
 
 // failure reports err, or an interruption when the context was cancelled.
 func failure(ctx context.Context, err error) (int, error) {
 	if ctx.Err() != nil {
-		return 130, ErrInterrupted
+		return ExitInterrupted, ErrInterrupted
 	}
 	return 1, err
 }
