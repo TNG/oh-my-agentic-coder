@@ -80,15 +80,17 @@ The priming build runs the VM's copy of the project online and with the
 token. That copy can hold files an agent wrote only in the VM, or deleted on
 the host after they were copied, so `git status` on the host does not show
 everything. Prime from a fresh clone of a commit the human trusts, in a
-folder no session has used: the VM keeps a separate copy for each folder.
-That commit must contain the build change that needs the new dependency, so
-the human reviews the change, commits it, for example on a branch, and
-clones that commit.
+new folder. That commit must contain the build change that needs the new
+dependency, so the human reviews the change, commits it, for example on a
+branch, and clones that commit.
 
-Files a session left in the VM user's home, such as a Gradle init script or
-a service that starts with the VM, also run while the VM is online, and go
-away only with `omac vm reset`. If the human does not trust every earlier
-session, they run `omac vm reset` first and import the images again.
+The fresh clone makes sure the host side holds only reviewed files. It does
+not clean the VM side: a session can create the VM's copy for any folder in
+advance, and can leave files in the VM user's home, such as a Gradle init
+script or a service that starts with the VM. All of these run while the VM
+is online, and only `omac vm reset` removes them, copies included. If the
+human does not trust every earlier session, they run `omac vm reset` first
+and import the images again.
 
 ```sh
 omac vm online
@@ -128,7 +130,8 @@ omac start --vm
 
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
 refuses `--vm` while the VM is online, with `--no-sandbox`, with
-`omac serve --no-inner`, and with launcher profiles that use a sandbox other
+`omac serve --no-inner` or `omac serve --for-opencode-desktop`, and with
+launcher profiles that use a sandbox other
 than omac's own. Once the human has started the session, offer to check the
 connection with `omac vm exec -- true`.
 

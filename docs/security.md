@@ -335,6 +335,7 @@ What `omac vm exec` shares with the VM:
 - All `--vm` sessions log in to the VM as the same user. So every session can read and change every copy, including the copies of other projects.
 - Values passed with `--env` are part of the ssh command line on your host. While the command runs, other processes of yours can read them in the host's process list, and on Linux so can other users unless `/proc` is mounted with `hidepid`. They are briefly visible in the VM's process list too.
 - A command run while the VM is online has network access. For example, a build that runs during priming can download dependencies, and it could also send data out.
+- A build run with `--env` while the VM is online, as for priming, also runs whatever earlier sessions left in the VM, including files in the copies, with network access and the token. Use a short-lived, read-only token, and run `omac vm reset` first if you do not trust every earlier session.
 
 The VM's state lives in `~/.local/state/omac/vm` (or `$XDG_STATE_HOME/omac/vm`) and includes the key for root access to the VM. The sandbox blocks this directory. omac's own sandbox also blocks it by its exact path on every launch, with or without `--vm`, so it stays blocked when the sandbox sees a different `XDG_STATE_HOME`, as an OpenCode v2 session does, and `filesystem.override_deny` cannot unblock it. omac refuses `--vm` when the sandbox profile cannot be loaded or unblocks this directory, and when the sandbox would run in learn mode.
 
