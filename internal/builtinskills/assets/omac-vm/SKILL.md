@@ -41,11 +41,11 @@ VM.
 Containers in the VM are reachable from the host only on published ports in
 the range `OMAC_VM_PORT_FIRST` to `OMAC_VM_PORT_LAST`. Read both variables and
 publish inside that range, for example
-`omac vm exec -- docker run -d -p <port>:5432 postgres:16` with a `<port>` from
-it. Other ports work only inside the VM. These ports are for the human and
-host tools: your own shell in the sandbox cannot reach them, so talk to the
-container from the VM side, for example
-`omac vm exec -- curl localhost:<port>`.
+`omac vm exec -- docker run -d -p <port>:80 nginx` with a `<port>` from it.
+Other ports work only inside the VM. These ports are for the human and host
+tools: your own shell in the sandbox cannot reach them unless the human
+opens the port for this session, so talk to the container from the VM side,
+for example `omac vm exec -- curl localhost:<port>`.
 
 If the project belongs in a different VM, ask the human to start a new session
 with `omac start --vm=<name>`, or to assign the project in
