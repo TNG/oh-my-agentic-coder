@@ -982,14 +982,18 @@ func TestExecHardensEveryGitCall(t *testing.T) {
 				!slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") || !slices.Contains(env, "GIT_NO_LAZY_FETCH=1") {
 				t.Errorf("git %q with env %q lacks the hardening of runGit", args, env)
 			}
+			if slices.Contains(args, "submodule") && args[1] == top {
+				_, _ = io.WriteString(stdout, "libs/lib\x00")
+				return nil
+			}
 		}
 		return f.run(ctx, name, args, stdin, stdout, stderr)
 	}
 	if _, err := Exec(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
-	if calls < 4 { // rev-parse, the tracked files, ignored files, submodules
-		t.Fatalf("git ran %d times, want at least 4", calls)
+	if calls < 6 { // rev-parse, the tracked files, then ignored files and submodules at the top and in libs/lib
+		t.Fatalf("git ran %d times, want at least 6", calls)
 	}
 }
 
