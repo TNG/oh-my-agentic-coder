@@ -160,7 +160,9 @@ module's directory, for example `api/target/surefire-reports/`.
   in `~/.config/omac/vm.yaml`, end this session and run
   `omac vm up --reprovision` on the host. Maven's `Cannot find matching
   toolchain definitions` also needs an entry for that JDK in the VM's
-  `~/.m2/toolchains.xml`, which omac does not write.
+  `~/.m2/toolchains.xml`, with `jdkHome`
+  `/usr/lib/jvm/temurin-21-jdk-<arch>`. omac does not write this file, and
+  `omac vm reset` deletes it; ask the human to add it.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig` or a file it includes.** The session cannot read that
   file, so every git command in it fails. Ask the human to grant it as

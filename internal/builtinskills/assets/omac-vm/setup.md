@@ -140,7 +140,8 @@ For Maven, the middle line is
   settings file, not from the environment, and sends them only to a mirror
   or repository with the same `<id>`. Priming runs from a fresh clone, so
   the human commits two files to the project. `.mvn/settings.xml`, with the
-  registry's URL and the user name it expects:
+  URL of a registry that also proxies Maven Central, such as a Nexus or
+  Artifactory group, and the user name it expects:
 
   ```xml
   <settings>
@@ -173,8 +174,10 @@ For Maven, the middle line is
   and a build without the settings' mirror fails offline although the cache
   is complete. This applies to every Maven run of the project, also outside
   the VM: the project's settings file replaces `~/.m2/settings.xml`.
-  Offline, the unset `${env.MY_REPO_TOKEN}` does no harm. Never write the
-  token itself into a file: the VM keeps it.
+  Every online Maven run of the project then needs `MY_REPO_TOKEN` in its
+  environment, on developer machines and in CI too. Offline, the unset
+  `${env.MY_REPO_TOKEN}` does no harm. Never write the token itself into a
+  file: the VM keeps it.
 - Priming has to end with exit code 0 and `BUILD SUCCESSFUL` (Gradle) or
   `BUILD SUCCESS` (Maven). Gradle, for example, stops at the first failed
   task and skips the downloads of the tasks after it, so offline builds in a
