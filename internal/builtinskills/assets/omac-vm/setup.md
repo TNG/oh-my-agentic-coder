@@ -105,8 +105,8 @@ For Maven, the middle line is
 - If the build fails, still run `omac vm offline`: omac refuses `--vm`
   sessions while the VM is online.
 - Run it from the fresh clone. `--cwd` is the root of the build (the
-  directory with `gradlew` or `settings.gradle`, or with the top-level
-  `pom.xml`), relative to the current directory.
+  directory with `gradlew`, `settings.gradle` or `settings.gradle.kts`, or
+  with the top-level `pom.xml`), relative to the current directory.
 - Run all checks, not only the tests (`check` for Gradle, `verify` for
   Maven), because some tools, such as Checkstyle or Spotless, are downloaded
   only when the build step that uses them runs.

@@ -55,16 +55,18 @@ omac vm exec --cwd <build-root> -- <build command> > "${TMPDIR:-/tmp}/vm-test.lo
 ```
 
 `<build-root>` is the root of the build, relative to your current directory, for
-example `backend`: the directory with `gradlew` or `settings.gradle`, or with
-the top-level `pom.xml`, not a submodule. Typical build commands, with the
-tool's offline switch:
+example `backend`: the directory with `gradlew`, `settings.gradle` or
+`settings.gradle.kts`, or with the top-level `pom.xml`, not a submodule.
+Typical build commands, with the tool's offline switch:
 
 - Gradle: `./gradlew test --offline`. Without `--offline`, Gradle checks
   version ranges such as `[1.4,2.0)` and `-SNAPSHOT` dependencies online
   again after 24 hours and fails in the VM even though the cache is complete.
+  In a multi-project build, select a subproject with
+  `./gradlew :<subproject>:test --offline`, using its full path such as
+  `:libs:core:test`.
 - Maven: `./mvnw -o test` (or `mvn -o test`). Select a submodule with
-  `-pl <submodule> -am`. Gradle: select a subproject with
-  `./gradlew :<subproject>:test --offline`.
+  `-pl <submodule> -am`.
 
 The VM has no network access: everything a build downloads must already be
 in its cache. Keep the tool's offline switch if it has one.
@@ -107,20 +109,23 @@ in its cache. Keep the tool's offline switch if it has one.
 
 Build output stays in the VM and is not copied back. Read it with another
 `omac vm exec`. Result files from an earlier run stay in the VM too, so
-read them only after a build whose log shows that the test task ran. For
-example, after a Gradle test run in `backend/`:
+read them only after a build whose log shows that the test task ran. The
+files are in the directory of the subproject or module that ran the tests.
+For example, after `./gradlew :api:test --offline` in `backend/`, with the
+subproject in `backend/api/`:
 
 ```sh
 # number of test cases that ran
-omac vm exec --cwd backend -- sh -c 'cat build/test-results/test/*.xml | grep -c "<testcase "'
+omac vm exec --cwd backend -- sh -c 'cat api/build/test-results/test/*.xml | grep -c "<testcase "'
 # result files that contain a failure or an error
-omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" build/test-results/test/*.xml; [ $? -eq 1 ] && echo "no failures"'
+omac vm exec --cwd backend -- sh -c 'grep -l -e "<failure" -e "<error" api/build/test-results/test/*.xml; [ $? -eq 1 ] && echo "no failures"'
 ```
 
 If no result file exists, the tests did not run: read the build log
 instead.
 
-Maven writes the same XML files to `target/surefire-reports/` of each module.
+Maven writes the same XML files to `target/surefire-reports/` in each
+module's directory, for example `api/target/surefire-reports/`.
 
 ## When something is missing, ask the human
 
@@ -149,11 +154,13 @@ Maven writes the same XML files to `target/surefire-reports/` of each module.
   VM as described in [setup.md](setup.md); they end this session first.
 - **A JDK or system package is missing.** The build reports a missing Java
   installation (Gradle: `No matching toolchains found` or `Cannot find a Java
-  installation`; Maven: `release version 21 not supported` or `Cannot find
-  matching toolchain definitions`), or a command is not found. Name it, for example
-  `temurin-21`, and ask the human to add it to `jdks` or `packages` in
-  `~/.config/omac/vm.yaml`, end this session and run
-  `omac vm up --reprovision` on the host.
+  installation`; Maven: `release version 21 not supported` or
+  `invalid target release: 21`), or a command is not found. Name it, for
+  example `temurin-21`, and ask the human to add it to `jdks` or `packages`
+  in `~/.config/omac/vm.yaml`, end this session and run
+  `omac vm up --reprovision` on the host. Maven's `Cannot find matching
+  toolchain definitions` also needs an entry for that JDK in the VM's
+  `~/.m2/toolchains.xml`, which omac does not write.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig` or a file it includes.** The session cannot read that
   file, so every git command in it fails. Ask the human to grant it as
