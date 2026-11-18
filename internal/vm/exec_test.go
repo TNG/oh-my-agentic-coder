@@ -1062,6 +1062,14 @@ func TestRefuseUntrackedPrefixFailsOnGitError(t *testing.T) {
 	}
 }
 
+func TestRefuseUntrackedPrefixQuotesTheHint(t *testing.T) {
+	run := func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return nil }
+	err := refuseUntrackedPrefix(context.Background(), run, "/w/repo", "my dir")
+	if err == nil || !strings.Contains(err.Error(), "--cwd 'my dir'") || !strings.Contains(err.Error(), "ignored") {
+		t.Fatalf("refuseUntrackedPrefix = %v, want a pasteable --cwd 'my dir' hint that names ignored directories", err)
+	}
+}
+
 func TestCheckTopLevelFailsWhenGitEntryCannotBeRead(t *testing.T) {
 	dir := testDir(t, "repo")
 	if err := os.Chmod(dir, 0o600); err != nil { // listable, not searchable

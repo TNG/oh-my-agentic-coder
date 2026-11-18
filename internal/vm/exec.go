@@ -442,7 +442,7 @@ func refuseUntrackedPrefix(ctx context.Context, run CommandRunner, top, prefix s
 		return err
 	}
 	if tracked == "" {
-		return fmt.Errorf("omac vm exec: git in %s tracks nothing in %s; if it is a linked worktree, restore its .git file; if it is a new directory, run from %s with --cwd %s", top, prefix, top, prefix)
+		return fmt.Errorf("omac vm exec: git in %s tracks nothing in %s; if it is a linked worktree, restore its .git file; if it is a directory git does not track, such as a new or ignored one, run from %s with --cwd %s", top, prefix, top, ShellJoin([]string{prefix}))
 	}
 	return nil
 }
