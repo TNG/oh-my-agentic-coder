@@ -109,8 +109,17 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 				t.Errorf("%s: usage lacks %q:\n%s", arg, verb, out)
 			}
 		}
+		for _, form := range vmUsageArgumentForms {
+			if !strings.Contains(out, "omac vm "+form) {
+				t.Errorf("%s: usage lacks %q:\n%s", arg, form, out)
+			}
+		}
 	}
 }
+
+// vmUsageArgumentForms are arguments the help must show. Their parsing
+// sits outside the switch statements that dispatchedVMVerbs reads.
+var vmUsageArgumentForms = []string{"up [--reprovision]", "image add <ref>", "image rm <ref>"}
 
 // dispatchedVMVerbs reads the verbs from the switch statements in
 // vm_cmd.go, so a verb added there without a usage line fails the help
@@ -123,6 +132,7 @@ func dispatchedVMVerbs(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	prefix := map[string]string{"verb": "", "sub": "image "}
+	matched := map[string]bool{}
 	var verbs []string
 	ast.Inspect(file, func(n ast.Node) bool {
 		sw, ok := n.(*ast.SwitchStmt)
@@ -137,6 +147,7 @@ func dispatchedVMVerbs(t *testing.T) []string {
 		if !ok {
 			return true
 		}
+		matched[tag.Name] = true
 		for _, stmt := range sw.Body.List {
 			for _, expr := range stmt.(*ast.CaseClause).List {
 				lit, ok := expr.(*ast.BasicLit)
@@ -154,8 +165,10 @@ func dispatchedVMVerbs(t *testing.T) []string {
 		}
 		return true
 	})
-	if len(verbs) == 0 {
-		t.Fatal("found no dispatched verbs in vm_cmd.go")
+	for name := range prefix {
+		if !matched[name] {
+			t.Fatalf("found no switch on %q in vm_cmd.go; update dispatchedVMVerbs", name)
+		}
 	}
 	return verbs
 }
