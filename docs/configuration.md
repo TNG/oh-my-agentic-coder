@@ -112,11 +112,13 @@ In the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`), `ne
 "network": { "listen_port": [4097, "8000-8100"] }
 ```
 
-That grants port 4097 and every port from 8000 through 8100. A reversed range, an endpoint below 1 or above 65535, and anything else, such as a fraction or `"abc"`, are rejected when the profile loads, before the session starts. omac expands a range in memory only; a learn-mode session that edits the profile writes the expanded port list back to the file.
+That grants port 4097 and every port from 8000 through 8100. Invalid entries are rejected when the profile loads, before the session starts, with an error naming the value.
+
+Loading a profile never rewrites it. If you let `omac sandbox run --learn` add folders to this file, omac rewrites it, and a range such as `"8000-8100"` becomes the full list of ports.
 
 `network.listen_port` is for servers inside the sandbox that listen on a port. `network.allow_tcp_connect` allows direct outbound TCP to any host on those ports, for tools whose protocol the proxy cannot carry, such as SSH or a database client. The domain allow/deny list does not apply to those connections.
 
-Each of the two fields is limited to 1000 ports, counting both the profile entries and any flags added for the session. Entries count as written, so overlapping or duplicate ranges each add their full length before duplicates are removed. A list above the limit fails with an error naming the field and the cap, except when a single range is too large: that error names the range and the cap. omac does not narrow the grant to fit. The limit applies to integer-only lists too, so a profile written before ranges existed with more than 1000 ports also fails.
+Each of the two fields is limited to 1000 ports, counting profile entries and flags together. Overlapping ranges count in full. A longer list is rejected, not shortened. The limit applies to integer-only lists too.
 
 On Linux, each port in a range becomes its own kernel rule, exactly as if you had listed it separately.
 
