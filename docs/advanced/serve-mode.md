@@ -43,6 +43,12 @@ Without a password from omac, the server's protection depends on the OpenCode ve
   omac serve: opencode server on 127.0.0.1:4096 has no password, so any local process can use it; to require a password, set OMAC_SERVE_PASSWORD.
   ```
 
+- **If omac can't detect the version**, for example when OpenCode is started through a wrapper without a pinned version such as `npx opencode-ai serve`, the warning names both cases:
+
+  ```text
+  omac serve: omac could not detect which OpenCode runs on 127.0.0.1:4096. OpenCode 2.x protects it with a random password, but 1.x has no password, so any local process can use it; to require a password, set OMAC_SERVE_PASSWORD.
+  ```
+
 To protect the server with OpenCode 1.x, or to keep a stable password across restarts with 2.x, set a password used only for this server:
 
 ```bash

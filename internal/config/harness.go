@@ -255,7 +255,8 @@ type ServerLaunch struct {
 	// when that is given. When the server will not see this var (after the
 	// sandbox's env filter), OpenCode 2.x protects the port with a random
 	// password of its own and OpenCode 1.x leaves it open; `omac serve` prints
-	// a hint for either case (see serverExposureWarning).
+	// a hint for each case, and one naming both when it cannot detect the
+	// version (see serverExposureWarning).
 	// Empty means the harness declares no auth control.
 	AuthEnvVar string
 }

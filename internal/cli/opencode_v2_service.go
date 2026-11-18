@@ -654,16 +654,28 @@ func openCodeIsV2(inner []string) bool {
 	}
 }
 
-// openCodeGeneratesPassword reports whether OpenCode of this class protects
-// its server with a random password when OPENCODE_SERVER_PASSWORD is unset.
-// OpenCode 2.x does; 1.x starts without one ("server is unsecured"), and an
-// unknown version gets the same caution as 1.x.
-func openCodeGeneratesPassword(class openCodeVersionKind) bool {
+// serverPassword is what a harness server does about authentication when
+// omac passes it no password.
+type serverPassword int
+
+const (
+	serverPasswordUnknown serverPassword = iota // omac could not detect the version
+	serverPasswordNone                          // runs without a password (OpenCode 1.x)
+	serverPasswordRandom                        // generates and prints a random one (OpenCode 2.x)
+)
+
+// openCodeServerPassword reports what OpenCode of this class does when
+// OPENCODE_SERVER_PASSWORD is unset: 2.x generates a random password, 1.x
+// starts without one ("server is unsecured"). For any other class omac
+// cannot tell.
+func openCodeServerPassword(class openCodeVersionKind) serverPassword {
 	switch class {
 	case openCodeV20x, openCodeV21Plus, openCodeV2MajorOnly:
-		return true
+		return serverPasswordRandom
+	case openCodeV1:
+		return serverPasswordNone
 	default:
-		return false
+		return serverPasswordUnknown
 	}
 }
 
