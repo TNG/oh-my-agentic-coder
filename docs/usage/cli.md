@@ -236,7 +236,7 @@ Container ports published in the range 30000 to 30099 (for example `docker run -
 
 The VM is either `offline` (the default) or `online`. Sessions attach only while it is offline. `omac vm online`, `omac vm up --reprovision` and `omac vm reset` take the VM online, so they are refused while a session is attached.
 
-`omac vm up --reprovision` reinstalls the extra packages listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk and packages, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
+`omac vm up --reprovision` reinstalls the extra packages and JDKs listed in `vm.yaml`, and `omac vm reset` deletes the VM and creates it anew. For CPUs, memory, disk, packages and Java versions, see [omac VM (vm.yaml)](../configuration.md#omac-vm-vmyaml).
 
 ### omac provenance
 
