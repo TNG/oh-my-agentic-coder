@@ -474,7 +474,7 @@ func openCopyRoot(root string) (*os.File, error) {
 // session can read the copy. Paths are compared by file identity, so a
 // symlink or another spelling of the same directory counts too. A
 // protected path that cannot be stat'ed, as inside the sandbox, is still
-// found through its parents, unless it is a symlink.
+// found when the copy root contains it, unless it is a symlink.
 func refuseProtectedOverlap(root string, dir *os.File, protected []string) error {
 	rootInfo, err := dir.Stat()
 	if err != nil {
