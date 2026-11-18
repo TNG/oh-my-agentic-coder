@@ -25,8 +25,8 @@ func TestProtectDesktopStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, write, writeOnly, read, goos string
-		learn, wantErr                     bool
+		name, write, writeOnly, read string
+		learn, wantErr               bool
 	}{
 		{name: "runtime subtree", write: runtime},
 		{name: "whole desktop dir", write: state, wantErr: true},
@@ -34,12 +34,10 @@ func TestProtectDesktopStores(t *testing.T) {
 		{name: "absent store", write: filepath.Join(state, "drafts.sqlite"), wantErr: true},
 		{name: "write-only grant", writeOnly: state, wantErr: true},
 		{name: "learn mode", learn: true, wantErr: true},
-		// bwrap hides only files that exist at launch, so a read grant
-		// over a store dir would expose stores Desktop creates later.
-		{name: "linux read on desktop dir", read: state, goos: "linux", wantErr: true},
-		{name: "linux read on ancestor", read: home, goos: "linux", wantErr: true},
-		{name: "linux read on runtime subtree", read: runtime, goos: "linux"},
-		{name: "darwin read on desktop dir", read: state, goos: "darwin"},
+		// Desktop keeps cookies and browser storage next to its stores.
+		{name: "read on desktop dir", read: state, wantErr: true},
+		{name: "read on ancestor", read: home, wantErr: true},
+		{name: "read on runtime subtree", read: runtime},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := &Grants{}
@@ -52,11 +50,7 @@ func TestProtectDesktopStores(t *testing.T) {
 			if tc.read != "" {
 				g.ReadPaths = []string{tc.read}
 			}
-			goos := tc.goos
-			if goos == "" {
-				goos = "linux"
-			}
-			err := protectDesktopStores(g, tc.learn, goos)
+			err := protectDesktopStores(g, tc.learn)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error = %v", err)
 			}
@@ -99,7 +93,7 @@ func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
 	}
 
 	g := &Grants{}
-	if err := protectDesktopStores(g, false, "linux"); err != nil {
+	if err := protectDesktopStores(g, false); err != nil {
 		t.Fatalf("symlinked home: %v", err)
 	}
 	for _, dir := range []string{home, realHome} {
@@ -112,7 +106,7 @@ func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
 		"folder holding the link": linkDir,
 		"target of the link":      realHome,
 	} {
-		err := protectDesktopStores(&Grants{AllowPaths: []string{grant}}, false, "linux")
+		err := protectDesktopStores(&Grants{AllowPaths: []string{grant}}, false)
 		if err == nil {
 			t.Errorf("write grant on the %s: accepted", name)
 		}
@@ -122,7 +116,7 @@ func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
 	if err := os.Symlink(filepath.Join(realHome, "elsewhere.dat"), store); err != nil {
 		t.Fatal(err)
 	}
-	if err := protectDesktopStores(&Grants{}, false, "linux"); err == nil || !strings.Contains(err.Error(), "is a symlink") {
+	if err := protectDesktopStores(&Grants{}, false); err == nil || !strings.Contains(err.Error(), "is a symlink") {
 		t.Errorf("symlinked store: error = %v, want a refusal", err)
 	}
 }
@@ -145,7 +139,7 @@ func TestProtectDesktopStoresAcceptsDanglingLink(t *testing.T) {
 	}
 
 	g := &Grants{}
-	if err := protectDesktopStores(g, false, "linux"); err != nil {
+	if err := protectDesktopStores(g, false); err != nil {
 		t.Fatalf("dangling link: %v", err)
 	}
 	for _, dir := range []string{filepath.Join(home, ".config"), filepath.Join(home, "unmounted", "config")} {
@@ -154,7 +148,7 @@ func TestProtectDesktopStoresAcceptsDanglingLink(t *testing.T) {
 		}
 	}
 	grant := &Grants{AllowPaths: []string{filepath.Join(home, "unmounted")}}
-	if err := protectDesktopStores(grant, false, "linux"); err == nil {
+	if err := protectDesktopStores(grant, false); err == nil {
 		t.Error("write grant where the link's target would appear: accepted")
 	}
 }
@@ -164,7 +158,7 @@ func TestProtectDesktopStoresAcceptsDanglingLink(t *testing.T) {
 func TestProtectDesktopStoresFailsClosedWithoutStorePaths(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
-	err := protectDesktopStores(&Grants{}, false, "linux")
+	err := protectDesktopStores(&Grants{}, false)
 	if err == nil || !strings.Contains(err.Error(), "Set HOME, or export XDG_STATE_HOME") {
 		t.Fatalf("error = %v, want a refusal naming HOME and XDG_STATE_HOME", err)
 	}

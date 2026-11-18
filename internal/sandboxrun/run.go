@@ -71,7 +71,7 @@ func resolveRunGrants(merged *sandboxprofile.Profile, flags *sandboxprofile.Flag
 		return nil, err
 	}
 	if flags.ForOpenCodeDesktop {
-		if err := protectDesktopStores(grants, flags.Learn, runtime.GOOS); err != nil {
+		if err := protectDesktopStores(grants, flags.Learn); err != nil {
 			return nil, err
 		}
 	}

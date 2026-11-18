@@ -144,10 +144,9 @@ error in these cases:
 
   Grant only the folders the agent needs, such as
   `"allow": ["~/work/my-project"]`;
-- on Linux, when a read grant covers one of Desktop's folders, for example
-  `"read": ["~/.config"]`. The Linux sandbox can hide only files that exist
-  when it starts, and Desktop creates some of these files later (the
-  `drafts.sqlite-wal` file, for example), so the agent could read them;
+- when a read grant covers one of Desktop's folders, for example
+  `"read": ["~/.config"]`, because Desktop keeps its cookies and browser
+  storage there, next to its project list;
 - when one of Desktop's files is itself a symlink;
 - when `XDG_STATE_HOME` is set to a relative path.
 

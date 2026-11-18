@@ -17,12 +17,10 @@ import (
 // writing). A route through a symlink is checked and denied both as
 // written and resolved (docs/adr/0002-desktop-store-symlinks.md).
 //
-// On Linux (goos "linux") read grants that cover a store are refused too:
-// bwrap can hide only files that exist at launch, and Desktop creates
-// some stores while the session runs (drafts.sqlite-wal, -shm, -journal,
-// and opencode.global.dat on its first start). On macOS the deny rule
-// also covers files created later, so a read grant there is safe.
-func protectDesktopStores(g *Grants, learn bool, goos string) error {
+// Read grants that cover a store's folder are refused too: Desktop keeps
+// its cookies and browser storage next to the stores, and on Linux bwrap
+// can hide only the stores that exist at launch.
+func protectDesktopStores(g *Grants, learn bool) error {
 	if learn {
 		return fmt.Errorf("--for-opencode-desktop cannot be combined with --learn: learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
 	}
@@ -34,10 +32,8 @@ func protectDesktopStores(g *Grants, learn bool, goos string) error {
 			return fmt.Errorf("cannot resolve the write grant %q, so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Remove that grant or fix its path", w)
 		}
 	}
-	var readGrants, reads []string
-	if goos == "linux" {
-		readGrants = g.ReadPaths
-	}
+	readGrants := g.ReadPaths
+	var reads []string
 	for _, r := range readGrants {
 		c := canonicalPath(r)
 		if c == "" {
@@ -68,7 +64,7 @@ func protectDesktopStores(g *Grants, learn bool, goos string) error {
 				}
 				for i, r := range reads {
 					if isUnder(p, r) {
-						return fmt.Errorf("the OpenCode Desktop project store %q could become readable by the agent through the read grant %q: on Linux omac can hide only files that exist when the sandbox starts, and Desktop creates some of these files later. Narrow that grant (sandbox profile, --read or workdir access) so it does not cover %q", path, readGrants[i], filepath.Dir(path))
+						return fmt.Errorf("the OpenCode Desktop folder %q, which holds Desktop's cookies and browser storage, would be readable by the agent through the read grant %q. Narrow that grant (sandbox profile, --read or workdir access) so it does not cover %q", filepath.Dir(path), readGrants[i], filepath.Dir(path))
 					}
 				}
 				if p == filepath.Dir(p) {
