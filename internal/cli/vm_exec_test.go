@@ -633,31 +633,9 @@ func TestBuiltinSkillVMCommandsParse(t *testing.T) {
 			return err
 		}
 		for _, m := range skillVMCommandRe.FindAllStringSubmatch(string(text), -1) {
-			args := strings.Fields(m[1])
-			for i, a := range args {
-				if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") {
-					args[i] = "placeholder" // such as <image>, which must parse as an image reference
-				}
+			if checkVMCommand(t, path, m[1]) {
+				found++
 			}
-			if args[0] == "exec" {
-				if len(args) == 1 {
-					continue // a mention of the verb, not a command
-				}
-				env, _, stderr := vmTestEnv(t)
-				a, _, ok := parseVMExecArgs(args[1:], env)
-				if !ok {
-					t.Errorf("%s: command does not parse: omac vm %s\n%s", path, m[1], stderr())
-				} else if _, err := vm.ResolveEnv(a.envs, func(string) (string, bool) { return "x", true }); err != nil {
-					t.Errorf("%s: omac vm %s: %v", path, m[1], err)
-				}
-			} else {
-				useFakeVM(t, &fakeVMManager{})
-				env, _, stderr := vmTestEnv(t)
-				if code := runVM(args, env); code != ExitOK {
-					t.Errorf("%s: omac vm %s exits %d\n%s", path, m[1], code, stderr())
-				}
-			}
-			found++
 		}
 		return nil
 	})
@@ -667,6 +645,79 @@ func TestBuiltinSkillVMCommandsParse(t *testing.T) {
 	if found == 0 {
 		t.Fatal("found no `omac vm` commands in the built-in skills")
 	}
+}
+
+// The docs show `omac vm` commands to copy, too. Only fenced code blocks
+// count, without a trailing "# comment"; prose names verbs without their
+// arguments.
+func TestDocsVMCommandsParse(t *testing.T) {
+	found := 0
+	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+			return err
+		}
+		text, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		inFence := false
+		for _, line := range strings.Split(string(text), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
+				continue
+			}
+			if !inFence {
+				continue
+			}
+			if i := strings.Index(line, " #"); i >= 0 {
+				line = line[:i]
+			}
+			for _, m := range skillVMCommandRe.FindAllStringSubmatch(line, -1) {
+				if checkVMCommand(t, path, m[1]) {
+					found++
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == 0 {
+		t.Fatal("found no `omac vm` commands in the docs' code blocks")
+	}
+}
+
+// checkVMCommand fails the test when `omac vm <cmdline>` from path would not
+// parse; it reports whether cmdline was a command rather than a mention of
+// a verb.
+func checkVMCommand(t *testing.T, path, cmdline string) bool {
+	t.Helper()
+	args := strings.Fields(cmdline)
+	for i, a := range args {
+		if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") {
+			args[i] = "placeholder" // such as <image>, which must parse as an image reference
+		}
+	}
+	if args[0] == "exec" {
+		if len(args) == 1 {
+			return false
+		}
+		env, _, stderr := vmTestEnv(t)
+		a, _, ok := parseVMExecArgs(args[1:], env)
+		if !ok {
+			t.Errorf("%s: command does not parse: omac vm %s\n%s", path, cmdline, stderr())
+		} else if _, err := vm.ResolveEnv(a.envs, func(string) (string, bool) { return "x", true }); err != nil {
+			t.Errorf("%s: omac vm %s: %v", path, cmdline, err)
+		}
+		return true
+	}
+	useFakeVM(t, &fakeVMManager{})
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM(args, env); code != ExitOK {
+		t.Errorf("%s: omac vm %s exits %d\n%s", path, cmdline, code, stderr())
+	}
+	return true
 }
 
 func TestOmacVMSkillNamesSessionVariable(t *testing.T) {
