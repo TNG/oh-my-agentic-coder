@@ -25,18 +25,14 @@ import (
 //	MATRIX filtered+proxy/kernel/unix-connect-unixdir allowed
 //
 // Comparing these lines between two commits shows every access a change
-// opens or closes. A probe with an expected result fails the test when it
-// differs; see the want field of each probe in usabilityFixture.probes.
+// opens or closes. Each probe also has an expected result per scenario (see
+// usabilityProbe), and the test fails where the result differs.
 func TestIntegrationUsabilityMatrix(t *testing.T) {
 	fx := newUsabilityFixture(t)
 	// Every probe must succeed outside the sandbox, so a "denied" row can
 	// only come from the profile.
 	for _, pr := range fx.probes() {
-		out, err := usabilityRunArgv(append([]string{"/bin/sh", "-c", pr.script, "sh"}, pr.args...), fx.workdir)
-		if pr.creates != "" {
-			os.Remove(pr.creates)
-		}
-		if err != nil {
+		if out, err := fx.run(t, nil, pr); err != nil {
 			t.Fatalf("probe %s fails outside the sandbox: %v: %s", pr.name, err, out)
 		}
 	}
@@ -44,17 +40,14 @@ func TestIntegrationUsabilityMatrix(t *testing.T) {
 		t.Run(sc.name+"/"+sc.enforcement, func(t *testing.T) {
 			g := fx.grants(t, sc)
 			for _, pr := range fx.probes() {
-				out, err := usabilityRun(t, g, pr.script, pr.args...)
-				if pr.creates != "" {
-					os.Remove(pr.creates)
-				}
+				out, err := fx.run(t, g, pr)
 				result := usabilityAllowed
 				if err != nil {
 					result = usabilityDenied
 					t.Logf("%s denied: %v: %s", pr.name, err, out)
 				}
 				fmt.Printf("MATRIX %s/%s/%s %s\n", sc.name, sc.enforcement, pr.name, result)
-				if want := pr.expect(sc); want != usabilityAny && result != want {
+				if want := pr.expect(sc); result != want {
 					t.Errorf("%s: got %s, want %s", pr.name, result, want)
 				}
 			}
@@ -71,6 +64,10 @@ type usabilityScenario struct {
 func (sc usabilityScenario) allowsAllNetwork() bool {
 	return sc.mode == sandboxprofile.ModeOpen || sc.enforcement == sandboxprofile.EnforceEnvOnly
 }
+
+// bindGranted reports whether filtered mode allows network-bind: a listen or
+// open port grants it for every port and socket path.
+func bindGranted(sc usabilityScenario) bool { return sc.listen || sc.openPort }
 
 func usabilityScenarios() []usabilityScenario {
 	k, env := sandboxprofile.EnforceKernel, sandboxprofile.EnforceEnvOnly
@@ -89,26 +86,29 @@ func usabilityScenarios() []usabilityScenario {
 const (
 	usabilityAllowed = "allowed"
 	usabilityDenied  = "denied"
-	usabilityAny     = "" // reported, not asserted
 )
 
 type usabilityProbe struct {
 	name string
-	// want is the result in every scenario. A network probe without one
-	// must be allowed where the profile allows all network.
-	want    string
-	network bool
-	script  string
-	args    []string
+	// want is the result in every scenario. A network probe has grantedBy
+	// instead: it must be allowed where the profile allows all network or
+	// grantedBy holds, and denied elsewhere.
+	want      string
+	grantedBy func(usabilityScenario) bool
+	script    string
+	args      []string
 	// creates is removed after the probe, so each scenario starts clean.
 	creates string
 }
 
 func (pr usabilityProbe) expect(sc usabilityScenario) string {
-	if pr.want == usabilityAny && pr.network && sc.allowsAllNetwork() {
+	if pr.grantedBy == nil {
+		return pr.want
+	}
+	if sc.allowsAllNetwork() || pr.grantedBy(sc) {
 		return usabilityAllowed
 	}
-	return pr.want
+	return usabilityDenied
 }
 
 // usabilityFixture holds the folders, sockets and servers the probes use.
@@ -228,19 +228,19 @@ func (fx *usabilityFixture) probes() []usabilityProbe {
 	run := `"$1"`
 	port := strconv.Itoa
 	join := filepath.Join
-	A, D, X := usabilityAllowed, usabilityDenied, usabilityAny
+	A, D := usabilityAllowed, usabilityDenied
 	file := func(name, want, script, path string) usabilityProbe {
 		return usabilityProbe{name: name, want: want, script: script, args: []string{path}}
 	}
 	created := func(name, want, script, path string) usabilityProbe {
 		return usabilityProbe{name: name, want: want, script: script, args: []string{path}, creates: path}
 	}
-	netProbe := func(name, script, arg string) usabilityProbe {
-		return usabilityProbe{name: name, network: true, script: script, args: []string{arg}}
+	netProbe := func(name, script, arg string, grantedBy func(usabilityScenario) bool) usabilityProbe {
+		return usabilityProbe{name: name, grantedBy: grantedBy, script: script, args: []string{arg}}
 	}
-	bind := func(name, want, dir string) usabilityProbe {
+	bind := func(name, dir string) usabilityProbe {
 		path := join(dir, "b.sock")
-		return usabilityProbe{name: name, want: want, network: true, script: bindUnix, args: []string{path}, creates: path}
+		return usabilityProbe{name: name, grantedBy: bindGranted, script: bindUnix, args: []string{path}, creates: path}
 	}
 	return []usabilityProbe{
 		file("workdir-read", A, read, join(fx.workdir, "seed.txt")),
@@ -257,45 +257,47 @@ func (fx *usabilityFixture) probes() []usabilityProbe {
 		{name: "exec-usr-bin", want: A, script: `/usr/bin/env /usr/bin/true && /usr/bin/uname >/dev/null`},
 		{name: "dev-null-urandom", want: A, script: `echo x > /dev/null && /usr/bin/head -c1 /dev/urandom >/dev/null`},
 		{name: "pty", want: A, script: `/usr/bin/script -q /dev/null /bin/sh -c 'test -t 0 && test -t 1'`},
-		netProbe("tcp-connect-proxy-port", curlTCP, port(fx.proxyPort)),
-		netProbe("tcp-connect-open-port", curlTCP, port(fx.openPort)),
-		netProbe("tcp-connect-other-port", curlTCP, port(fx.otherPort)),
-		netProbe("tcp-listen", listenTCP, port(fx.listenPort)),
+		netProbe("tcp-connect-proxy-port", curlTCP, port(fx.proxyPort), func(sc usabilityScenario) bool { return sc.proxy }),
+		netProbe("tcp-connect-open-port", curlTCP, port(fx.openPort), func(sc usabilityScenario) bool { return sc.openPort }),
+		netProbe("tcp-connect-other-port", curlTCP, port(fx.otherPort), func(usabilityScenario) bool { return false }),
+		netProbe("tcp-listen", listenTCP, port(fx.listenPort), bindGranted),
 		file("unix-connect-unixdir", A, curlUnix, fx.unixSock()),
 		file("unix-connect-socket-grant", A, curlUnix, fx.grantedSock()),
-		bind("unix-bind-unixdir", X, fx.unixDir),
-		bind("unix-bind-workdir", X, fx.workdir),
-		bind("unix-bind-tmpdir", X, fx.tmp),
+		bind("unix-bind-unixdir", fx.unixDir),
+		bind("unix-bind-workdir", fx.workdir),
+		bind("unix-bind-tmpdir", fx.tmp),
 		file("protected-read", D, read, join(fx.prot, "secret.txt")),
 		file("protected-list", D, `/bin/ls "$1" >/dev/null`, fx.prot),
 		created("protected-write", D, write, join(fx.prot, "new.txt")),
 		file("protected-exec", D, run, join(fx.prot, "true")),
 		file("protected-unix-connect", D, curlUnix, fx.protSock()),
 		file("protected-unix-connect-symlink", D, curlUnix, join(fx.workdir, "p.sock")),
-		bind("protected-unix-bind", D, fx.prot),
+		created("protected-unix-bind", D, bindUnix, join(fx.prot, "b.sock")),
 		file("protected-ssh-read", D, read, join(fx.home, ".ssh", "id_test")),
 		file("keychain-name-read", D, read, join(fx.workdir, "signing.keychain-db")),
 	}
 }
 
-// usabilityRun runs the shell script in the sandbox with args as $1, $2, ...
-// and returns its output and exit error.
-func usabilityRun(t *testing.T, g *Grants, script string, args ...string) (string, error) {
+// run runs the probe's shell script with its args as $1, $2, ..., in the
+// sandbox when g is not nil, and returns the output and exit error.
+func (fx *usabilityFixture) run(t *testing.T, g *Grants, pr usabilityProbe) (string, error) {
 	t.Helper()
-	argv, err := BuildChildArgv(g, append([]string{"/bin/sh", "-c", script, "sh"}, args...))
-	if err != nil {
-		t.Fatal(err)
+	argv := append([]string{"/bin/sh", "-c", pr.script, "sh"}, pr.args...)
+	if g != nil {
+		var err error
+		if argv, err = BuildChildArgv(g, argv); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return usabilityRunArgv(argv, g.Workdir)
-}
-
-func usabilityRunArgv(argv []string, dir string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = dir
+	cmd.Dir = fx.workdir
 	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
+	if pr.creates != "" {
+		os.Remove(pr.creates)
+	}
 	return string(out), err
 }
 
