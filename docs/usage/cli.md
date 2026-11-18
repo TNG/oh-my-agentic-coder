@@ -214,7 +214,7 @@ The omac VM is one long-lived Linux virtual machine per computer, which omac cre
 
 ```bash
 omac vm up                     # create, provision and switch offline (needs network once); later: start the VM in its last mode
-omac vm status                 # show state, mode, ports, images, sessions and the resources set in vm.yaml
+omac vm status                 # show state, mode, ports, images, sessions, resources from vm.yaml or defaults
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
