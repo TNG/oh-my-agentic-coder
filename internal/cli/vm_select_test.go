@@ -209,7 +209,7 @@ func TestPrepareVMAttachUsesMappedInstance(t *testing.T) {
 	env := devnullEnv(t)
 	env.Workdir = worktree
 
-	info, markers, err := prepareVMAttach(context.Background(), env, "", worktree)
+	info, markers, err := prepareVMAttach(context.Background(), env, "", worktree, protectingPlan())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestPrepareVMAttachExplicitNameOverridesMapping(t *testing.T) {
 	createVMState(t, "other")
 	names := recordVMManagers(t)
 
-	info, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "other", worktree)
+	info, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "other", worktree, protectingPlan())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestPrepareVMAttachUnknownInstanceAborts(t *testing.T) {
 				writeVMProjectMap(t, tc.mapping)
 			}
 			names := recordVMManagers(t)
-			_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), tc.explicit, worktree)
+			_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), tc.explicit, worktree, protectingPlan())
 			if err == nil || markers != nil {
 				t.Fatalf("prepareVMAttach = (markers=%v, %v), want an error", markers != nil, err)
 			}
@@ -277,7 +277,7 @@ func TestPrepareVMAttachMissingDefaultNamesNothingExtra(t *testing.T) {
 	orig := newVMManager
 	newVMManager = func(*Env, string) (vmManager, error) { return &attachErrManager{err: vm.ErrNotCreated}, nil }
 	t.Cleanup(func() { newVMManager = orig })
-	_, _, err := prepareVMAttach(context.Background(), devnullEnv(t), "", worktree)
+	_, _, err := prepareVMAttach(context.Background(), devnullEnv(t), "", worktree, protectingPlan())
 	if err == nil || strings.Contains(err.Error(), "--name") {
 		t.Fatalf("err = %v, want the plain hint for the default VM", err)
 	}
@@ -298,7 +298,7 @@ func TestPrepareVMAttachHintNamesNonDefaultInstance(t *testing.T) {
 	orig := newVMManager
 	newVMManager = func(*Env, string) (vmManager, error) { return &attachErrManager{err: vm.ErrNotRunning}, nil }
 	t.Cleanup(func() { newVMManager = orig })
-	_, _, err := prepareVMAttach(context.Background(), devnullEnv(t), "yarp3", worktree)
+	_, _, err := prepareVMAttach(context.Background(), devnullEnv(t), "yarp3", worktree, protectingPlan())
 	if !errors.Is(err, vm.ErrNotRunning) || !strings.Contains(err.Error(), "`omac vm up --name yarp3`") {
 		t.Fatalf("err = %v, want ErrNotRunning with the hint naming yarp3", err)
 	}

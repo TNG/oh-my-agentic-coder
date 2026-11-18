@@ -56,7 +56,7 @@ func TestVMAttachExitCode(t *testing.T) {
 func stubVMAttachFailure(t *testing.T, err error) {
 	t.Helper()
 	orig := prepareVMAttach
-	prepareVMAttach = func(context.Context, *Env, string, string) (vm.AttachInfo, *vmMarkers, error) {
+	prepareVMAttach = func(context.Context, *Env, string, string, sandboxPlan) (vm.AttachInfo, *vmMarkers, error) {
 		return vm.AttachInfo{}, nil, err
 	}
 	t.Cleanup(func() { prepareVMAttach = orig })
@@ -327,21 +327,13 @@ func TestVMProfileMisuse(t *testing.T) {
 
 // The sandbox must never reach the VM state: it holds the admin key and the
 // session markers.
-func TestVMProfileMisuseRefusesReachableState(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	root, err := vm.InstanceRoot(vm.DefaultVMName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unprotected := sandboxprofile.DefaultProfile()
-	unprotected.Filesystem.OverrideDeny = []string{root}
+func TestVMProfileMisuseRefusesLearnAndUnloadedPolicy(t *testing.T) {
 	learnLauncher := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--learn", "--", "{{inner_cmd}}"}}
 	cases := []struct {
 		name string
 		plan sandboxPlan
 		want string
 	}{
-		{"override_deny unblocks the state", sandboxPlan{Native: true, PolicyRef: "custom", Policy: unprotected}, root},
 		{"launcher runs --learn", sandboxPlan{Name: "learner", Native: true, Launcher: learnLauncher, Policy: sandboxprofile.DefaultProfile()}, "--learn"},
 		{"policy not loaded", sandboxPlan{Native: true, PolicyRef: "broken", PolicyErr: errors.New("bad json")}, "bad json"},
 	}
@@ -438,6 +430,7 @@ type attachOrderManager struct {
 	fakeVMManager
 	sessions  string
 	sawMarker bool
+	attached  bool
 	attachErr error
 	agentKey  string
 }
@@ -445,6 +438,7 @@ type attachOrderManager struct {
 func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 	_, err := os.Stat(filepath.Join(a.sessions, strconv.Itoa(os.Getpid())))
 	a.sawMarker = err == nil
+	a.attached = true
 	return vm.AttachInfo{SSHPort: 1, AgentKeyPath: a.agentKey}, a.attachErr
 }
 
@@ -465,7 +459,7 @@ func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, 
 
 func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 	fake, sessions := useAttachOrderManager(t, nil)
-	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
+	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir(), protectingPlan())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +474,7 @@ func TestPrepareVMAttachRegistersBeforeChecking(t *testing.T) {
 
 func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, vm.ErrOnline)
-	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir())
+	_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), "", t.TempDir(), protectingPlan())
 	if !errors.Is(err, vm.ErrOnline) || markers != nil {
 		t.Fatalf("prepareVMAttach = (markers=%v, %v), want (nil, ErrOnline)", markers != nil, err)
 	}
@@ -491,7 +485,7 @@ func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 
 func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, nil)
-	if _, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), "", t.TempDir()); err == nil {
+	if _, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), "", t.TempDir(), protectingPlan()); err == nil {
 		t.Fatal("attachVM succeeded without an agent key, want an error")
 	}
 	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
@@ -544,6 +538,53 @@ func TestSandboxDeniesIgnoreRelativeStateHome(t *testing.T) {
 	session, _ := sandboxprofile.Merge(sandboxprofile.DefaultProfile(), flags)
 	if err := session.Validate(); err != nil {
 		t.Errorf("the launch's sandbox profile is invalid: %v", err)
+	}
+}
+
+// protectingPlan is the plan of the default sandbox profile, which protects
+// the state of every VM.
+func protectingPlan() sandboxPlan {
+	return sandboxPlan{Native: true, PolicyRef: "default", Policy: sandboxprofile.DefaultProfile()}
+}
+
+func TestPrepareVMAttachRefusesReachableState(t *testing.T) {
+	for _, name := range []string{vm.DefaultVMName, "acme"} {
+		t.Run(name, func(t *testing.T) {
+			fake, _ := useAttachOrderManager(t, nil)
+			origState := loadVMState
+			loadVMState = func(string) (*vm.State, error) { return &vm.State{Mode: vm.ModeOffline}, nil }
+			t.Cleanup(func() { loadVMState = origState })
+			root, err := vm.InstanceRoot(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unprotected := sandboxprofile.DefaultProfile()
+			// The baseline protects a named VM through its parent, vms/.
+			unprotected.Filesystem.OverrideDeny = []string{root, filepath.Dir(root)}
+			for _, plan := range []sandboxPlan{
+				{Native: true, PolicyRef: "custom", Policy: unprotected},
+				{Native: true, PolicyRef: "broken"},
+			} {
+				_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), plan)
+				if !errors.Is(err, errVMStateReachable) || !strings.Contains(err.Error(), root) || markers != nil {
+					t.Errorf("profile %s: prepareVMAttach = (markers=%v, %v), want a refusal naming %s", plan.PolicyRef, markers != nil, err, root)
+				}
+				if code := vmAttachExitCode(err); code != ExitMisuse {
+					t.Errorf("profile %s: exit code %d, want ExitMisuse", plan.PolicyRef, code)
+				}
+				if fake.attached {
+					t.Errorf("profile %s: the VM was probed before the refusal", plan.PolicyRef)
+				}
+				if entries, _ := os.ReadDir(vm.NewLayout(root).SessionsDir); len(entries) != 0 {
+					t.Errorf("profile %s: markers written before the refusal: %v", plan.PolicyRef, entries)
+				}
+			}
+			_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), protectingPlan())
+			if err != nil {
+				t.Fatalf("default profile: %v", err)
+			}
+			markers.release()
+		})
 	}
 }
 

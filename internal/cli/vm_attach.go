@@ -28,8 +28,8 @@ type vmSession struct {
 // must be the session's temp dir, removed when omac exits normally,
 // because <tmpDir>/vm holds a copy of the agent's SSH key. The VM is never
 // booted or stopped here; it outlives every session.
-func attachVM(ctx context.Context, env *Env, tmpDir, explicit, dir string) (*vmSession, error) {
-	info, markers, err := prepareVMAttach(ctx, env, explicit, dir)
+func attachVM(ctx context.Context, env *Env, tmpDir, explicit, dir string, plan sandboxPlan) (*vmSession, error) {
+	info, markers, err := prepareVMAttach(ctx, env, explicit, dir, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (e errNoVMInstance) Is(target error) bool { return target == vm.ErrNotCreat
 // means `omac vm online`, which re-checks the markers after marking itself
 // online, either sees this session or makes the check below fail. Tests
 // replace it.
-var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string) (vm.AttachInfo, *vmMarkers, error) {
+var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string, plan sandboxPlan) (vm.AttachInfo, *vmMarkers, error) {
 	sel, err := selectVM(explicit, dir)
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
@@ -248,6 +248,9 @@ var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string) 
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
+	if err := vmStateReachable(plan, root); err != nil {
+		return vm.AttachInfo{}, nil, err
+	}
 	markers := &vmMarkers{layout: vm.NewLayout(root)}
 	if err := markers.add(os.Getpid()); err != nil {
 		return vm.AttachInfo{}, nil, err
@@ -266,6 +269,8 @@ var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string) 
 // are missing prerequisites of the session.
 func vmAttachExitCode(err error) int {
 	switch {
+	case errors.Is(err, errVMStateReachable):
+		return ExitMisuse
 	case errors.Is(err, vm.ErrLimaMissing),
 		errors.Is(err, vm.ErrNotCreated),
 		errors.Is(err, vm.ErrNotRunning),
@@ -361,19 +366,26 @@ func vmProfileMisuse(plan sandboxPlan) string {
 	if plan.Policy == nil {
 		return fmt.Sprintf("--vm: sandbox profile %q could not be loaded (%v), so omac cannot check that it keeps the VM state protected", plan.PolicyRef, plan.PolicyErr)
 	}
-	root, err := vm.InstanceRoot(vm.DefaultVMName)
-	if err != nil {
-		return "--vm: " + err.Error()
-	}
-	if _, ok := sandboxrun.NewProtectedPathSet(plan.Policy).IsProtected(root); !ok {
-		return fmt.Sprintf("--vm: the sandbox could reach the VM state in %s; sandbox profile %q must keep it protected (check filesystem.override_deny)", root, plan.PolicyRef)
-	}
 	for _, name := range vmEnvNames {
 		if sandboxprofile.EnvDenied(name, plan.Policy.Environment.DenyVars) {
 			return fmt.Sprintf("--vm: sandbox profile %q denies %s in environment.deny_vars, so the agent would not see the VM; remove the matching entry", plan.PolicyRef, name)
 		}
 	}
 	return ""
+}
+
+var errVMStateReachable = errors.New("the sandbox could reach the VM state")
+
+// vmStateReachable refuses a VM whose state directory root the sandbox
+// policy of plan does not protect, for example because its
+// filesystem.override_deny lifts it.
+func vmStateReachable(plan sandboxPlan, root string) error {
+	if plan.Policy != nil {
+		if _, ok := sandboxrun.NewProtectedPathSet(plan.Policy).IsProtected(root); ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w in %s; sandbox profile %q must keep it protected (check filesystem.override_deny)", errVMStateReachable, root, plan.PolicyRef)
 }
 
 // launcherLearns reports whether a `{{self}} sandbox run` launcher command

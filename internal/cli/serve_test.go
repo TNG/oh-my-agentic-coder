@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
@@ -900,14 +903,31 @@ func TestServeDesktopVMStateIsProtected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f, _ := wireForTest(t, "", false)
+			plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			origManager, origState := newVMManager, loadVMState
+			newVMManager = func(*Env, string) (vmManager, error) { return &attachOrderManager{}, nil }
+			loadVMState = func(string) (*vm.State, error) { return &vm.State{Mode: vm.ModeOffline}, nil }
+			t.Cleanup(func() { newVMManager, loadVMState = origManager, origState })
 			for _, name := range []string{vm.DefaultVMName, "acme"} {
+				_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), plan)
+				if err != nil {
+					t.Errorf("VM %s: attach refused with the default profile (XDG_STATE_HOME=%q): %v", name, os.Getenv("XDG_STATE_HOME"), err)
+					continue
+				}
+				markers.release()
 				root, err := vm.InstanceRoot(name)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, ok := f.ProtectedPathChecker.IsProtected(root); !ok {
-					t.Errorf("VM %s state %s is not protected (XDG_STATE_HOME=%q)", name, root, os.Getenv("XDG_STATE_HOME"))
+				lifted := plan
+				lifted.Policy = sandboxprofile.DefaultProfile()
+				// The baseline protects a named VM through its parent, vms/.
+				lifted.Policy.Filesystem.OverrideDeny = []string{root, filepath.Dir(root)}
+				if _, _, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), lifted); !errors.Is(err, errVMStateReachable) {
+					t.Errorf("VM %s: override_deny on %s not refused: %v", name, root, err)
 				}
 			}
 		})

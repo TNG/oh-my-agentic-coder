@@ -384,7 +384,7 @@ func runServe(args []string, env *Env) int {
 		if workdir != "" {
 			vmDir = workdir
 		}
-		vmSess, err = attachVM(ctx, env, sandboxTmp, parsed.vmName, vmDir)
+		vmSess, err = attachVM(ctx, env, sandboxTmp, parsed.vmName, vmDir, plan)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
 			return vmAttachExitCode(err)
