@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -622,53 +623,29 @@ var skillVMCommandRe = regexp.MustCompile("omac vm ([a-z][^`\n]*)")
 // The built-in skills tell agents and humans which `omac vm` commands to run,
 // so a renamed verb or flag must fail here rather than in their terminal.
 func TestBuiltinSkillVMCommandsParse(t *testing.T) {
-	bundles := os.DirFS("../builtinskills/assets")
-	found := 0
-	err := fs.WalkDir(bundles, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
-			return err
-		}
-		text, err := fs.ReadFile(bundles, path)
-		if err != nil {
-			return err
-		}
-		for _, m := range skillVMCommandRe.FindAllStringSubmatch(string(text), -1) {
-			if checkVMCommand(t, path, m[1]) {
-				found++
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if found == 0 {
-		t.Fatal("found no `omac vm` commands in the built-in skills")
-	}
+	checkVMCommandsIn(t, os.DirFS("../builtinskills/assets"))
 }
 
-// The docs show `omac vm` commands to copy, too. Only fenced code blocks
-// count, without a trailing "# comment"; prose names verbs without their
-// arguments.
+// The docs show `omac vm` commands to copy, too, in code blocks and inline.
 func TestDocsVMCommandsParse(t *testing.T) {
+	checkVMCommandsIn(t, os.DirFS("../../docs"))
+}
+
+// checkVMCommandsIn checks every `omac vm` command on every line of the
+// Markdown files in dir. A trailing " # comment", as in a code block, is
+// not part of the command.
+func checkVMCommandsIn(t *testing.T, dir fs.FS) {
+	t.Helper()
 	found := 0
-	err := filepath.WalkDir("../../docs", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(dir, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
 			return err
 		}
-		text, err := os.ReadFile(path)
+		text, err := fs.ReadFile(dir, path)
 		if err != nil {
 			return err
 		}
-		inFence := false
 		for _, line := range strings.Split(string(text), "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "```") {
-				inFence = !inFence
-				continue
-			}
-			if !inFence {
-				continue
-			}
 			if i := strings.Index(line, " #"); i >= 0 {
 				line = line[:i]
 			}
@@ -684,31 +661,42 @@ func TestDocsVMCommandsParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	if found == 0 {
-		t.Fatal("found no `omac vm` commands in the docs' code blocks")
+		t.Fatal("found no `omac vm` commands")
 	}
 }
 
+// vmVerbMentions are verbs that prose names without the arguments they
+// need.
+var vmVerbMentions = []string{"exec", "image add", "image rm"}
+
 // checkVMCommand fails the test when `omac vm <cmdline>` from path would not
-// parse; it reports whether cmdline was a command rather than a mention of
-// a verb.
+// run; it reports whether cmdline was a command rather than a mention of
+// a verb. exec runs through the dispatcher with a fake copy and VM.
 func checkVMCommand(t *testing.T, path, cmdline string) bool {
 	t.Helper()
 	args := strings.Fields(cmdline)
+	if slices.Contains(vmVerbMentions, strings.Join(args, " ")) {
+		return false
+	}
 	for i, a := range args {
 		if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") {
 			args[i] = "placeholder" // such as <image>, which must parse as an image reference
 		}
 	}
 	if args[0] == "exec" {
-		if len(args) == 1 {
-			return false
+		calls := useFakeVMExec(t, nil, 0, nil)
+		for i, a := range args {
+			spec, ok := strings.CutPrefix(a, "--env=")
+			if !ok && a == "--env" && i+1 < len(args) {
+				spec, ok = args[i+1], true
+			}
+			if name, _, hasValue := strings.Cut(spec, "="); ok && !hasValue {
+				t.Setenv(name, "x")
+			}
 		}
 		env, _, stderr := vmTestEnv(t)
-		a, _, ok := parseVMExecArgs(args[1:], env)
-		if !ok {
-			t.Errorf("%s: command does not parse: omac vm %s\n%s", path, cmdline, stderr())
-		} else if _, err := vm.ResolveEnv(a.envs, func(string) (string, bool) { return "x", true }); err != nil {
-			t.Errorf("%s: omac vm %s: %v", path, cmdline, err)
+		if code := runVM(args, env); code != ExitOK || len(*calls) != 1 {
+			t.Errorf("%s: omac vm %s exits %d without running\n%s", path, cmdline, code, stderr())
 		}
 		return true
 	}
@@ -718,6 +706,18 @@ func checkVMCommand(t *testing.T, path, cmdline string) bool {
 		t.Errorf("%s: omac vm %s exits %d\n%s", path, cmdline, code, stderr())
 	}
 	return true
+}
+
+// The skill quotes omac's exit codes, so the agent can tell them from the
+// command's own.
+func TestOmacVMSkillNamesExitCodes(t *testing.T) {
+	text, err := os.ReadFile("../builtinskills/assets/omac-vm/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("(%d, %d or %d)", ExitMisuse, ExitPrerequisiteMissing, ExitIOError); !strings.Contains(string(text), want) {
+		t.Errorf("SKILL.md does not name omac's exit codes as %q", want)
+	}
 }
 
 func TestOmacVMSkillNamesSessionVariable(t *testing.T) {
