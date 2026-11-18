@@ -222,6 +222,24 @@ func TestIgnoredPathsIncludesNestedSubmodules(t *testing.T) {
 	}
 }
 
+// echo in /bin/sh may turn the backslash in x\ty into a tab.
+func TestIgnoredPathsKeepsBackslashInSubmodulePath(t *testing.T) {
+	lib := newRepo(t, map[string]string{".gitignore": "out/\n", "lib.go": "package lib"})
+	git(t, lib, "add", ".")
+	git(t, lib, "commit", "-qm", "init")
+	top := newRepo(t, map[string]string{"src/a.go": "package a"})
+	git(t, top, "submodule", "add", "-q", lib, `libs/x\ty`)
+	writeFiles(t, top, map[string]string{`libs/x\ty/out/o.class`: "x"})
+
+	got, err := IgnoredPaths(context.Background(), ExecRunner, top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{`libs/x\ty/out/`}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ignored = %q, want %q", got, want)
+	}
+}
+
 // A sandboxed agent can edit git config inside the worktree; the host's git
 // calls must not run the command it plants.
 func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
@@ -283,7 +301,7 @@ func subRunner(lsFiles func(stdout io.Writer) error) CommandRunner {
 		inSub := args[1] == "/w/repo/libs/lib"
 		switch {
 		case slices.Contains(args, "submodule") && !inSub:
-			_, _ = io.WriteString(stdout, "libs/lib\n")
+			_, _ = io.WriteString(stdout, "libs/lib\x00")
 		case slices.Contains(args, "--ignored") && inSub:
 			return lsFiles(stdout)
 		}

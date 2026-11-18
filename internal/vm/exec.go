@@ -159,12 +159,12 @@ func IgnoredPaths(ctx context.Context, run CommandRunner, top string) ([]string,
 				paths = append(paths, root+p)
 			}
 		}
-		subs, err := gitOutput(ctx, run, dir, "submodule", "--quiet", "foreach", `echo "$displaypath"`)
+		subs, err := gitOutput(ctx, run, dir, "submodule", "--quiet", "foreach", `printf '%s\0' "$displaypath"`)
 		if err != nil {
 			return nil, err
 		}
-		for line := range strings.Lines(subs) {
-			if sub := strings.TrimRight(line, "\r\n"); sub != "" {
+		for _, sub := range strings.Split(subs, "\x00") {
+			if sub != "" {
 				roots = append(roots, root+sub+"/")
 			}
 		}
