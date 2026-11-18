@@ -134,16 +134,11 @@ error in these cases:
 - with a sandbox profile other than omac's own (`builtin`), such as
   [nono](./nono.md);
 - when a write grant covers one of Desktop's folders above, on the path as
-  written or on the real path. For example, a sandbox profile with
-  `"allow": ["~/.config"]` gives the agent write access to
-  `~/.config/ai.opencode.desktop`. omac then prints:
-
-  ```text
-  omac sandbox: the OpenCode Desktop project store "/home/you/.config/ai.opencode.desktop/opencode.global.dat" would be writable by the agent through the write grant "/home/you/.config". Narrow that grant (sandbox profile, --allow or --write) to your project folders
-  ```
-
-  Grant only the folders the agent needs, such as
-  `"allow": ["~/work/my-project"]`;
+  written or on the real path. This includes the folder you start
+  `omac serve` in: started in your home folder, the agent could write to
+  `~/.config/ai.opencode.desktop`. Start `omac serve` from a project folder,
+  and grant only the folders the agent needs in your sandbox profile, such as
+  `"allow": ["~/work/my-project"]` instead of `"allow": ["~/.config"]`;
 - when a read grant covers one of Desktop's folders, for example
   `"read": ["~/.config"]`, because Desktop keeps its cookies and browser
   storage there, next to its project list;

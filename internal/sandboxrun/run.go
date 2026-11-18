@@ -72,7 +72,7 @@ func resolveRunGrants(merged *sandboxprofile.Profile, flags *sandboxprofile.Flag
 	}
 	if flags.ForOpenCodeDesktop {
 		if err := protectDesktopStores(grants, flags.Learn); err != nil {
-			return nil, err
+			return nil, desktopRefusal{err}
 		}
 	}
 	return grants, nil
@@ -118,6 +118,13 @@ func Run(opts Options) int {
 	warnEmptyAllowVars(stderr, merged.Environment.AllowVars)
 
 	grants, err := resolveRunGrants(merged, opts.Flags, opts.Workdir, diag.Writer())
+	var refusal desktopRefusal
+	if errors.As(err, &refusal) {
+		// Exits 1 like the other supervisor failures, for the reason given
+		// at filterServeAuthEnv below.
+		fmt.Fprintln(stderr, "omac serve:", refusal)
+		return 1
+	}
 	if err != nil {
 		return fail("%v", err)
 	}

@@ -22,7 +22,7 @@ import (
 // can hide only the stores that exist at launch.
 func protectDesktopStores(g *Grants, learn bool) error {
 	if learn {
-		return fmt.Errorf("--for-opencode-desktop cannot be combined with --learn: learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
+		return fmt.Errorf("cannot be combined with --learn, because learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
 	}
 	grants := append(append([]string{}, g.AllowPaths...), g.WritePaths...)
 	writes := make([]string, len(grants))
@@ -45,10 +45,11 @@ func protectDesktopStores(g *Grants, learn bool) error {
 	if len(paths) == 0 {
 		return fmt.Errorf("cannot find OpenCode Desktop's project list because HOME is not set and XDG_STATE_HOME is not an absolute path, so omac cannot keep it out of the agent's reach. Set HOME, or export XDG_STATE_HOME as an absolute path")
 	}
+	workdir := canonicalPath(g.Workdir)
 	denied := append([]string{}, paths...)
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
-			return fmt.Errorf("the OpenCode Desktop project store path %q is not absolute. Set HOME to an absolute path", path)
+			return fmt.Errorf("OpenCode Desktop's file %q is not an absolute path. Set HOME to an absolute path", path)
 		}
 		real, err := realStorePath(path)
 		if err != nil {
@@ -59,12 +60,12 @@ func protectDesktopStores(g *Grants, learn bool) error {
 			for p := route; ; p = filepath.Dir(p) {
 				for i, w := range writes {
 					if isUnder(p, w) {
-						return fmt.Errorf("the OpenCode Desktop project store %q would be writable by the agent through the write grant %q. Narrow that grant (sandbox profile, --allow or --write) to your project folders", path, grants[i])
+						return fmt.Errorf("the agent could change OpenCode Desktop's file %q through the write grant %q%s", path, grants[i], narrowGrantAdvice(w, workdir))
 					}
 				}
 				for i, r := range reads {
 					if isUnder(p, r) {
-						return fmt.Errorf("the OpenCode Desktop folder %q, which holds Desktop's cookies and browser storage, would be readable by the agent through the read grant %q. Narrow that grant (sandbox profile, --read or workdir access) so it does not cover %q", filepath.Dir(path), readGrants[i], filepath.Dir(path))
+						return fmt.Errorf("the agent could read OpenCode Desktop's folder %q, which holds Desktop's cookies and browser storage, through the read grant %q%s", filepath.Dir(path), readGrants[i], narrowGrantAdvice(r, workdir))
 					}
 				}
 				if p == filepath.Dir(p) {
@@ -77,13 +78,29 @@ func protectDesktopStores(g *Grants, learn bool) error {
 	return nil
 }
 
+// narrowGrantAdvice tells a user of omac serve how to remove a grant that
+// covers Desktop's files. Both arguments are canonical paths.
+func narrowGrantAdvice(grant, workdir string) string {
+	if grant == workdir {
+		return ", the folder omac serve was started in. Start omac serve from a project folder instead"
+	}
+	return `. Narrow that grant to your project folders in the "filesystem" section of your sandbox profile`
+}
+
+// desktopRefusal is an error from protectDesktopStores. Only omac serve
+// passes --for-opencode-desktop, so Run reports it as serve's own error.
+type desktopRefusal struct{ err error }
+
+func (r desktopRefusal) Error() string { return "--for-opencode-desktop: " + r.err.Error() }
+func (r desktopRefusal) Unwrap() error { return r.err }
+
 // realStorePath returns the store path with every symlink resolved. A
 // link whose target is missing is followed as written, so the check also
 // covers the place where its target would appear. A store that is itself
 // a symlink is refused: its target could be any file.
 func realStorePath(store string) (string, error) {
 	if fi, err := os.Lstat(store); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("--for-opencode-desktop: OpenCode Desktop's file %q is a symlink, so omac cannot keep it out of the agent's reach. Replace the link with the file it points to, or run without --for-opencode-desktop", store)
+		return "", fmt.Errorf("OpenCode Desktop's file %q is a symlink, so omac cannot keep it out of the agent's reach. Replace the link with the file it points to, or run without --for-opencode-desktop", store)
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("inspect OpenCode Desktop's file %q: %w", store, err)
 	}

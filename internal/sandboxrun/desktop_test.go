@@ -68,6 +68,38 @@ func TestProtectDesktopStores(t *testing.T) {
 	}
 }
 
+// The refusal names only what a user of omac serve can change: the
+// folder it was started in, or the sandbox profile.
+func TestProtectDesktopStoresAdvice(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	for _, tc := range []struct {
+		name string
+		g    *Grants
+		want string
+	}{
+		{"write on workdir", &Grants{Workdir: home, AllowPaths: []string{home}}, "the folder omac serve was started in. Start omac serve from a project folder"},
+		{"read on workdir", &Grants{Workdir: home, ReadPaths: []string{home}}, "the folder omac serve was started in. Start omac serve from a project folder"},
+		{"write from profile", &Grants{Workdir: t.TempDir(), AllowPaths: []string{home}}, `"filesystem" section of your sandbox profile`},
+	} {
+		err := protectDesktopStores(tc.g, false)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error = %v, want it to contain %q", tc.name, err, tc.want)
+		}
+		for _, flag := range []string{"--allow", "--write", "--read"} {
+			if err != nil && strings.Contains(err.Error(), flag) {
+				t.Errorf("%s: error %q names %s, which omac serve doesn't have", tc.name, err, flag)
+			}
+		}
+	}
+}
+
 // A home reached through a symlink works, as long as no grant lets the
 // agent re-point the link or change its target (ADR 0002).
 func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
@@ -191,7 +223,7 @@ func TestResolveRunGrantsProtectsDesktopStores(t *testing.T) {
 		return resolveRunGrants(merged, flags, workdir, nil)
 	}
 
-	if _, err := resolve("--for-opencode-desktop", "--allow", state); err == nil || !strings.Contains(err.Error(), "would be writable by the agent through the write grant") {
+	if _, err := resolve("--for-opencode-desktop", "--allow", state); err == nil || !strings.Contains(err.Error(), "could change OpenCode Desktop's file") {
 		t.Errorf("write grant on the Desktop dir: error = %v, want a refusal", err)
 	}
 	if _, err := resolve("--for-opencode-desktop", "--learn", "--allow-literal", runtimeDir); err == nil || !strings.Contains(err.Error(), "--learn") {
@@ -247,5 +279,27 @@ func TestDesktopLiteralGrantStillScansSecrets(t *testing.T) {
 	}
 	if !slices.Contains(g.ProtectedPaths, secret) {
 		t.Fatal("literal grant bypasses secret scan")
+	}
+}
+
+// Only omac serve passes --for-opencode-desktop, so its refusals must
+// reach the user as serve's own error, before anything is launched.
+func TestRunReportsDesktopRefusalAsServeError(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	flags, err := sandboxprofile.ParseFlags([]string{"--for-opencode-desktop", "--allow", home, "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	code := Run(Options{Flags: flags, Workdir: t.TempDir(), Stderr: &stderr})
+	if code != 1 || !strings.Contains(stderr.String(), "omac serve: --for-opencode-desktop: the agent could change") {
+		t.Errorf("Run = %d, stderr:\n%s\nwant 1 and a refusal from omac serve", code, stderr.String())
 	}
 }
