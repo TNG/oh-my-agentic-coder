@@ -553,6 +553,8 @@ func (f *execFakes) run(_ context.Context, name string, args []string, stdin io.
 			if args[1] == f.top || f.top == "" {
 				_, _ = io.WriteString(stdout, "build/\x00")
 			}
+		case slices.Contains(args, "ls-files"): // the workdir holds a tracked file
+			_, _ = io.WriteString(stdout, f.prefix+"a.go\x00")
 		}
 		return nil
 	case "rsync":
@@ -678,6 +680,7 @@ func TestExecCopiesTopLevelFromSubdir(t *testing.T) {
 
 func TestExecFromSubdirOfRealRepo(t *testing.T) {
 	top := newRepo(t, map[string]string{".gitignore": "build/\n", "build/x": "x", "backend/b.txt": "b"})
+	git(t, top, "add", "backend")
 	f := &execFakes{}
 	run := func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if name == "git" {
@@ -878,22 +881,45 @@ func TestExecRefusesWithoutHome(t *testing.T) {
 }
 
 // A linked worktree whose .git file is gone resolves to the enclosing
-// checkout, which ignores the worktree directory.
-func TestExecRefusesDirectoryGitIgnores(t *testing.T) {
-	for _, c := range []struct{ prefix, cwd string }{
-		{"build/w/", ""},
-		{"build/", ""},
-		{"", "build/x"},
-	} {
-		f := &execFakes{top: "/w/repo", prefix: c.prefix}
-		o := f.opts("/w/repo/"+c.prefix, io.Discard)
-		o.Cwd = c.cwd
-		_, err := Exec(context.Background(), o)
-		if err == nil || !strings.Contains(err.Error(), "ignores") {
-			t.Errorf("Exec in %s%s = %v, want a refusal", c.prefix, c.cwd, err)
+// checkout, which must not be copied, whether or not it ignores the
+// worktree's directory.
+func TestExecRefusesDirectoryGitDoesNotTrack(t *testing.T) {
+	top := newRepo(t, map[string]string{
+		".gitignore":         ".worktrees/\nbuild/\n",
+		"svc/a.go":           "package a",
+		".worktrees/w/a.go":  "package w",
+		"wt/w/a.go":          "package w",
+		"sv*/a.go":           "package n",
+		"build/reports/x.md": "x",
+	})
+	git(t, top, "add", ".gitignore", "svc")
+	git(t, top, "commit", "-qm", "init")
+	f := &execFakes{}
+	run := func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if name == "git" {
+			return ExecRunner(ctx, name, args, stdin, stdout, stderr)
 		}
-		if f.rsync != nil || len(f.remotes) != 0 {
-			t.Errorf("Exec in %s%s copied: rsync=%q ssh=%q", c.prefix, c.cwd, f.rsync, f.remotes)
+		return f.run(ctx, name, args, stdin, stdout, stderr)
+	}
+	for _, c := range []struct {
+		workdir, cwd string
+		refused      bool
+	}{
+		{".worktrees/w", "", true},
+		{"wt/w", "", true},
+		{"sv*", "", true}, // not a glob that matches svc
+		{"svc", "", false},
+		{"", "build/reports", false}, // --cwd names a directory in the VM's copy
+	} {
+		*f = execFakes{}
+		o := f.opts(filepath.Join(top, c.workdir), io.Discard)
+		o.Cwd, o.Run = c.cwd, run
+		_, err := Exec(context.Background(), o)
+		if c.refused && (err == nil || !strings.Contains(err.Error(), "tracks nothing") || f.rsync != nil || len(f.remotes) != 0) {
+			t.Errorf("Exec in %s = %v, rsync %q; want a refusal before any copy", c.workdir, err, f.rsync)
+		}
+		if !c.refused && err != nil {
+			t.Errorf("Exec in %s --cwd %q = %v, want nil", c.workdir, c.cwd, err)
 		}
 	}
 }

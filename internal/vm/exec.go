@@ -305,7 +305,8 @@ type ExecOpts struct {
 // Exec records the copy in ~/omac/.worktrees, copies the git top level of
 // Workdir (or Workdir outside a repository) into the VM (one way, never
 // deleting there), and runs Cmd in it. It refuses a copy that overlaps a
-// path the sandbox protects. While rsync runs, the process's working
+// path the sandbox protects, and a Workdir below the top level in which
+// git tracks no file. While rsync runs, the process's working
 // directory is the copy root. It returns the remote command's exit code;
 // err is set only when omac itself failed.
 func Exec(ctx context.Context, o ExecOpts) (int, error) {
@@ -347,8 +348,8 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
 			return 1, err
 		}
-		if p, ok := ignoredAncestor(cwd, ignored); ok {
-			return 1, fmt.Errorf("omac vm exec: git in %s ignores %s, so it would not be copied; is %s its own repository?", top, p, o.Workdir)
+		if err := refuseUntrackedPrefix(ctx, o.Run, top, prefix); err != nil {
+			return 1, err
 		}
 	}
 	if strings.ContainsAny(root, "\r\n") {
@@ -400,18 +401,23 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	return 0, nil
 }
 
-// ignoredAncestor returns the ignored path that holds dir (both relative
-// to the top level), such as "build/" for "build/w". A directory there is
-// not copied; reaching one usually means a linked worktree lost its .git
-// file and git found the enclosing checkout instead.
-func ignoredAncestor(dir string, ignored []string) (string, bool) {
-	dir = strings.Trim(dir, "/") + "/"
-	for _, p := range ignored {
-		if strings.HasSuffix(p, "/") && strings.HasPrefix(dir, p) {
-			return p, true
-		}
+// refuseUntrackedPrefix fails when the repository at top tracks no file in
+// prefix, the workdir's path below top. That usually means a linked
+// worktree lost its .git file and git found the enclosing checkout, whose
+// index the sandbox cannot write.
+func refuseUntrackedPrefix(ctx context.Context, run CommandRunner, top, prefix string) error {
+	if prefix == "" {
+		return nil
 	}
-	return "", false
+	ctx = withCommandEnv(ctx, "GIT_LITERAL_PATHSPECS=1")
+	tracked, err := gitOutput(ctx, run, top, "ls-files", "-z", "--", prefix)
+	if err != nil {
+		return err
+	}
+	if tracked == "" {
+		return fmt.Errorf("omac vm exec: git in %s tracks nothing in %s; if it is a linked worktree, restore its .git file; if it is a new directory, run from %s with --cwd %s", top, prefix, top, prefix)
+	}
+	return nil
 }
 
 // openCopyRoot opens root for rsync to copy from, and fails when it
