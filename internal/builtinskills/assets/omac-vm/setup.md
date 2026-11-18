@@ -109,6 +109,10 @@ omac vm offline
   downloads need none. Use a short-lived, read-only token, because anything
   a session left behind in the VM runs online with it. `--no-daemon` makes
   sure no Gradle daemon keeps the token afterwards.
+- With `--env`, omac names the variables the build can read and waits: the
+  human presses Enter on an empty line to continue, or Ctrl-C to stop.
+  Pasting the three lines at once stops at that prompt, so the human runs
+  them one at a time.
 
 ## 7. Sandbox grants
 
