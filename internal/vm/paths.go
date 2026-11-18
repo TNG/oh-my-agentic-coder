@@ -118,7 +118,7 @@ func deleteVMHint() string {
 		return "delete a VM you no longer need"
 	}
 	return fmt.Sprintf("to delete a VM you no longer need (see `omac vm list`), run `LIMA_HOME=<dir>/lima limactl delete -f %s`, then remove <dir>, where <dir> is %s, or %s for the VM omac",
-		InstanceName, filepath.Join(base, "vms", "<name>"), filepath.Join(base, "vm"))
+		InstanceName, filepath.Join(base, namedStateDir, "<name>"), filepath.Join(base, defaultStateDir))
 }
 
 // lockPortPick holds an exclusive lock, shared by every omac process, until
@@ -128,7 +128,7 @@ func lockPortPick() (unlock func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, "vms")
+	dir := filepath.Join(base, namedStateDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("omac vm: lock port pick: %w", err)
 	}
@@ -195,10 +195,10 @@ func ListInstances() ([]InstanceRow, error) {
 		return nil, err
 	}
 	names := []string{}
-	if isDir(filepath.Join(base, "vm")) {
+	if isDir(filepath.Join(base, defaultStateDir)) {
 		names = append(names, DefaultVMName)
 	}
-	entries, err := os.ReadDir(filepath.Join(base, "vms"))
+	entries, err := os.ReadDir(filepath.Join(base, namedStateDir))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("omac vm: list VMs: %w", err)
 	}

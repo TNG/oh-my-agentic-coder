@@ -190,3 +190,28 @@ func TestListInstancesShowsCorruptStateAsError(t *testing.T) {
 		t.Errorf("zed row = %+v, want it listed normally", rows[2])
 	}
 }
+
+// The sandbox blocks the entries of StateDirs on every launch, so the state
+// of every VM must lie inside one of them.
+func TestStateDirsCoverEveryInstanceRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dirs, err := StateDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{DefaultVMName, "acme", "other"} {
+		root, err := InstanceRoot(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		covered := false
+		for _, d := range dirs {
+			if root == d || strings.HasPrefix(root, d+string(filepath.Separator)) {
+				covered = true
+			}
+		}
+		if !covered {
+			t.Errorf("InstanceRoot(%q) = %s is outside StateDirs %q", name, root, dirs)
+		}
+	}
+}
