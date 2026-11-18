@@ -2,6 +2,7 @@ package sandboxrun
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,9 +12,7 @@ import (
 // TestSecurityNoAllowAfterProtectedDenies guards the rule that a protected
 // path is closed to every operation that can name a path and that no later
 // rule can reopen it. Seatbelt is last-match-wins, so any allow emitted after
-// a deny may override it: (allow network*) in open mode once let a sandboxed
-// process connect to Unix sockets inside protected folders (docker.sock in
-// ~/.docker, the GnuPG agent in ~/.gnupg).
+// a deny may override it.
 func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 	const (
 		home      = "/Users/u"
@@ -24,21 +23,7 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 	for _, mode := range []string{sandboxprofile.ModeFiltered, sandboxprofile.ModeBlocked, sandboxprofile.ModeOpen} {
 		for _, enforcement := range []string{sandboxprofile.EnforceKernel, sandboxprofile.EnforceEnvOnly} {
 			t.Run(mode+"/"+enforcement, func(t *testing.T) {
-				g := &Grants{
-					Workdir:         home + "/work",
-					AllowPaths:      []string{home, protected + "/run/docker.sock"},
-					ProtectedPaths:  []string{protected},
-					NameDenyRoots:   []string{home},
-					NameDenyGlobs:   []string{".env"},
-					NetworkMode:     mode,
-					Enforcement:     enforcement,
-					ProxyPort:       54321,
-					ListenPorts:     []int{4097},
-					AllowTCPConnect: []int{22},
-					OpenPorts:       []int{0},
-					UnixSockets:     []string{protected + "/run/docker.sock"},
-					UnixSocketDirs:  []string{protected + "/run"},
-				}
+				g := securityTestGrants(home, protected, mode, enforcement)
 				lines := strings.Split(GenerateSBPL(g), "\n")
 
 				lastAllow := -1
@@ -70,6 +55,67 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSecurityDeniedOpsCoverEveryAllowedOp fails when the profile starts to
+// allow an operation that protected paths do not deny, so a new allow cannot
+// quietly reopen them.
+func TestSecurityDeniedOpsCoverEveryAllowedOp(t *testing.T) {
+	// Operations that take no path filter, so a path deny cannot apply.
+	pathless := []string{"process-fork", "process-info*", "signal", "mach-lookup", "sysctl-read", "ipc-posix-shm", "system-socket", "pseudo-tty"}
+	// Binding a Unix socket creates a file, which file-write* denies; a
+	// connect is network-outbound. TCP has no path.
+	coveredBy := map[string]string{
+		"network-bind":    "file-write*",
+		"network-inbound": "file-write*",
+		"network*":        "network-outbound",
+	}
+	denied := func(op string) bool {
+		return slices.ContainsFunc(sbplDeniedOps, func(d string) bool {
+			return d == op || strings.HasSuffix(d, "*") && strings.HasPrefix(op, strings.TrimSuffix(d, "*"))
+		})
+	}
+	for _, mode := range []string{sandboxprofile.ModeFiltered, sandboxprofile.ModeBlocked, sandboxprofile.ModeOpen} {
+		for _, enforcement := range []string{sandboxprofile.EnforceKernel, sandboxprofile.EnforceEnvOnly} {
+			g := securityTestGrants("/Users/u", "/Users/u/.docker", mode, enforcement)
+			for _, l := range strings.Split(GenerateSBPL(g), "\n") {
+				rest, ok := strings.CutPrefix(l, "(allow ")
+				if !ok {
+					continue
+				}
+				for _, op := range strings.Fields(strings.SplitN(strings.TrimSuffix(rest, ")"), "(", 2)[0]) {
+					if slices.Contains(pathless, op) {
+						continue
+					}
+					want := op
+					if c, ok := coveredBy[op]; ok {
+						want = c
+					}
+					if !denied(want) {
+						t.Errorf("%s/%s: %q allows %s, which protected paths do not deny; add it to sbplDeniedOps", mode, enforcement, l, op)
+					}
+				}
+			}
+		}
+	}
+}
+
+func securityTestGrants(home, protected, mode, enforcement string) *Grants {
+	return &Grants{
+		Workdir:         home + "/work",
+		AllowPaths:      []string{home, protected + "/run/docker.sock"},
+		ProtectedPaths:  []string{protected},
+		NameDenyRoots:   []string{home},
+		NameDenyGlobs:   []string{".env"},
+		NetworkMode:     mode,
+		Enforcement:     enforcement,
+		ProxyPort:       54321,
+		ListenPorts:     []int{4097},
+		AllowTCPConnect: []int{22},
+		OpenPorts:       []int{0},
+		UnixSockets:     []string{protected + "/run/docker.sock"},
+		UnixSocketDirs:  []string{protected + "/run"},
 	}
 }
 

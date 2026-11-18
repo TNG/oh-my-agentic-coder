@@ -244,7 +244,8 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 
 // A protected folder must refuse a Unix-socket connect even where a rule
 // allows the connect: (allow network*) in open mode, or an allow_unix_dir
-// grant for that same folder.
+// grant for that same folder. The connect through a symlink in the workdir
+// checks that Seatbelt matches the socket's resolved path.
 func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
 	if err != nil {
@@ -271,14 +272,28 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 				},
 				Network: sandboxprofile.Network{Mode: mode},
 			}
-			g, err := ResolveGrants(p, t.TempDir(), nil)
+			// Under /tmp, not t.TempDir: a socket path must fit in 104 bytes.
+			wd, err := os.MkdirTemp("/tmp", "omac-wd-*")
 			if err != nil {
 				t.Fatal(err)
 			}
-			out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
-				"--unix-socket", sock, "http://x/")
-			if code == 0 || strings.Contains(out, "protected-socket-reached") {
-				t.Errorf("connect to a socket in a protected folder must fail: exit=%d out=%s", code, out)
+			defer os.RemoveAll(wd)
+			link := filepath.Join(wd, "s.sock")
+			if err := os.Symlink(sock, link); err != nil {
+				t.Fatal(err)
+			}
+			g, err := ResolveGrants(p, wd, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, target := range []string{sock, link} {
+				out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
+					"--unix-socket", target, "http://x/")
+				// curl exits 7 when the connect fails; any other code means the
+				// sandbox or curl failed for another reason.
+				if code != 7 {
+					t.Errorf("connect via %s to a socket in a protected folder: want curl exit 7, got exit=%d out=%s", target, code, out)
+				}
 			}
 		})
 	}

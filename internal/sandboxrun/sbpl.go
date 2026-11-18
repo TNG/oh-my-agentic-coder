@@ -138,9 +138,10 @@ func GenerateSBPL(g *Grants) string {
 	return b.String()
 }
 
-// sbplDeniedOps lists every operation the profile allows somewhere that a
-// path filter can restrict. network-outbound is among them because Seatbelt
-// files a Unix-socket connect under it, not under file access.
+// sbplDeniedOps are the operations a protected path is closed to: those the
+// profile allows somewhere that a path filter can restrict. network-outbound
+// is among them because Seatbelt files a Unix-socket connect under it, not
+// under file access.
 var sbplDeniedOps = []string{"file-read*", "file-write*", "file-ioctl", "file-map-executable", "process-exec*", "network-outbound"}
 
 // sbplDenyAll closes whatever filter matches to every operation in
