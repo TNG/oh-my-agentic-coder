@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,7 +100,7 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			t.Fatalf("%s: exit = %d, want 0", arg, code)
 		}
 		out := stderr()
-		verbs := []string{"up [--reprovision]", "image add <ref>", "image list", "image rm <ref>"}
+		verbs := dispatchedVMVerbs(t)
 		for verb := range vmNoArgOps {
 			verbs = append(verbs, verb)
 		}
@@ -106,6 +110,54 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 			}
 		}
 	}
+}
+
+// dispatchedVMVerbs reads the verbs from the switch statements in
+// vm_cmd.go, so a verb added there without a usage line fails the help
+// test. A switch on `verb` holds top-level verbs, a switch on `sub` the
+// image verbs.
+func dispatchedVMVerbs(t *testing.T) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "vm_cmd.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := map[string]string{"verb": "", "sub": "image "}
+	var verbs []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		sw, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		tag, ok := sw.Tag.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		p, ok := prefix[tag.Name]
+		if !ok {
+			return true
+		}
+		for _, stmt := range sw.Body.List {
+			for _, expr := range stmt.(*ast.CaseClause).List {
+				lit, ok := expr.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				v, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if v != "help" && !strings.HasPrefix(v, "-") {
+					verbs = append(verbs, p+v)
+				}
+			}
+		}
+		return true
+	})
+	if len(verbs) == 0 {
+		t.Fatal("found no dispatched verbs in vm_cmd.go")
+	}
+	return verbs
 }
 
 func TestVMDispatch(t *testing.T) {
