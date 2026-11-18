@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -157,7 +156,7 @@ func parseVMExecArgs(args []string, env *Env) (a vmExecArgs, code int, ok bool) 
 		return a, vmExecMisuse(env, "no command given"), false
 	}
 	if err := vm.ValidateCwd(a.cwd); err != nil {
-		return a, vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: ")), false
+		return a, vmExecMisuseErr(env, err), false
 	}
 	return a, ExitOK, true
 }
@@ -228,7 +227,7 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	}
 	envs, err := vm.ResolveEnv(specs, os.LookupEnv)
 	if err != nil {
-		return nil, vmExecMisuse(env, strings.TrimPrefix(err.Error(), "omac vm exec: ")), false
+		return nil, vmExecMisuseErr(env, err), false
 	}
 	st, err := loadVMState()
 	if err != nil {
@@ -242,7 +241,13 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 }
 
 func vmExecMisuse(env *Env, msg string) int {
-	fmt.Fprintln(env.Stderr, "omac vm exec:", msg)
+	return vmExecMisuseErr(env, errors.New("omac vm exec: "+msg))
+}
+
+// vmExecMisuseErr prints err as returned, since vm errors already start
+// with "omac vm exec: ".
+func vmExecMisuseErr(env *Env, err error) int {
+	fmt.Fprintln(env.Stderr, err)
 	printVMExecUsage(env.Stderr)
 	return ExitMisuse
 }
@@ -250,8 +255,9 @@ func vmExecMisuse(env *Env, msg string) int {
 const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--verbose] -- <cmd...>
                                Copies the worktree (the git top level) into the VM, one way, skipping
                                .git, .env files and what git ignores. Runs the command there, in the
-                               current directory or in <dir> relative to it. Results such as build
-                               output stay in the VM and are not copied back. --env works only from
+                               current directory or in <dir> relative to it. Absolute paths and ..
+                               are refused; to reach a sibling directory, run from the top level.
+                               Results such as build output stay in the VM and are not copied back. --env works only from
                                the host while the VM is online, to prime build caches. --verbose
                                prints which directory is copied where.`
 

@@ -12,7 +12,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
-// useFakeVMExec swaps both exec seams and the manager seam; the manager
+// useFakeVMExec swaps the exec, state and manager seams; the manager
 // fake fails the test if exec ever builds a manager. The returned pointer
 // holds the options of every runVMExecFn call, in order.
 func useFakeVMExec(t *testing.T, connErr error, code int, execErr error) *[]vm.ExecOpts {
@@ -94,8 +94,6 @@ func TestVMExecEnvFromHost(t *testing.T) {
 }
 
 func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
-	// The sandbox filters most host variables, so the refusal must come
-	// before "not set", or the agent goes looking for the secret.
 	for _, spec := range []string{"A=1", "OMAC_TEST_SURELY_UNSET_VAR"} {
 		t.Run(spec, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
@@ -199,8 +197,6 @@ func TestVMExecMisuse(t *testing.T) {
 	}
 }
 
-// On the host, a bad --env is reported even while the VM is offline, so
-// the user fixes it before restarting the VM with `omac vm online`.
 func TestVMExecEnvMisuse(t *testing.T) {
 	for name, tc := range map[string]struct{ spec, want string }{
 		"unset":        {"OMAC_TEST_SURELY_UNSET_VAR", "OMAC_TEST_SURELY_UNSET_VAR is not set"},
@@ -320,7 +316,7 @@ func TestVMExecHelp(t *testing.T) {
 			t.Fatalf("%s: exit = %d", h, code)
 		}
 		out := stdout()
-		for _, want := range []string{"omac vm exec", "--cwd", "--env", "Copies the worktree (the git top level)", "Runs the command", "stay in the VM", "--env works only from", "prints which directory is copied where"} {
+		for _, want := range []string{"omac vm exec", "--cwd", "--env", "Copies the worktree (the git top level)", "Runs the command", "stay in the VM", "--env works only from", "prints which directory is copied where", "to reach a sibling directory, run from the top level"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: stdout lacks %q:\n%s", h, want, out)
 			}
