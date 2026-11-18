@@ -83,6 +83,11 @@ func TestPortListUnmarshal(t *testing.T) {
 			wantErr: []string{"8000"},
 		},
 		{
+			name:    "string field value",
+			input:   `"8000-8100"`,
+			wantErr: []string{`invalid port list "8000-8100": want a JSON array`},
+		},
+		{
 			name:    "long value is truncated",
 			input:   `"` + strings.Repeat("x", 200) + `"`,
 			wantErr: []string{"want a JSON array", "..."},

@@ -30,7 +30,9 @@ func (l *PortList) UnmarshalJSON(data []byte) error {
 		if len(raw) > 80 {
 			raw = raw[:80] + "..."
 		}
-		return fmt.Errorf("invalid port list %q: want a JSON array", raw)
+		// The raw source is JSON: a string value already carries its own
+		// quotes, so echo it as-is instead of quoting it twice.
+		return fmt.Errorf("invalid port list %s: want a JSON array", raw)
 	}
 	ports := make([]int, 0, len(entries))
 	for _, entry := range entries {
