@@ -106,17 +106,17 @@ You can also open a port for a single session with `omac start --open-port 3000`
 
 ### Granting port ranges
 
-In the sandbox grants file, `network.listen_port` and `network.allow_tcp_connect` take a list of ports. An entry is a number, a numeric string such as `"8100"`, or an inclusive range such as `"8000-8100"`. A process that reserves a block of ports, such as a dev server scanning 8000 to 8100, needs one entry instead of 101:
+In the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`), `network.listen_port` and `network.allow_tcp_connect` take a list of ports. An entry is a number, a numeric string such as `"8100"`, or an inclusive range such as `"8000-8100"`. A process that reserves a block of ports, such as a dev server scanning 8000 to 8100, needs one entry instead of 101:
 
 ```json
 "network": { "listen_port": [4097, "8000-8100"] }
 ```
 
-That grants port 4097 and every port from 8000 through 8100. A reversed range, an endpoint below 1 or above 65535, and anything else, such as a fraction or `"abc"`, are rejected when the profile loads, before the session starts. omac expands a range in memory only and never rewrites your file.
+That grants port 4097 and every port from 8000 through 8100. A reversed range, an endpoint below 1 or above 65535, and anything else, such as a fraction or `"abc"`, are rejected when the profile loads, before the session starts. omac expands a range in memory only; a learn-mode session that edits the profile writes the expanded port list back to the file.
 
 `network.listen_port` is for servers inside the sandbox that listen on a port. `network.allow_tcp_connect` allows direct outbound TCP to any host on those ports, for tools whose protocol the proxy cannot carry, such as SSH or a database client. The domain allow/deny list does not apply to those connections.
 
-Each of the two fields is limited to 1000 ports, counting both the profile entries and any flags added for the session. A list above the limit fails with an error naming the field; omac does not narrow the grant to fit.
+Each of the two fields is limited to 1000 ports, counting both the profile entries and any flags added for the session. Entries count as written, so overlapping or duplicate ranges each add their full length before duplicates are removed. A list above the limit fails with an error naming the field and the cap, except when a single range is too large: that error names the range and the cap. omac does not narrow the grant to fit. The limit applies to integer-only lists too, so a profile written before ranges existed with more than 1000 ports also fails.
 
 On Linux, each port in a range becomes its own kernel rule, exactly as if you had listed it separately.
 
