@@ -25,29 +25,26 @@ import (
 //	MATRIX filtered+proxy/kernel/unix-connect-unixdir allowed
 //
 // Comparing these lines between two commits shows every access a change
-// opens or closes. The test fails only for results that hold in every mode:
-// protected files stay closed, and the basic workdir, grant, system and
-// exec accesses stay open.
+// opens or closes. A probe with an expected result fails the test when it
+// differs; see the want field of each probe in usabilityFixture.probes.
 func TestIntegrationUsabilityMatrix(t *testing.T) {
 	fx := newUsabilityFixture(t)
 	for _, sc := range usabilityScenarios() {
 		t.Run(sc.name+"/"+sc.enforcement, func(t *testing.T) {
 			g := fx.grants(t, sc)
 			for _, pr := range fx.probes() {
-				allowed := usabilityRun(t, g, pr.script, pr.args...)
-				// A bind probe that got through leaves its socket behind.
-				for _, a := range pr.args {
-					if filepath.Base(a) == usabilityBindName {
-						os.Remove(a)
-					}
+				out, err := usabilityRun(t, g, pr.script, pr.args...)
+				if pr.creates != "" {
+					os.Remove(pr.creates)
 				}
-				result := usabilityDenied
-				if allowed {
-					result = usabilityAllowed
+				result := usabilityAllowed
+				if err != nil {
+					result = usabilityDenied
+					t.Logf("%s denied: %v: %s", pr.name, err, out)
 				}
 				fmt.Printf("MATRIX %s/%s/%s %s\n", sc.name, sc.enforcement, pr.name, result)
-				if pr.want != usabilityAny && result != pr.want {
-					t.Errorf("%s: got %s, want %s in every mode", pr.name, result, pr.want)
+				if want := pr.expect(sc); want != usabilityAny && result != want {
+					t.Errorf("%s: got %s, want %s", pr.name, result, want)
 				}
 			}
 		})
@@ -57,6 +54,11 @@ func TestIntegrationUsabilityMatrix(t *testing.T) {
 type usabilityScenario struct {
 	name, mode, enforcement string
 	proxy, openPort, listen bool
+}
+
+// allowsAllNetwork reports whether the profile emits (allow network*).
+func (sc usabilityScenario) allowsAllNetwork() bool {
+	return sc.mode == sandboxprofile.ModeOpen || sc.enforcement == sandboxprofile.EnforceEnvOnly
 }
 
 func usabilityScenarios() []usabilityScenario {
@@ -76,22 +78,33 @@ func usabilityScenarios() []usabilityScenario {
 const (
 	usabilityAllowed = "allowed"
 	usabilityDenied  = "denied"
-	usabilityAny     = "" // depends on the mode: reported, not asserted
-
-	usabilityBindName = "b.sock"
+	usabilityAny     = "" // reported, not asserted
 )
 
 type usabilityProbe struct {
-	name   string
-	want   string
-	script string
-	args   []string
+	name string
+	// want is the result in every scenario. A network probe without one
+	// must be allowed where the profile allows all network.
+	want    string
+	network bool
+	script  string
+	args    []string
+	// creates is removed after the probe, so each scenario starts clean.
+	creates string
+}
+
+func (pr usabilityProbe) expect(sc usabilityScenario) string {
+	if pr.want == usabilityAny && pr.network && sc.allowsAllNetwork() {
+		return usabilityAllowed
+	}
+	return pr.want
 }
 
 // usabilityFixture holds the folders, sockets and servers the probes use.
-// The folders lie under /tmp, which the baseline makes readable but not
-// writable, so a write succeeds only through a grant; /tmp also keeps
-// socket paths below the 104-byte limit.
+// Most folders lie under /tmp, which the baseline makes readable but not
+// writable, so a write there succeeds only through a grant; /tmp also keeps
+// socket paths below the 104-byte limit. tmp and home lie under $TMPDIR,
+// like a session's temp folder.
 type usabilityFixture struct {
 	workdir, rw, ro, unixDir, sockGrant, prot, tmp, home string
 	proxyPort, openPort, otherPort, listenPort           int
@@ -136,8 +149,14 @@ func newUsabilityFixture(t *testing.T) *usabilityFixture {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(fx.prot, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	trueBin, err := os.ReadFile("/usr/bin/true")
+	if err != nil {
 		t.Fatal(err)
+	}
+	for _, d := range []string{fx.workdir, fx.rw, fx.tmp, fx.prot} {
+		if err := os.WriteFile(filepath.Join(d, "true"), trueBin, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, sock := range []string{fx.unixSock(), fx.grantedSock(), fx.protSock()} {
 		usabilityServeUnix(t, sock)
@@ -187,48 +206,70 @@ func (fx *usabilityFixture) grants(t *testing.T, sc usabilityScenario) *Grants {
 }
 
 func (fx *usabilityFixture) probes() []usabilityProbe {
-	curlTCP := `/usr/bin/curl -sS --max-time 3 "http://127.0.0.1:$1/" | /usr/bin/grep -q usability-ok`
-	curlUnix := `/usr/bin/curl -sS --max-time 3 --unix-socket "$1" http://x/ | /usr/bin/grep -q usability-ok`
+	// --noproxy: a proxy set in the caller's environment must not answer
+	// for the sandbox.
+	curlTCP := `/usr/bin/curl -sS --noproxy '*' --max-time 3 "http://127.0.0.1:$1/" | /usr/bin/grep -q usability-ok`
+	curlUnix := `/usr/bin/curl -sS --noproxy '*' --max-time 3 --unix-socket "$1" http://x/ | /usr/bin/grep -q usability-ok`
 	bindUnix := `/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or exit 3' "$1"`
 	listenTCP := `/usr/bin/perl -MIO::Socket::INET -e 'IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $ARGV[0], Listen => 1, ReuseAddr => 1) or exit 3' "$1"`
+	read := `/bin/cat "$1" >/dev/null`
+	write := `echo x > "$1"`
+	run := `"$1"`
 	port := strconv.Itoa
+	join := filepath.Join
 	A, D, X := usabilityAllowed, usabilityDenied, usabilityAny
+	file := func(name, want, script, path string) usabilityProbe {
+		return usabilityProbe{name: name, want: want, script: script, args: []string{path}}
+	}
+	created := func(name, want, script, path string) usabilityProbe {
+		return usabilityProbe{name: name, want: want, script: script, args: []string{path}, creates: path}
+	}
+	netProbe := func(name, script, arg string) usabilityProbe {
+		return usabilityProbe{name: name, network: true, script: script, args: []string{arg}}
+	}
+	bind := func(name, want, dir string) usabilityProbe {
+		path := join(dir, "b.sock")
+		return usabilityProbe{name: name, want: want, network: true, script: bindUnix, args: []string{path}, creates: path}
+	}
 	return []usabilityProbe{
-		{"workdir-read", A, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.workdir, "seed.txt")}},
-		{"workdir-write", A, `echo x > "$1"`, []string{filepath.Join(fx.workdir, "new.txt")}},
-		{"grant-rw-read", A, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.rw, "seed.txt")}},
-		{"grant-rw-write", A, `echo x > "$1"`, []string{filepath.Join(fx.rw, "new.txt")}},
-		{"grant-ro-read", A, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.ro, "seed.txt")}},
-		{"grant-ro-write", X, `echo x >> "$1"`, []string{filepath.Join(fx.ro, "seed.txt")}},
-		{"tmpdir-write", A, `echo x > "$1/f" && /bin/cat "$1/f" >/dev/null`, []string{fx.tmp}},
-		{"system-read", A, `/bin/cat /System/Library/CoreServices/SystemVersion.plist >/dev/null && /bin/ls /usr/lib >/dev/null`, nil},
-		{"exec-usr-bin", A, `/usr/bin/env /usr/bin/true && /usr/bin/uname >/dev/null`, nil},
-		{"dev-null-urandom", A, `echo x > /dev/null && /usr/bin/head -c1 /dev/urandom >/dev/null`, nil},
-		{"pty", X, `/usr/bin/script -q /dev/null /bin/sh -c 'test -t 0 && test -t 1'`, nil},
-		{"tcp-connect-proxy-port", X, curlTCP, []string{port(fx.proxyPort)}},
-		{"tcp-connect-open-port", X, curlTCP, []string{port(fx.openPort)}},
-		{"tcp-connect-other-port", X, curlTCP, []string{port(fx.otherPort)}},
-		{"tcp-listen", X, listenTCP, []string{port(fx.listenPort)}},
-		{"unix-connect-unixdir", X, curlUnix, []string{fx.unixSock()}},
-		{"unix-connect-socket-grant", X, curlUnix, []string{fx.grantedSock()}},
-		{"unix-bind-unixdir", X, bindUnix, []string{filepath.Join(fx.unixDir, usabilityBindName)}},
-		{"unix-bind-workdir", X, bindUnix, []string{filepath.Join(fx.workdir, usabilityBindName)}},
-		{"unix-bind-tmpdir", X, bindUnix, []string{filepath.Join(fx.tmp, usabilityBindName)}},
-		{"protected-read", D, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.prot, "secret.txt")}},
-		{"protected-list", D, `/bin/ls "$1" >/dev/null`, []string{fx.prot}},
-		{"protected-write", D, `echo x > "$1"`, []string{filepath.Join(fx.prot, "new.txt")}},
-		{"protected-exec", X, `"$1"`, []string{filepath.Join(fx.prot, "run.sh")}},
-		{"protected-unix-connect", X, curlUnix, []string{fx.protSock()}},
-		{"protected-unix-connect-symlink", X, curlUnix, []string{filepath.Join(fx.workdir, "p.sock")}},
-		{"protected-unix-bind", X, bindUnix, []string{filepath.Join(fx.prot, usabilityBindName)}},
-		{"protected-ssh-read", D, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.home, ".ssh", "id_test")}},
-		{"keychain-name-read", D, `/bin/cat "$1" >/dev/null`, []string{filepath.Join(fx.workdir, "signing.keychain-db")}},
+		file("workdir-read", A, read, join(fx.workdir, "seed.txt")),
+		created("workdir-write", A, write, join(fx.workdir, "new.txt")),
+		file("workdir-exec", A, run, join(fx.workdir, "true")),
+		file("grant-rw-read", A, read, join(fx.rw, "seed.txt")),
+		created("grant-rw-write", A, write, join(fx.rw, "new.txt")),
+		file("grant-rw-exec", A, run, join(fx.rw, "true")),
+		file("grant-ro-read", A, read, join(fx.ro, "seed.txt")),
+		file("grant-ro-write", X, `echo x >> "$1"`, join(fx.ro, "seed.txt")),
+		created("tmpdir-write", A, write+` && `+read, join(fx.tmp, "new.txt")),
+		file("tmpdir-exec", A, run, join(fx.tmp, "true")),
+		{name: "system-read", want: A, script: `/bin/cat /System/Library/CoreServices/SystemVersion.plist >/dev/null && /bin/ls /usr/lib >/dev/null`},
+		{name: "exec-usr-bin", want: A, script: `/usr/bin/env /usr/bin/true && /usr/bin/uname >/dev/null`},
+		{name: "dev-null-urandom", want: A, script: `echo x > /dev/null && /usr/bin/head -c1 /dev/urandom >/dev/null`},
+		{name: "pty", script: `/usr/bin/script -q /dev/null /bin/sh -c 'test -t 0 && test -t 1'`},
+		netProbe("tcp-connect-proxy-port", curlTCP, port(fx.proxyPort)),
+		netProbe("tcp-connect-open-port", curlTCP, port(fx.openPort)),
+		netProbe("tcp-connect-other-port", curlTCP, port(fx.otherPort)),
+		netProbe("tcp-listen", listenTCP, port(fx.listenPort)),
+		file("unix-connect-unixdir", A, curlUnix, fx.unixSock()),
+		file("unix-connect-socket-grant", A, curlUnix, fx.grantedSock()),
+		bind("unix-bind-unixdir", X, fx.unixDir),
+		bind("unix-bind-workdir", X, fx.workdir),
+		bind("unix-bind-tmpdir", X, fx.tmp),
+		file("protected-read", D, read, join(fx.prot, "secret.txt")),
+		file("protected-list", D, `/bin/ls "$1" >/dev/null`, fx.prot),
+		created("protected-write", D, write, join(fx.prot, "new.txt")),
+		file("protected-exec", D, run, join(fx.prot, "true")),
+		file("protected-unix-connect", D, curlUnix, fx.protSock()),
+		file("protected-unix-connect-symlink", D, curlUnix, join(fx.workdir, "p.sock")),
+		bind("protected-unix-bind", D, fx.prot),
+		file("protected-ssh-read", D, read, join(fx.home, ".ssh", "id_test")),
+		file("keychain-name-read", D, read, join(fx.workdir, "signing.keychain-db")),
 	}
 }
 
-// usabilityRun reports whether the shell script exits 0 in the sandbox.
-// The script gets args as $1, $2, ...
-func usabilityRun(t *testing.T, g *Grants, script string, args ...string) bool {
+// usabilityRun runs the shell script in the sandbox with args as $1, $2, ...
+// and returns its output and exit error.
+func usabilityRun(t *testing.T, g *Grants, script string, args ...string) (string, error) {
 	t.Helper()
 	argv, err := BuildChildArgv(g, append([]string{"/bin/sh", "-c", script, "sh"}, args...))
 	if err != nil {
@@ -239,7 +280,8 @@ func usabilityRun(t *testing.T, g *Grants, script string, args ...string) bool {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = g.Workdir
 	cmd.WaitDelay = time.Second
-	return cmd.Run() == nil
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func usabilityServeUnix(t *testing.T, sock string) {
