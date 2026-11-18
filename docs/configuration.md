@@ -85,7 +85,7 @@ omac creates this file the first time you run `omac start`. Key fields:
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
 
-omac never rewrites this file once it exists, so upgrading omac does not add newer default grants to a profile you already have. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
+omac does not rewrite this file on its own once it exists, so upgrading omac does not add newer default grants to a profile you already have. The one exception is a learn-mode session (`omac sandbox run --learn`) where you approve adding folders, which rewrites the file. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
 
 The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
 
