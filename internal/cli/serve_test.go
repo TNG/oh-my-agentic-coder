@@ -874,6 +874,46 @@ func TestSetDesktopStateHomeKeepsVMState(t *testing.T) {
 	}
 }
 
+// Whoever set XDG_STATE_HOME, the VM state that `serve --vm
+// --for-opencode-desktop` attaches to must lie in a path the sandbox
+// protects, because it holds the VM's root key.
+func TestServeDesktopVMStateIsProtected(t *testing.T) {
+	cases := []struct {
+		name string
+		xdg  func(home string) string
+	}{
+		{"unset, serve sets the Desktop folder", func(string) string { return "" }},
+		{"set by the Desktop app", func(home string) string {
+			return filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop.beta")
+		}},
+		{"set by the user", func(home string) string { return filepath.Join(home, "own-state") }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("XDG_STATE_HOME", c.xdg(home))
+			restore, _, err := setDesktopStateHome(true)
+			defer restore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, _ := wireForTest(t, "", false)
+			for _, name := range []string{vm.DefaultVMName, "acme"} {
+				root, err := vm.InstanceRoot(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := f.ProtectedPathChecker.IsProtected(root); !ok {
+					t.Errorf("VM %s state %s is not protected (XDG_STATE_HOME=%q)", name, root, os.Getenv("XDG_STATE_HOME"))
+				}
+			}
+		})
+	}
+}
+
 func TestResolveDesktopStateDir(t *testing.T) {
 	t.Run("not desktop mode: no injection", func(t *testing.T) {
 		t.Setenv("XDG_STATE_HOME", "/whatever")

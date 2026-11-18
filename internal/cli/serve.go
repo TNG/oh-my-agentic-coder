@@ -128,12 +128,6 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --no-sandbox or --no-inner")
 		return serveParse{}, false
 	}
-	// --for-opencode-desktop moves XDG_STATE_HOME, so serve would look for
-	// the VM's state in another directory than `omac vm up` created.
-	if vmAttach.on && *forDesktop {
-		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --for-opencode-desktop")
-		return serveParse{}, false
-	}
 	if vmAttach.on && *learn {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --learn, which would let the sandbox reach the VM's admin key")
 		return serveParse{}, false
@@ -801,7 +795,8 @@ func resolveDesktopStateDir(forDesktop bool) (dir string, setEnv bool) {
 
 // setDesktopStateHome sets XDG_STATE_HOME as resolveDesktopStateDir decides
 // and returns the directory it set, "" for none. It also pins the VM state
-// to where `omac vm up` created it (see vmStateHome); restore undoes the pin.
+// home (see vmStateHome) for the attach that runs later; restore undoes the
+// pin.
 func setDesktopStateHome(forDesktop bool) (restore func(), dir string, err error) {
 	restore = func() {}
 	if forDesktop {
@@ -816,8 +811,8 @@ func setDesktopStateHome(forDesktop bool) (restore func(), dir string, err error
 
 // vmStateHome is the XDG_STATE_HOME the VM state is found under in
 // --for-opencode-desktop mode. When the Desktop app launched omac,
-// XDG_STATE_HOME is the app's data folder, so the VM state falls back to
-// $HOME/.local/state, where `omac vm up` created it.
+// XDG_STATE_HOME is the app's data folder, so serve looks for the VM under
+// $HOME/.local/state, the default of `omac vm up`, instead.
 func vmStateHome(xdg string) string {
 	if opencodestate.IsDesktopStateDir(xdg) {
 		return ""

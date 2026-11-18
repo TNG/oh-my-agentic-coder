@@ -425,9 +425,10 @@ func TestVMSessionNilIsNoOp(t *testing.T) {
 	s.release()
 }
 
-func TestServeVMRefusesDesktop(t *testing.T) {
-	if _, ok := parseServeArgs([]string{"--vm", "--for-opencode-desktop"}, devnullEnv(t)); ok {
-		t.Error("parseServeArgs(--vm --for-opencode-desktop) accepted")
+func TestServeVMAcceptsDesktop(t *testing.T) {
+	p, ok := parseServeArgs([]string{"--vm", "--for-opencode-desktop"}, devnullEnv(t))
+	if !ok || !p.vm || !p.forDesktop {
+		t.Errorf("parseServeArgs(--vm --for-opencode-desktop): ok=%v vm=%v forDesktop=%v", ok, p.vm, p.forDesktop)
 	}
 }
 

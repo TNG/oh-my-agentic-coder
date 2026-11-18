@@ -51,7 +51,7 @@ omac serve --workdir ~/my-project
 |---|---|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--workdir <dir>` | — | Activate this directory immediately at startup, so skills are ready as soon as OpenCode Desktop connects. Without this flag, no skills will be active — OpenCode Desktop does not yet automatically tell omac which project is currently open. |
 | `--root <dir>` | — | Only allow directories under this path to be activated (repeatable). For example, `--root ~/work --root ~/personal` restricts activation to those two trees. If not set, any directory can be activated.                                       |
-| `--vm[=<name>]` | false | Attach to an omac VM, as with `omac start --vm`. Refused together with `--no-sandbox`, `--no-inner`, `--for-opencode-desktop` or `--learn`, and with launcher profiles that run a sandbox other than omac's own (see `omac start --vm`). |
+| `--vm[=<name>]` | false | Attach to an omac VM, as with `omac start --vm`. When the OpenCode Desktop app starts `omac serve --for-opencode-desktop`, omac looks for the VM under `~/.local/state/omac`, so create and manage it in a shell without `XDG_STATE_HOME`, for example `env -u XDG_STATE_HOME omac vm up`. Refused together with `--no-sandbox`, `--no-inner` or `--learn`, and with launcher profiles that run a sandbox other than omac's own (see `omac start --vm`). |
 
 | Environment variable | Description |
 |---|---|
