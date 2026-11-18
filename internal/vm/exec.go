@@ -204,16 +204,16 @@ func ExcludeList(ignored []string) string {
 }
 
 // RsyncArgs are the rsync arguments that copy workdir's contents into
-// remoteDir in the VM, reading the ExcludeList from stdin: a file in the
-// temp directory, which the sandbox can write, could be emptied before
-// rsync reads it. They never delete on the remote side and work with both
-// Apple's openrsync and rsync 3.x.
-func RsyncArgs(workdir string, t SSHTarget, remoteDir string) []string {
+// remoteDir in the VM through the ssh binary at sshPath, reading the
+// ExcludeList from stdin: a file in the temp directory, which the sandbox
+// can write, could be emptied before rsync reads it. They never delete on
+// the remote side and work with both Apple's openrsync and rsync 3.x.
+func RsyncArgs(sshPath, workdir string, t SSHTarget, remoteDir string) []string {
 	t.TTY = false // a terminal would garble rsync's protocol stream
 	return []string{
 		"-rlpt", "--no-owner", "--no-group", "-z",
 		"--exclude-from=-",
-		"-e", "ssh " + ShellJoin(SSHArgs(t)),
+		"-e", ShellJoin(append([]string{sshPath}, SSHArgs(t)...)),
 		strings.TrimRight(workdir, "/") + "/",
 		t.User + "@127.0.0.1:" + remoteDir,
 	}
@@ -332,7 +332,14 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if err := ValidateCwd(o.Cwd); err != nil {
 		return 1, err
 	}
-	for _, p := range []string{o.Conn.Target.KeyPath, o.Conn.Target.KnownHosts} {
+	// rsync runs in the copy root, where the agent picks the files, and
+	// would find a bare "ssh" through a relative PATH entry such as
+	// node_modules/.bin.
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil || !filepath.IsAbs(sshPath) {
+		return 1, fmt.Errorf("omac vm exec: no ssh at an absolute path in PATH (%q, %v)", sshPath, err)
+	}
+	for _, p := range []string{sshPath, o.Conn.Target.KeyPath, o.Conn.Target.KnownHosts} {
 		// rsync's -e parser does not understand the '\'' that ShellQuote emits.
 		if strings.Contains(p, "'") {
 			return 1, fmt.Errorf("omac vm exec: %q contains a single quote, which rsync cannot pass to ssh", p)
@@ -399,7 +406,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
 	excludes := strings.NewReader(ExcludeList(ignored))
 	err = inDir(rootDir, func() error {
-		return o.Run(ctx, "rsync", RsyncArgs(".", target, remoteDir), excludes, o.Stderr, o.Stderr)
+		return o.Run(ctx, "rsync", RsyncArgs(sshPath, ".", target, remoteDir), excludes, o.Stderr, o.Stderr)
 	})
 	if err != nil {
 		if exitCode(err) == 255 || exitCode(err) == 12 { // ssh failed, or the stream broke

@@ -470,11 +470,11 @@ func TestExcludeListAnchorsIgnoredPaths(t *testing.T) {
 var testTarget = SSHTarget{User: "alice", Port: 31022, KeyPath: "/k/agent key", KnownHosts: "/k/known_hosts"}
 
 func TestRsyncArgs(t *testing.T) {
-	args := RsyncArgs("/w/repo", testTarget, "omac/slug/")
+	args := RsyncArgs("/usr/bin/ssh", "/w/repo", testTarget, "omac/slug/")
 	want := []string{
 		"-rlpt", "--no-owner", "--no-group", "-z",
 		"--exclude-from=-",
-		"-e", "ssh " + ShellJoin(SSHArgs(testTarget)),
+		"-e", "/usr/bin/ssh " + ShellJoin(SSHArgs(testTarget)),
 		"/w/repo/", "alice@127.0.0.1:omac/slug/",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -489,13 +489,13 @@ func TestRsyncArgs(t *testing.T) {
 		}
 	}
 	// A trailing slash on the workdir is not doubled.
-	if got := RsyncArgs("/w/repo/", testTarget, "omac/slug/"); got[7] != "/w/repo/" {
+	if got := RsyncArgs("/usr/bin/ssh", "/w/repo/", testTarget, "omac/slug/"); got[7] != "/w/repo/" {
 		t.Fatalf("source = %q", got[7])
 	}
 	// rsync's own ssh never gets a terminal.
 	tty := testTarget
 	tty.TTY = true
-	if got := RsyncArgs("/w/repo", tty, "omac/slug/"); !reflect.DeepEqual(got, want) {
+	if got := RsyncArgs("/usr/bin/ssh", "/w/repo", tty, "omac/slug/"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("args with TTY =\n%q\nwant\n%q", got, want)
 	}
 }
@@ -699,6 +699,9 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	}
 	if f.rsyncWd != workdir {
 		t.Fatalf("rsync ran in %s, want %s", f.rsyncWd, workdir)
+	}
+	if i := slices.Index(f.rsync, "-e"); i < 0 || !strings.HasPrefix(f.rsync[i+1], "/") {
+		t.Fatalf("rsync -e must name ssh by an absolute path: %q", f.rsync)
 	}
 	if !strings.HasPrefix(f.excludes, ".git\n.env\n") || !strings.HasSuffix(f.excludes, "\n/build/\n") {
 		t.Fatalf("exclude list = %q", f.excludes)

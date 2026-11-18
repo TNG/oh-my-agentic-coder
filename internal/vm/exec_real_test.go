@@ -43,7 +43,7 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 
 	// The production arguments and directory, minus the remote shell and with
 	// a local target.
-	prod := RsyncArgs(".", testTarget, "omac/slug/")
+	prod := RsyncArgs("/usr/bin/ssh", ".", testTarget, "omac/slug/")
 	var args []string
 	for i := 0; i < len(prod)-1; i++ {
 		if prod[i] == "-e" {
@@ -101,26 +101,37 @@ exec sh -c "$*"
 
 // TestRsyncRemoteShellKeepsSSHArgs runs the local rsync with the production
 // arguments, including -e, against a stub ssh, so the -e parser of this
-// machine's rsync must keep each ssh argument intact.
+// machine's rsync must keep each ssh argument intact. rsync runs in the
+// copy root with a relative PATH entry that holds a planted ssh, which
+// must not run.
 func TestRsyncRemoteShellKeepsSSHArgs(t *testing.T) {
 	if _, err := exec.LookPath("rsync"); err != nil {
 		t.Skip("rsync not installed")
 	}
 	base := t.TempDir()
 	bin, src, dst := filepath.Join(base, "bin"), filepath.Join(base, "src"), filepath.Join(base, "dst")
-	writeFiles(t, src, map[string]string{"keep.txt": "k", ".env": "SECRET=1"})
+	planted := filepath.Join(base, "planted-ran")
+	writeFiles(t, src, map[string]string{"keep.txt": "k", ".env": "SECRET=1",
+		"node_modules/.bin/ssh": "#!/bin/sh\ntouch " + ShellQuote(planted) + "\nexit 1\n"})
 	writeFiles(t, bin, map[string]string{"ssh": stubSSH})
-	if err := os.Chmod(filepath.Join(bin, "ssh"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, p := range []string{filepath.Join(bin, "ssh"), filepath.Join(src, "node_modules/.bin/ssh")} {
+		if err := os.Chmod(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir(src)
 	argsFile := filepath.Join(base, "ssh-args")
-	ctx := withCommandEnv(context.Background(), "PATH="+bin+":"+os.Getenv("PATH"), "SSH_ARGS_FILE="+argsFile)
-	args := RsyncArgs(src, testTarget, dst+"/")
+	ctx := withCommandEnv(context.Background(), "PATH=node_modules/.bin:"+os.Getenv("PATH"), "SSH_ARGS_FILE="+argsFile)
+	args := RsyncArgs(filepath.Join(bin, "ssh"), src, testTarget, dst+"/")
 	var stderr bytes.Buffer
-	if err := ExecRunner(ctx, "rsync", args, strings.NewReader(ExcludeList(nil)), io.Discard, &stderr); err != nil {
+	err := ExecRunner(ctx, "rsync", args, strings.NewReader(ExcludeList(nil)), io.Discard, &stderr)
+	if _, statErr := os.Stat(planted); statErr == nil {
+		t.Fatal("rsync ran the ssh planted in a relative PATH entry")
+	}
+	if err != nil {
 		t.Fatalf("rsync %q: %v: %s", args, err, stderr.String())
 	}
 	if _, err := os.Stat(filepath.Join(dst, "keep.txt")); err != nil {
