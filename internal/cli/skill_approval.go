@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
+	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
@@ -55,6 +57,116 @@ func skillBundleHash(name, skillDir, bundleHash string) (string, error) {
 	return h, nil
 }
 
+// skillCopy names which registered copy of a skill a refusal is about. The
+// same name can be registered once per harness and both workdir-local and
+// user-global, and `omac register <name>` refuses such a name as ambiguous, so
+// the remedy must carry the flags that select this copy (issue #514).
+type skillCopy struct {
+	Name string
+	// Harness is the registry entry's harness scope ("opencode",
+	// "claude-code"); "" for a legacy entry or a skill under the shared
+	// .agents base, which every harness sees.
+	Harness string
+	// Dir is the absolute skill directory the content was read from.
+	Dir string
+	// Global marks a user-global registration (absolute SkillDir outside the
+	// workdir), which `omac register` selects with --global.
+	Global bool
+}
+
+// skillCopyOf derives the copy a registry entry denotes. absDir is the entry's
+// SkillDir resolved against workdir; workdir may be "" for a user-global
+// layer, whose entries are absolute by construction.
+func skillCopyOf(e registry.Entry, absDir, workdir string) skillCopy {
+	global := filepath.IsAbs(e.SkillDir) && (workdir == "" || !isUnderDir(workdir, absDir))
+	return skillCopy{Name: e.Name, Harness: e.Harness, Dir: absDir, Global: global}
+}
+
+// registerCmd is the `omac register` invocation that resolves to exactly this
+// copy, in the flag order the command documents (see hints.go registerCmd).
+func (c skillCopy) registerCmd() string {
+	var flags []string
+	if c.Harness != "" {
+		flags = append(flags, "--harness", c.Harness)
+	}
+	if c.Global {
+		flags = append(flags, "--global")
+	}
+	return registerCmd(c.Name, flags...)
+}
+
+// String renders the copy for a refusal line: the quoted name, then the
+// harness, scope and directory when they are known, so a user with the same
+// name registered twice can see which one is meant.
+func (c skillCopy) String() string {
+	q := fmt.Sprintf("%q", c.Name)
+	var where []string
+	if c.Harness != "" {
+		where = append(where, c.Harness)
+	}
+	if c.Global {
+		where = append(where, "global")
+	}
+	if c.Dir != "" {
+		where = append(where, c.Dir)
+	}
+	if len(where) == 0 {
+		return q
+	}
+	return q + " (" + strings.Join(where, ", ") + ")"
+}
+
+// spawnRefusal is a spawn-gate refusal that re-registering from a host
+// terminal resolves. Error() is the agent-facing detail (broken-route Detail,
+// reload log line); Problem() is what the human-facing launch report and
+// `omac doctor` group by.
+type spawnRefusal struct {
+	Kind  skillstate.ProblemKind // NotApproved, SnapshotStale or SnapshotMissing
+	Skill skillCopy
+}
+
+func (r *spawnRefusal) Error() string {
+	cmd := "run `" + r.Skill.registerCmd() + "` from a host terminal (outside the sandbox)"
+	switch r.Kind {
+	case skillstate.SnapshotStale:
+		// Names both the policy (so a future bump can reuse the text) and
+		// the release that bumped it (so the user can tie it to the upgrade).
+		return fmt.Sprintf("spawn refused: skill %s is approved, but its snapshot was made by an older copy policy (registered before %s) and must be rebuilt once; %s to rebuild it",
+			r.Skill, skilltrust.SnapshotPolicySince, cmd)
+	case skillstate.SnapshotMissing:
+		return fmt.Sprintf("spawn refused: skill %s is approved, but its snapshot is missing from the host store; %s to rebuild it", r.Skill, cmd)
+	default:
+		return fmt.Sprintf("spawn refused: skill %s is not host-approved; %s to approve its current code", r.Skill, cmd)
+	}
+}
+
+// Problem is the refusal as a skillstate.Problem: Detail carries the cause in
+// the plain words the grouped report uses as section headers, Fix the command.
+func (r *spawnRefusal) Problem() skillstate.Problem {
+	var detail string
+	switch r.Kind {
+	case skillstate.SnapshotStale:
+		detail = "registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once"
+	case skillstate.SnapshotMissing:
+		detail = "snapshot missing from the host store"
+	default:
+		detail = "not registered from a host terminal yet"
+	}
+	return skillstate.Problem{Kind: r.Kind, Skill: r.Skill.Name, Detail: detail, Fix: r.Skill.registerCmd(), Cause: r}
+}
+
+// refusalProblem turns any spawn-gate error for skill name into a Problem: a
+// spawnRefusal keeps its class and remedy; anything else (unreadable dir,
+// corrupt store) becomes SpawnRefused with the cause verbatim and no Fix, so
+// the report never tells the user to re-register when that cannot help.
+func refusalProblem(name string, err error) skillstate.Problem {
+	var r *spawnRefusal
+	if errors.As(err, &r) {
+		return r.Problem()
+	}
+	return skillstate.Problem{Kind: skillstate.SpawnRefused, Skill: name, Detail: err.Error(), Cause: err}
+}
+
 // approvalRefusal reports whether skill `name` may spawn given the content
 // currently on disk at skillDir. A nil error means approved.
 //
@@ -64,16 +176,22 @@ func skillBundleHash(name, skillDir, bundleHash string) (string, error) {
 // operator is not told to re-register when that cannot help. Any error fails
 // closed: the skill does not spawn.
 func approvalRefusal(name, skillDir, bundleHash string) error {
-	h, err := skillBundleHash(name, skillDir, bundleHash)
+	return approvalRefusalFor(skillCopy{Name: name, Dir: skillDir}, bundleHash)
+}
+
+// approvalRefusalFor is approvalRefusal for a known registered copy, so the
+// refusal can name the command that selects it.
+func approvalRefusalFor(c skillCopy, bundleHash string) error {
+	h, err := skillBundleHash(c.Name, c.Dir, bundleHash)
 	if err != nil {
 		return err
 	}
-	approved, err := skilltrust.IsApproved(name, h)
+	approved, err := skilltrust.IsApproved(c.Name, h)
 	if err != nil {
-		return fmt.Errorf("skill %q: cannot read the host approval store: %w", name, err)
+		return fmt.Errorf("skill %q: cannot read the host approval store: %w", c.Name, err)
 	}
 	if !approved {
-		return errSkillNotApproved(name)
+		return &spawnRefusal{Kind: skillstate.NotApproved, Skill: c}
 	}
 	return nil
 }
@@ -88,23 +206,39 @@ func approvalRefusal(name, skillDir, bundleHash string) error {
 // bundleHash may be a hash the caller already computed for workdirSkillDir;
 // pass "" to hash it here. A nil error means approved; a non-nil error is the
 // refusal detail (see approvalRefusal).
+//
+// This name-only form is for callers without a registry entry; its remedy is
+// the bare `omac register <name>`. Launch paths use approvedSpawnDirFor.
 func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir string, refusal error) {
-	if err := config.ValidSkillName(name); err != nil {
+	return approvedSpawnDirFor(skillCopy{Name: name, Dir: workdirSkillDir}, bundleHash)
+}
+
+// approvedSpawnDirFor is approvedSpawnDir for a registered copy (see
+// skillCopyOf). A refusal that re-registering fixes is a *spawnRefusal whose
+// Kind says which of the three cases applies: no approval, a snapshot from
+// before skilltrust.SnapshotPolicySince, or no snapshot at all.
+func approvedSpawnDirFor(c skillCopy, bundleHash string) (snapshotDir string, refusal error) {
+	if err := config.ValidSkillName(c.Name); err != nil {
 		return "", fmt.Errorf("spawn refused: %w", err)
 	}
-	h, err := skillBundleHash(name, workdirSkillDir, bundleHash)
+	h, err := skillBundleHash(c.Name, c.Dir, bundleHash)
 	if err != nil {
 		return "", err
 	}
-	if refusal := approvalRefusal(name, workdirSkillDir, h); refusal != nil {
+	if refusal := approvalRefusalFor(c, h); refusal != nil {
 		return "", refusal
 	}
-	// An approval whose snapshot is missing (a hand-deleted ~/.config/omac
-	// tree) is recoverable by re-registering, so refuse this one skill here
-	// rather than letting the supervisor backstop fail the whole launch.
-	snap, present := skilltrust.SnapshotPath(name, h)
+	// An approval whose snapshot is unusable is recoverable by re-registering,
+	// so refuse this one skill here rather than letting the supervisor
+	// backstop fail the whole launch. Nothing deletes the retired snapshot
+	// root on upgrade, so a legacy copy still being there is what tells the
+	// upgrade case apart from a hand-deleted store.
+	snap, present := skilltrust.SnapshotPath(c.Name, h)
 	if !present {
-		return "", errSkillSnapshotMissing(name)
+		if skilltrust.LegacySnapshotPresent(c.Name, h) {
+			return "", &spawnRefusal{Kind: skillstate.SnapshotStale, Skill: c}
+		}
+		return "", &spawnRefusal{Kind: skillstate.SnapshotMissing, Skill: c}
 	}
 	return snap, nil
 }
@@ -125,25 +259,16 @@ func snapshotMeta(name, snapDir string) (*config.Meta, error) {
 	return m, nil
 }
 
-// errSkillNotApproved is the uniform refusal error/detail; it names the
-// host-side remedy the sandboxed agent cannot perform itself.
+// errSkillNotApproved is the refusal for the supervisor backstop, which only
+// knows a spec name: the bare remedy, since no registry entry is at hand.
 func errSkillNotApproved(name string) error {
-	return fmt.Errorf("spawn refused: skill %q is not host-approved; run `omac register %s` from a host terminal (outside the sandbox) to approve its current code", name, name)
+	return &spawnRefusal{Kind: skillstate.NotApproved, Skill: skillCopy{Name: name}}
 }
 
-// errSkillSnapshotMissing is the refusal for an approved skill whose snapshot
-// is unavailable under the current copy policy: the host store was partly
-// deleted, or the snapshot was written by an older policy (and so may contain
-// bytes the approval hash never covered). The wording deliberately names the
-// policy rather than a release, so a future policy bump can reuse it.
-func errSkillSnapshotMissing(name string) error {
-	return fmt.Errorf("spawn refused: skill %q is approved, but its snapshot is missing or was made by an older copy policy; run `omac register %s` from a host terminal (outside the sandbox) to rebuild it", name, name)
-}
-
-// refusalNotice is the operator-facing line the launch paths print when a
-// skill is left unavailable, kept in one place so start and reload agree. The
-// refusal already names the skill and the remedy, so this only adds what
-// happened to the route.
+// refusalNotice is the operator-facing line live reload prints when a skill is
+// left unavailable (the launch itself prints one grouped report instead, see
+// renderApprovalRefusals). The refusal already names the skill and the remedy,
+// so this only adds what happened to the route.
 func refusalNotice(refusal error) string {
 	return fmt.Sprintf("%v (mounted as unavailable)", refusal)
 }

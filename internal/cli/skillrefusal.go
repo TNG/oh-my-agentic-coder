@@ -8,6 +8,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 )
 
 // renderSkillRefusal prints one consolidated report of why a launch cannot
@@ -234,4 +235,42 @@ func remedy(p skillstate.Problem) string {
 	default:
 		return p.Detail + " — " + p.Fix
 	}
+}
+
+// renderApprovalRefusals prints one grouped report of the skills the spawn
+// gate refused at launch (issue #514). Unlike renderSkillRefusal the launch
+// goes on: the refused skills are mounted as broken routes the agent can see,
+// so there is no exit code, and the header says so instead of "refusing to
+// start". The remedy sentence appears once in the header and each class
+// states its own cause once, with one skillProblemLine per skill under it.
+//
+// The classes map to the three spawnRefusal kinds plus a catch-all. The
+// stale-snapshot class leads because it is the upgrade case every previously
+// registered skill lands in after a copy-policy bump, and it names the release
+// so the user can tie the refusal to the update they just ran.
+func renderApprovalRefusals(w io.Writer, prefix string, problems []skillstate.Problem) {
+	if len(problems) == 0 {
+		return
+	}
+	problems = sanitizeProblems(problems)
+	s := stylerFor(w)
+	skills := map[string]bool{}
+	for _, p := range problems {
+		skills[p.Skill] = true
+	}
+	fmt.Fprintf(w, "%s: %d skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:\n", prefix, len(skills))
+
+	labeledSkills(w, s, problems, skillstate.SnapshotStale,
+		"Registered before "+skilltrust.SnapshotPolicySince+", snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):",
+		"rebuild with")
+	labeledSkills(w, s, problems, skillstate.NotApproved,
+		"Not registered from a host terminal yet:",
+		"register with")
+	labeledSkills(w, s, problems, skillstate.SnapshotMissing,
+		"Snapshot missing from the host store:",
+		"rebuild with")
+	perSkill(w, problems, skillstate.SpawnRefused,
+		"Could not be checked (fix the cause, then relaunch):")
+
+	fmt.Fprintln(w, "\n  The session starts without them; the agent sees them listed as unavailable.")
 }

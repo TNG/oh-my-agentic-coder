@@ -17,6 +17,39 @@ Run `omac doctor` first — it checks all prerequisites and prints the fix for w
 
 ## Common errors
 
+### Upgrading
+
+```
+omac start: 3 skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:
+
+  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):
+    omac-gh — rebuild with: omac register omac-gh
+    skill-marketplace — rebuild with: omac register skill-marketplace --harness opencode --global
+```
+
+Inside the session the agent sees the same skill as broken, with this detail:
+
+```
+spawn refused: skill "omac-gh" (...) is approved, but its snapshot was made by an older copy policy (registered before v0.13.1) and must be rebuilt once; run `omac register omac-gh` from a host terminal (outside the sandbox) to rebuild it
+```
+
+Cause: v0.13.1 changed how omac stores the frozen copy of each approved skill
+(the snapshot a sidecar runs from, see [Security](./security.md)). Snapshots
+made by an older version are no longer accepted. Nothing is lost: the skill is
+still registered and approved, only its frozen copy has to be made again.
+
+Fix: run the command printed for each skill once, from a terminal outside the
+sandbox. The flags in the printed command (`--harness`, `--global`) select the
+right copy when the same skill name is registered more than once; copy the
+command as printed.
+
+```bash
+omac register omac-gh
+```
+
+`omac doctor` lists the same skills under `[warn] skill snapshots` until every
+one is rebuilt.
+
 ### dial unix /run/user/1000/bus — no Secret Service provider found  (WSL2)
 
 Secret Service is the Linux standard for secure credential storage, accessed over D-Bus. WSL2 does not run the required daemon by default.

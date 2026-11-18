@@ -73,6 +73,21 @@ const (
 	// MissingField means a required config field resolved to no value through
 	// any rung of the precedence ladder.
 	MissingField ProblemKind = "missing-field"
+	// NotApproved means the skill's current content has never been approved
+	// from a host terminal (internal/skilltrust), so its sidecar may not spawn.
+	// Produced by the launch paths' spawn gate, not by Resolver.
+	NotApproved ProblemKind = "not-approved"
+	// SnapshotStale means the skill is approved but its frozen copy was made
+	// under a retired snapshot policy (registered before
+	// skilltrust.SnapshotPolicySince) and must be rebuilt once on the host.
+	SnapshotStale ProblemKind = "snapshot-stale"
+	// SnapshotMissing means the skill is approved but no snapshot exists under
+	// any policy: the host store was deleted by hand. Rebuilt by re-registering.
+	SnapshotMissing ProblemKind = "snapshot-missing"
+	// SpawnRefused is the catch-all for a spawn-gate failure that is not one
+	// of the three above (unreadable skill dir, corrupt approval store): the
+	// cause is reported verbatim and re-registering is not suggested.
+	SpawnRefused ProblemKind = "spawn-refused"
 )
 
 // Problem is one reason a skill is not ready.
