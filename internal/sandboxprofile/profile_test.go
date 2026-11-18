@@ -672,6 +672,98 @@ func TestParseFlagsInlineValues(t *testing.T) {
 	}
 }
 
+func TestParseFlagsListenPortRange(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--listen-port", "8000-8100", "--", "true"},
+		{"--listen-port=8000-8100", "--", "true"},
+	} {
+		f, err := ParseFlags(argv)
+		if err != nil {
+			t.Fatalf("ParseFlags(%v): %v", argv, err)
+		}
+		if len(f.ListenPort) != 101 {
+			t.Fatalf("listen-port from %v expanded to %d ports, want 101", argv, len(f.ListenPort))
+		}
+		if f.ListenPort[0] != 8000 || f.ListenPort[100] != 8100 {
+			t.Errorf("listen-port from %v is %d..%d, want 8000..8100",
+				argv, f.ListenPort[0], f.ListenPort[100])
+		}
+	}
+}
+
+func TestParseFlagsAllowTCPConnectRange(t *testing.T) {
+	f, err := ParseFlags([]string{
+		"--allow-tcp-connect", "22",
+		"--allow-tcp-connect", "8000-8100",
+		"--", "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.AllowTCP) != 102 {
+		t.Fatalf("allow-tcp-connect expanded to %d ports, want 102", len(f.AllowTCP))
+	}
+	if f.AllowTCP[0] != 22 || f.AllowTCP[101] != 8100 {
+		t.Errorf("allow-tcp-connect is %d..%d, want 22..8100", f.AllowTCP[0], f.AllowTCP[101])
+	}
+}
+
+// A single port stays one entry, and --open-port keeps taking single ports only.
+func TestParseFlagsSinglePortEntries(t *testing.T) {
+	f, err := ParseFlags([]string{"--listen-port", "8000", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.ListenPort) != 1 || f.ListenPort[0] != 8000 {
+		t.Errorf("listen-port = %v, want [8000]", f.ListenPort)
+	}
+	if _, err := ParseFlags([]string{"--open-port", "8000-8100", "--", "true"}); err == nil {
+		t.Error("--open-port must reject a range")
+	}
+}
+
+func TestParseFlagsPortEntryErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want []string
+	}{
+		{
+			name: "reversed range",
+			argv: []string{"--listen-port", "8100-8000", "--", "true"},
+			want: []string{"--listen-port", "8100-8000"},
+		},
+		{
+			name: "range above the expansion cap",
+			argv: []string{"--listen-port", "1-65535", "--", "true"},
+			want: []string{"--listen-port", "1-65535", "1000"},
+		},
+		{
+			name: "zero port",
+			argv: []string{"--listen-port", "0", "--", "true"},
+			want: []string{"--listen-port", `"0"`, "port 0"},
+		},
+		{
+			name: "range starting at zero",
+			argv: []string{"--allow-tcp-connect", "0-100", "--", "true"},
+			want: []string{"--allow-tcp-connect", `"0-100"`, "port 0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseFlags(tt.argv)
+			if err == nil {
+				t.Fatalf("ParseFlags(%v): want error", tt.argv)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseAndMergeAllowEnvFlag(t *testing.T) {
 	f, err := ParseFlags([]string{"--allow-env", "ANTHROPIC_API_KEY", "--allow-env=OPENAI_API_KEY", "--", "true"})
 	if err != nil {
@@ -768,6 +860,32 @@ func TestMergeAdditive(t *testing.T) {
 	// base profile untouched
 	if len(p.Filesystem.Read) != 1 || p.Workdir.Access != AccessRead {
 		t.Error("Merge mutated the base profile")
+	}
+}
+
+// Merge itself does not enforce the port cap: run.go validates the merged
+// profile before launch, and Validate rejects an over-cap merged list.
+func TestMergePortRangesOverCapRejectedByValidate(t *testing.T) {
+	base := make([]int, 0, maxExpandedPorts)
+	for port := 1; port <= maxExpandedPorts; port++ {
+		base = append(base, port)
+	}
+	f, err := ParseFlags([]string{"--listen-port", "2000-2100", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, _ := Merge(&Profile{Network: Network{ListenPort: base}}, f)
+	if got := len(merged.Network.ListenPort); got != maxExpandedPorts+101 {
+		t.Fatalf("merged listen_port has %d ports, want %d", got, maxExpandedPorts+101)
+	}
+	err = merged.Validate()
+	if err == nil {
+		t.Fatal("merged profile above the port cap passed Validate")
+	}
+	for _, want := range []string{"network.listen_port", "expands to", "1000-port limit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
 	}
 }
 
