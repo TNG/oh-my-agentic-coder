@@ -137,16 +137,44 @@ For Maven, the middle line is
   ```
 
 - Maven reads repository credentials only from a `<server>` entry in a
-  settings file, not from the environment. The human commits a settings
-  file to the project, for example `.mvn/settings.xml`, whose `<password>`
-  is `${env.MY_REPO_TOKEN}`, together with a `.mvn/maven.config` that holds
-  `-s .mvn/settings.xml`. Priming runs from a fresh clone, so the files must
-  be committed. With `maven.config`, priming and every later offline build
-  read the same settings: Maven records which repository each cached
-  artifact came from, and a build without the settings' mirror fails
-  offline although the cache is complete. Offline, the unset
-  `${env.MY_REPO_TOKEN}` does no harm. Never write the token itself into a
-  file: the VM keeps it.
+  settings file, not from the environment, and sends them only to a mirror
+  or repository with the same `<id>`. Priming runs from a fresh clone, so
+  the human commits two files to the project. `.mvn/settings.xml`, with the
+  registry's URL and the user name it expects:
+
+  ```xml
+  <settings>
+    <mirrors>
+      <mirror>
+        <id>my-repo</id>
+        <url>https://repo.example.com/maven</url>
+        <mirrorOf>*</mirrorOf>
+      </mirror>
+    </mirrors>
+    <servers>
+      <server>
+        <id>my-repo</id>
+        <username>my-user</username>
+        <password>${env.MY_REPO_TOKEN}</password>
+      </server>
+    </servers>
+  </settings>
+  ```
+
+  `.mvn/maven.config`, with exactly this line (Maven 3.9 or later reads
+  each line as one argument):
+
+  ```text
+  --settings=${maven.multiModuleProjectDirectory}/.mvn/settings.xml
+  ```
+
+  With `maven.config`, priming and every later offline build read the same
+  settings: Maven records which repository each cached artifact came from,
+  and a build without the settings' mirror fails offline although the cache
+  is complete. This applies to every Maven run of the project, also outside
+  the VM: the project's settings file replaces `~/.m2/settings.xml`.
+  Offline, the unset `${env.MY_REPO_TOKEN}` does no harm. Never write the
+  token itself into a file: the VM keeps it.
 - Priming has to end with exit code 0 and `BUILD SUCCESSFUL` (Gradle) or
   `BUILD SUCCESS` (Maven). Gradle, for example, stops at the first failed
   task and skips the downloads of the tasks after it, so offline builds in a
