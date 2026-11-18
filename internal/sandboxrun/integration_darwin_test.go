@@ -247,7 +247,9 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 // grant for that same folder. The connect through a symlink in the workdir
 // checks that Seatbelt matches the socket's resolved path. Binding a new
 // socket there must fail too. Each case first runs without the protection,
-// so a failure for another reason cannot pass the test.
+// so a failure for another reason cannot pass the test. Filtered mode
+// allows network-bind only with a listen or open port, so the bind control
+// succeeds only in the cases that grant one.
 func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
 	if err != nil {
@@ -264,8 +266,17 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 		fmt.Fprint(w, "protected-socket-reached")
 	}))
 
-	for _, mode := range []string{sandboxprofile.ModeOpen, sandboxprofile.ModeFiltered} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mode        string
+		listenPorts []int
+		bindAllowed bool
+	}{
+		{"open", sandboxprofile.ModeOpen, nil, true},
+		{"filtered", sandboxprofile.ModeFiltered, nil, false},
+		{"filtered-listen-port", sandboxprofile.ModeFiltered, []int{8000}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			// Under /tmp, not t.TempDir: a socket path must fit in 104 bytes.
 			wd, err := os.MkdirTemp("/tmp", "omac-wd-*")
 			if err != nil {
@@ -280,7 +291,7 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 				p := &sandboxprofile.Profile{
 					Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 					Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{sockDir}},
-					Network:    sandboxprofile.Network{Mode: mode},
+					Network:    sandboxprofile.Network{Mode: tc.mode, ListenPort: tc.listenPorts},
 				}
 				if protect {
 					p.Filesystem.Deny = []string{sockDir}
@@ -306,7 +317,11 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 				out, code := runSandboxed(t, g, "/usr/bin/perl", "-MIO::Socket::UNIX", "-e",
 					`IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or exit 3`, bound)
 				os.Remove(bound)
-				if want := map[bool]int{false: 0, true: 3}[protect]; code != want {
+				want := 3
+				if tc.bindAllowed && !protect {
+					want = 0
+				}
+				if code != want {
 					t.Errorf("bind in %s (protected=%v): want perl exit %d, got exit=%d out=%s", sockDir, protect, want, code, out)
 				}
 			}
