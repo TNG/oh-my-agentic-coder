@@ -498,9 +498,13 @@ func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 // with or without --vm, must still keep the sandbox out of it.
 func TestSandboxDeniesKeepHostVMStateUnderAnotherStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	hostRoot, err := vm.InstanceRoot(vm.DefaultVMName)
-	if err != nil {
-		t.Fatal(err)
+	var hostRoots []string
+	for _, name := range []string{vm.DefaultVMName, "acme"} {
+		root, err := vm.InstanceRoot(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hostRoots = append(hostRoots, root)
 	}
 	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
 	argv := injectSandboxDenies([]string{"omac", "sandbox", "run", "--", "opencode"}, nil, native)
@@ -510,12 +514,14 @@ func TestSandboxDeniesKeepHostVMStateUnderAnotherStateHome(t *testing.T) {
 	}
 
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	if _, ok := sandboxrun.NewProtectedPathSet(sandboxprofile.DefaultProfile()).IsProtected(hostRoot); ok {
-		t.Fatal("the baseline alone protects the host's VM state; this test no longer checks the launch's own deny")
-	}
 	session, _ := sandboxprofile.Merge(sandboxprofile.DefaultProfile(), flags)
-	if _, ok := sandboxrun.NewProtectedPathSet(session).IsProtected(hostRoot); !ok {
-		t.Errorf("a session with its own XDG_STATE_HOME can reach the host's VM state %s; argv %q", hostRoot, argv)
+	for _, root := range hostRoots {
+		if _, ok := sandboxrun.NewProtectedPathSet(sandboxprofile.DefaultProfile()).IsProtected(root); ok {
+			t.Fatalf("the baseline alone protects %s; this test no longer checks the launch's own deny", root)
+		}
+		if _, ok := sandboxrun.NewProtectedPathSet(session).IsProtected(root); !ok {
+			t.Errorf("a session with its own XDG_STATE_HOME can reach the host's VM state %s; argv %q", root, argv)
+		}
 	}
 }
 
@@ -527,7 +533,8 @@ func TestSandboxDeniesIgnoreRelativeStateHome(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "rel")
 	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
 	argv := injectSandboxDenies([]string{"omac", "sandbox", "run", "--", "opencode"}, nil, native)
-	want := []string{"omac", "sandbox", "run", "--deny-literal", filepath.Join(home, ".local", "state", "omac", "vm"), "--", "opencode"}
+	state := filepath.Join(home, ".local", "state", "omac")
+	want := []string{"omac", "sandbox", "run", "--deny-literal", filepath.Join(state, "vm"), "--deny-literal", filepath.Join(state, "vms"), "--", "opencode"}
 	if !equalStrings(argv, want) {
 		t.Fatalf("injectSandboxDenies = %v, want %v", argv, want)
 	}

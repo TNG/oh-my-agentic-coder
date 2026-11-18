@@ -964,9 +964,9 @@ func serveSkillWorkdirs(launchDir, workdirFlag string, desktopWorktrees []string
 // injectSandboxDenies splices --deny flags for each harness-declared path the
 // sandbox may neither read nor write (Harness.SandboxDenyPaths), so files the
 // harness does not need stay out of reach inside its granted dirs. It also
-// blocks the host's VM state by its exact path: the opencode v2 pin gives the
-// sandbox its own XDG_STATE_HOME, against which the baseline entries no longer
-// name that state. --deny is a flag of omac's native `sandbox run`; other
+// blocks the host's state of every VM by its exact path: the opencode v2 pin
+// gives the sandbox its own XDG_STATE_HOME, against which the baseline entries
+// no longer name that state. --deny is a flag of omac's native `sandbox run`; other
 // backends (nono) get no flags.
 func injectSandboxDenies(argv []string, paths []string, prof config.SandboxProfile) []string {
 	if _, native := prof.PolicyRef(); !native {
@@ -978,8 +978,10 @@ func injectSandboxDenies(argv []string, paths []string, prof config.SandboxProfi
 		}
 		argv = injectSandboxFlag(argv, "--deny", p)
 	}
-	if root, err := vm.InstanceRoot(vm.DefaultVMName); err == nil {
-		argv = injectSandboxFlag(argv, "--deny-literal", root)
+	if dirs, err := vm.StateDirs(); err == nil {
+		for _, d := range dirs {
+			argv = injectSandboxFlag(argv, "--deny-literal", d)
+		}
 	}
 	return argv
 }

@@ -80,8 +80,14 @@ func stateHomeDir(xdg string) (string, error) {
 	return filepath.Join(home, ".local", "state"), nil
 }
 
-// InstanceRoot resolves the state directory of the named VM: the default VM
-// keeps <state>/vm, every other one gets <state>/vms/<name>.
+// The state of the default VM is in <state>/vm, that of every other VM in
+// <state>/vms/<name>.
+const (
+	defaultStateDir = "vm"
+	namedStateDir   = "vms"
+)
+
+// InstanceRoot resolves the state directory of the named VM.
 func InstanceRoot(name string) (string, error) {
 	if err := ValidateName(name); err != nil {
 		return "", fmt.Errorf("omac vm: %w", err)
@@ -91,9 +97,18 @@ func InstanceRoot(name string) (string, error) {
 		return "", err
 	}
 	if name == DefaultVMName {
-		return filepath.Join(base, "vm"), nil
+		return filepath.Join(base, defaultStateDir), nil
 	}
-	return filepath.Join(base, "vms", name), nil
+	return filepath.Join(base, namedStateDir, name), nil
+}
+
+// StateDirs returns the two directories that hold the state of every VM.
+func StateDirs() ([]string, error) {
+	base, err := stateBase()
+	if err != nil {
+		return nil, err
+	}
+	return []string{filepath.Join(base, defaultStateDir), filepath.Join(base, namedStateDir)}, nil
 }
 
 // deleteVMHint tells how to delete a VM by hand, with the real state paths.
