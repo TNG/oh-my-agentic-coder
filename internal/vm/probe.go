@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -89,35 +88,4 @@ func sshLoginRejected(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "Permission denied (") || strings.Contains(msg, "Host key verification failed")
-}
-
-// vmOutputLimit bounds what omac keeps of a command's output from inside
-// the VM, which a session can make arbitrarily long.
-const vmOutputLimit = 4 << 10
-
-// cappedBuffer keeps the first max bytes written to it and drops the rest.
-type cappedBuffer struct {
-	buf       bytes.Buffer
-	max       int
-	truncated bool
-}
-
-// Write reports every byte as written, so that the command does not
-// fail on a short write.
-func (c *cappedBuffer) Write(p []byte) (int, error) {
-	n := len(p)
-	if room := c.max - c.buf.Len(); n > room {
-		c.truncated = true
-		p = p[:max(room, 0)]
-	}
-	c.buf.Write(p)
-	return n, nil
-}
-
-// String returns the kept bytes, marked when some were dropped.
-func (c *cappedBuffer) String() string {
-	if c.truncated {
-		return c.buf.String() + " [truncated]"
-	}
-	return c.buf.String()
 }
