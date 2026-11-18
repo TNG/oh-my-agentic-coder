@@ -29,6 +29,17 @@ import (
 // differs; see the want field of each probe in usabilityFixture.probes.
 func TestIntegrationUsabilityMatrix(t *testing.T) {
 	fx := newUsabilityFixture(t)
+	// Every probe must succeed outside the sandbox, so a "denied" row can
+	// only come from the profile.
+	for _, pr := range fx.probes() {
+		out, err := usabilityRunArgv(append([]string{"/bin/sh", "-c", pr.script, "sh"}, pr.args...), fx.workdir)
+		if pr.creates != "" {
+			os.Remove(pr.creates)
+		}
+		if err != nil {
+			t.Fatalf("probe %s fails outside the sandbox: %v: %s", pr.name, err, out)
+		}
+	}
 	for _, sc := range usabilityScenarios() {
 		t.Run(sc.name+"/"+sc.enforcement, func(t *testing.T) {
 			g := fx.grants(t, sc)
@@ -239,13 +250,13 @@ func (fx *usabilityFixture) probes() []usabilityProbe {
 		created("grant-rw-write", A, write, join(fx.rw, "new.txt")),
 		file("grant-rw-exec", A, run, join(fx.rw, "true")),
 		file("grant-ro-read", A, read, join(fx.ro, "seed.txt")),
-		file("grant-ro-write", X, `echo x >> "$1"`, join(fx.ro, "seed.txt")),
+		file("grant-ro-write", D, `echo x >> "$1"`, join(fx.ro, "seed.txt")),
 		created("tmpdir-write", A, write+` && `+read, join(fx.tmp, "new.txt")),
 		file("tmpdir-exec", A, run, join(fx.tmp, "true")),
 		{name: "system-read", want: A, script: `/bin/cat /System/Library/CoreServices/SystemVersion.plist >/dev/null && /bin/ls /usr/lib >/dev/null`},
 		{name: "exec-usr-bin", want: A, script: `/usr/bin/env /usr/bin/true && /usr/bin/uname >/dev/null`},
 		{name: "dev-null-urandom", want: A, script: `echo x > /dev/null && /usr/bin/head -c1 /dev/urandom >/dev/null`},
-		{name: "pty", script: `/usr/bin/script -q /dev/null /bin/sh -c 'test -t 0 && test -t 1'`},
+		{name: "pty", want: A, script: `/usr/bin/script -q /dev/null /bin/sh -c 'test -t 0 && test -t 1'`},
 		netProbe("tcp-connect-proxy-port", curlTCP, port(fx.proxyPort)),
 		netProbe("tcp-connect-open-port", curlTCP, port(fx.openPort)),
 		netProbe("tcp-connect-other-port", curlTCP, port(fx.otherPort)),
@@ -275,10 +286,14 @@ func usabilityRun(t *testing.T, g *Grants, script string, args ...string) (strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	return usabilityRunArgv(argv, g.Workdir)
+}
+
+func usabilityRunArgv(argv []string, dir string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = g.Workdir
+	cmd.Dir = dir
 	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err

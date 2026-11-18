@@ -247,9 +247,10 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 // grant for that same folder. The connect through a symlink in the workdir
 // checks that Seatbelt matches the socket's resolved path. Binding a new
 // socket there must fail too. Each case first runs without the protection,
-// so a failure for another reason cannot pass the test. With kernel
-// enforcement, filtered mode allows network-bind only with a listen or open
-// port, so without one the bind control fails too.
+// so a failure for another reason cannot pass the test. The one exception
+// is the bind in the filtered case: with kernel enforcement, filtered mode
+// allows network-bind only with a listen or open port, so there the bind
+// fails either way, and the filtered-listen-port case checks it instead.
 func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
 	if err != nil {
