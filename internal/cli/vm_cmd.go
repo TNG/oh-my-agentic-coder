@@ -119,6 +119,9 @@ func parseVMImage(args []string, env *Env) (vmOp, int) {
 			return nil, vmMisuse(env, fmt.Sprintf("image %s: expected exactly one image reference", sub))
 		}
 		ref := rest[0]
+		if _, err := vm.ValidateImageRef(ref); err != nil {
+			return nil, vmMisuse(env, fmt.Sprintf("image %s: %v", sub, err))
+		}
 		if sub == "add" {
 			return func(ctx context.Context, m vmManager, _ *Env) error { return m.ImageAdd(ctx, ref) }, ExitOK
 		}
