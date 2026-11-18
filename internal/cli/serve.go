@@ -839,8 +839,8 @@ func serveGeneratesPassword(known openCodeVersionKind, inner []string) func() bo
 // server generates its own password (generatesPassword reports true for
 // OpenCode 2.x; it is called only when a hint is returned), the
 // hint says where it appears and how to keep a stable one; otherwise
-// (OpenCode 1.x, or a version omac cannot tell) it warns that any local
-// process can reach the port. Both end with advice, usually "set
+// (OpenCode 1.x, or a version omac cannot tell) it warns that the server has no
+// password, so any local process can use it. Both end with advice, usually "set
 // OMAC_SERVE_PASSWORD" (see serveAuthAdvice). It returns "" when there is no
 // server port or getenv reports the auth env var as set. getenv must answer
 // what the server will see, i.e. after the sandbox's env filter (see
@@ -856,7 +856,7 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 		return ""
 	}
 	if !generatesPassword() {
-		return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local process; "+
+		return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d has no password, so any local process can use it; "+
 			"to require a password, %s.", h.Name, port, advice)
 	}
 	return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d uses a random password that changes on every restart "+

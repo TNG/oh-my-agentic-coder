@@ -420,7 +420,7 @@ func TestServerExposureWarning(t *testing.T) {
 
 	// OpenCode 1.x starts without a password ("server is unsecured"), so the
 	// hint must warn that the port is open instead of promising a password.
-	const v1Want = "omac serve: opencode server will listen on 127.0.0.1:4096, reachable by any local process; " +
+	const v1Want = "omac serve: opencode server on 127.0.0.1:4096 has no password, so any local process can use it; " +
 		"to require a password, set OMAC_SERVE_PASSWORD."
 	if w1 := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(false)); w1 != v1Want {
 		t.Errorf("OpenCode 1.x hint = %q\nwant %q", w1, v1Want)
@@ -489,9 +489,9 @@ func TestServeGeneratesPasswordPicksHint(t *testing.T) {
 		inner []string
 		want  string
 	}{
-		{"1.x wrapper", openCodeOther, []string{"npx", "opencode-ai@1", "serve"}, "reachable by any local process"},
+		{"1.x wrapper", openCodeOther, []string{"npx", "opencode-ai@1", "serve"}, "has no password"},
 		{"2.x wrapper", openCodeOther, []string{"npx", "opencode-ai@2.3.2", "serve"}, "random password"},
-		{"unknown command", openCodeOther, []string{"my-wrapper.sh", "serve"}, "reachable by any local process"},
+		{"unknown command", openCodeOther, []string{"my-wrapper.sh", "serve"}, "has no password"},
 		{"class from discovery wins", openCodeV21Plus, []string{"npx", "opencode-ai@1", "serve"}, "random password"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

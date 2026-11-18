@@ -40,7 +40,7 @@ Without a password from omac, the server's protection depends on the OpenCode ve
 - **OpenCode 1.x** starts without a password and prints `server is unsecured`. Any process on your machine can then use the server, for example to read your OpenCode config or start a session. omac warns about this when it starts the server.
 
   ```text
-  omac serve: opencode server will listen on 127.0.0.1:4096, reachable by any local process; to require a password, set OMAC_SERVE_PASSWORD.
+  omac serve: opencode server on 127.0.0.1:4096 has no password, so any local process can use it; to require a password, set OMAC_SERVE_PASSWORD.
   ```
 
 Checked with OpenCode 1.18.29, 1.19.6, 2.0.20 and 2.3.2.
