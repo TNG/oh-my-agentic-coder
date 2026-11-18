@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -390,6 +391,23 @@ func TestTopLevelHelpListsEveryVMVerb(t *testing.T) {
 		}
 		if !listed.MatchString(vmLine) {
 			t.Errorf("printUsage vm line lacks %q: %s", verb, vmLine)
+		}
+	}
+}
+
+// vmHelpWidth is the widest line `omac vm help` may print, so that an
+// inserted sentence cannot leave one ragged line.
+const vmHelpWidth = 115
+
+func TestVMHelpLinesStayNarrow(t *testing.T) {
+	useFakeVM(t, &fakeVMManager{})
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"help"}, env); code != ExitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, line := range strings.Split(stderr(), "\n") {
+		if n := utf8.RuneCountInString(line); n > vmHelpWidth {
+			t.Errorf("help line has %d characters, more than %d:\n%s", n, vmHelpWidth, line)
 		}
 	}
 }

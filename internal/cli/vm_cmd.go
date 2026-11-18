@@ -351,9 +351,9 @@ const vmExecUsage = `  omac vm exec [--cwd <dir>] [--env NAME[=VALUE]]... [--ver
                                .git, .env files and what git ignores. Runs the command there, in the
                                current directory or in <dir> relative to it. Absolute paths and ..
                                are refused; to reach a sibling directory, run from the top level.
-                               Results such as build output stay in the VM and are not copied back. --env works only from
-                               the host while the VM is online, to prime build caches. --verbose
-                               prints which directory is copied where.`
+                               Results such as build output stay in the VM and are not copied
+                               back. --env works only from the host while the VM is online, to
+                               prime build caches. --verbose prints which directory is copied where.`
 
 func printVMExecUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:\n"+vmExecUsage)
@@ -442,7 +442,9 @@ Usage:
                                --reprovision reinstalls the packages and JDKs from vm.yaml, then switches offline.
   omac vm down                 Stop the VM.
   omac vm reset                Delete the VM with all its host-side state and create it anew.
-  omac vm status               Show whether the VM runs, its mode, ports, images, JDKs, packages, copied worktrees, attached sessions and the resources from vm.yaml or their defaults (applied on create or reset).
+  omac vm status               Show whether the VM runs, its mode, ports, images, JDKs, packages, copied
+                               worktrees, attached sessions and the resources from vm.yaml or their
+                               defaults (applied on create or reset).
   omac vm online               Restart the VM with internet access; refused while sessions are attached.
   omac vm offline              Restart the VM without internet access, the mode sessions need.
   omac vm image add <ref>      Pull an image on the host and load it into the VM's Docker.
