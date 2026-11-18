@@ -23,18 +23,27 @@ type Layout struct {
 	LimaYAML    string // the rendered template handed to `limactl create`
 }
 
-// DefaultRoot resolves the state directory: $XDG_STATE_HOME/omac/vm, else
-// $HOME/.local/state/omac/vm on every platform (the spec wants the same
-// path on macOS).
+// DefaultRoot resolves the state directory: <state home>/omac/vm.
 func DefaultRoot() (string, error) {
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "omac", "vm"), nil
+	home, err := stateHomeDir(os.Getenv("XDG_STATE_HOME"))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "omac", "vm"), nil
+}
+
+// stateHomeDir applies the XDG Base Directory rule to an XDG_STATE_HOME
+// value: an absolute value is the state home; an empty or relative one is
+// ignored in favour of $HOME/.local/state, on macOS too.
+func stateHomeDir(xdg string) (string, error) {
+	if filepath.IsAbs(xdg) {
+		return xdg, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", fmt.Errorf("omac vm: cannot resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "state", "omac", "vm"), nil
+	return filepath.Join(home, ".local", "state"), nil
 }
 
 // NewLayout derives all paths from root.

@@ -465,6 +465,28 @@ func TestSandboxDeniesKeepHostVMStateUnderAnotherStateHome(t *testing.T) {
 	}
 }
 
+// The XDG spec says to ignore a relative XDG_STATE_HOME; `sandbox run`
+// refuses a relative --deny-literal, so passing one on stops every launch.
+func TestSandboxDeniesIgnoreRelativeStateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "rel")
+	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
+	argv := injectSandboxDenies([]string{"omac", "sandbox", "run", "--", "opencode"}, nil, native)
+	want := []string{"omac", "sandbox", "run", "--deny-literal", filepath.Join(home, ".local", "state", "omac", "vm"), "--", "opencode"}
+	if !equalStrings(argv, want) {
+		t.Fatalf("injectSandboxDenies = %v, want %v", argv, want)
+	}
+	flags, err := sandboxprofile.ParseFlags(argv[3:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := sandboxprofile.Merge(sandboxprofile.DefaultProfile(), flags)
+	if err := session.Validate(); err != nil {
+		t.Errorf("the launch's sandbox profile is invalid: %v", err)
+	}
+}
+
 func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
 	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}

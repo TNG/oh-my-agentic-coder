@@ -28,6 +28,18 @@ func TestDefaultRootFallsBackToLocalState(t *testing.T) {
 	}
 }
 
+func TestDefaultRootIgnoresRelativeXDGStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "rel")
+	t.Setenv("HOME", "/home/u")
+	got, err := DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("/home/u", ".local", "state", "omac", "vm"); got != want {
+		t.Errorf("DefaultRoot() = %q, want %q", got, want)
+	}
+}
+
 func TestNewLayoutPaths(t *testing.T) {
 	l := NewLayout("/r")
 	cases := map[string]string{
