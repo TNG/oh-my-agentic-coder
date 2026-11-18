@@ -188,17 +188,21 @@ func runVMExec(args []string, env *Env) int {
 	// Nothing is copied or sent before this point, so the human can still
 	// stop and run `omac vm reset` as the notice says.
 	if len(envs) > 0 && isTerminal(env.Stdin) && isTerminal(env.Stderr) {
-		fmt.Fprintln(env.Stderr, "Press Enter to continue, Ctrl-C to stop.")
+		fmt.Fprintln(env.Stderr, vmExecEnvPrompt)
 		if !waitForEnter(ctx, env.Stdin) {
 			if ctx.Err() != nil {
 				fmt.Fprintln(env.Stderr) // finish the line a ^C echo may have left open
 			}
 			fmt.Fprintln(env.Stderr, vm.ErrInterrupted)
-			return 130
+			return vm.ExitInterrupted
 		}
 		// The wait can be long; a session may have attached meanwhile.
-		if code, ok := requireVMOnline(env); !ok {
-			return code
+		if err := checkVMOnline(); err != nil {
+			fmt.Fprintln(env.Stderr, err)
+			if errors.Is(err, errVMNotOnline) {
+				return ExitMisuse
+			}
+			return ExitIOError
 		}
 	}
 	var logf func(string, ...any)
@@ -247,24 +251,34 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	if err != nil {
 		return nil, vmExecMisuseErr(env, err), false
 	}
-	if code, ok := requireVMOnline(env); !ok {
-		return nil, code, false
+	if err := checkVMOnline(); errors.Is(err, errVMNotOnline) {
+		return nil, vmExecMisuseErr(env, err), false
+	} else if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return nil, ExitIOError, false
 	}
 	return envs, ExitOK, true
 }
 
 const vmExecEnvReason = "--env is for priming from the host while the VM is online"
 
-func requireVMOnline(env *Env) (int, bool) {
+// vmExecEnvPrompt asks for consent before --env sends a token. A shell
+// without bracketed paste hands the next pasted line to this prompt.
+const vmExecEnvPrompt = "Press Enter to continue, Ctrl-C to stop.\n" +
+	"A command pasted after this one is read as the answer: it stops this one and does not run."
+
+var errVMNotOnline = errors.New("omac vm exec: " + vmExecEnvReason + "; run `omac vm online` first")
+
+// checkVMOnline returns errVMNotOnline, or the error reading the VM state.
+func checkVMOnline() error {
 	st, err := loadVMState()
 	if err != nil {
-		fmt.Fprintln(env.Stderr, err)
-		return ExitIOError, false
+		return err
 	}
 	if st == nil || st.Mode != vm.ModeOnline {
-		return vmExecMisuse(env, vmExecEnvReason+"; run `omac vm online` first"), false
+		return errVMNotOnline
 	}
-	return ExitOK, true
+	return nil
 }
 
 // envNames returns the distinct names in envs (NAME=VALUE), in order.

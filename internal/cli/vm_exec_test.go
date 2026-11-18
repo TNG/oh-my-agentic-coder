@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -145,7 +146,44 @@ func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 	}
 }
 
-const tokenConfirmPrompt = "Press Enter to continue, Ctrl-C to stop.\n"
+const tokenConfirmPrompt = vmExecEnvPrompt + "\n"
+
+// startVMExecAtPrompt runs `omac vm exec --env` with a pipe as its
+// terminal stdin, waits until the prompt is on stderr, and returns the
+// pipe's write end and the channel that receives the exit code.
+func startVMExecAtPrompt(t *testing.T, env *Env, stderr func() string) (*os.File, <-chan int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+	env.Stdin = r
+	useTerminals(t, r, env.Stderr)
+	done := make(chan int, 1)
+	go func() { done <- runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.HasSuffix(stderr(), tokenConfirmPrompt) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no prompt; stderr:\n%s", stderr())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return w, done
+}
+
+// exitCodeWithin fails the test instead of hanging the package run when
+// exec does not stop.
+func exitCodeWithin(t *testing.T, done <-chan int, after string) int {
+	t.Helper()
+	select {
+	case code := <-done:
+		return code
+	case <-time.After(10 * time.Second):
+		t.Fatalf("exec did not stop after %s", after)
+		return 0
+	}
+}
 
 // useFakeTerminalStdin makes env.Stdin read input, and makes the terminal
 // check accept it and env.Stderr, where the prompt goes.
@@ -198,17 +236,16 @@ func TestVMExecEnvOnTerminalWaitsForEnter(t *testing.T) {
 func TestVMExecEnvRefusedWhenVMWentOfflineDuringPrompt(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
 	t.Setenv("MY_REPO_TOKEN", "x")
-	modes := []string{vm.ModeOnline, vm.ModeOffline}
-	loadVMState = func() (*vm.State, error) {
-		st := &vm.State{Mode: modes[0]}
-		if len(modes) > 1 {
-			modes = modes[1:]
-		}
-		return st, nil
-	}
+	var mode atomic.Value
+	mode.Store(vm.ModeOnline)
+	loadVMState = func() (*vm.State, error) { return &vm.State{Mode: mode.Load().(string)}, nil }
 	env, _, stderr := vmTestEnv(t)
-	useFakeTerminalStdin(t, env, "\n")
-	if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != ExitMisuse {
+	w, done := startVMExecAtPrompt(t, env, stderr)
+	mode.Store(vm.ModeOffline)
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if code := exitCodeWithin(t, done, "Enter"); code != ExitMisuse {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
 	}
 	if len(*calls) != 0 {
@@ -216,6 +253,9 @@ func TestVMExecEnvRefusedWhenVMWentOfflineDuringPrompt(t *testing.T) {
 	}
 	if !strings.Contains(stderr(), "run `omac vm online` first") {
 		t.Errorf("stderr lacks the reason:\n%s", stderr())
+	}
+	if strings.Contains(stderr(), "Usage:") {
+		t.Errorf("stderr shows the usage for a valid call:\n%s", stderr())
 	}
 }
 
@@ -233,8 +273,8 @@ func TestVMExecEnvOnTerminalStopsWithoutBareEnter(t *testing.T) {
 			t.Setenv("MY_REPO_TOKEN", "x")
 			env, _, stderr := vmTestEnv(t)
 			useFakeTerminalStdin(t, env, input)
-			if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != 130 {
-				t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+			if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != vm.ExitInterrupted {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, vm.ExitInterrupted, stderr())
 			}
 			if len(*calls) != 0 {
 				t.Errorf("the command ran")
@@ -250,27 +290,12 @@ func TestVMExecEnvOnTerminalStopsOnCtrlC(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
 	t.Setenv("MY_REPO_TOKEN", "x")
 	env, _, stderr := vmTestEnv(t)
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { r.Close(); w.Close() })
-	env.Stdin = r
-	useTerminals(t, r, env.Stderr)
-	done := make(chan int, 1)
-	go func() { done <- runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.HasSuffix(stderr(), tokenConfirmPrompt) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no prompt; stderr:\n%s", stderr())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	_, done := startVMExecAtPrompt(t, env, stderr)
 	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if code := <-done; code != 130 {
-		t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+	if code := exitCodeWithin(t, done, "Ctrl-C"); code != vm.ExitInterrupted {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, vm.ExitInterrupted, stderr())
 	}
 	if len(*calls) != 0 {
 		t.Errorf("the command ran after Ctrl-C")
@@ -493,10 +518,10 @@ func TestVMExecNotCreated(t *testing.T) {
 }
 
 func TestVMExecInterruptedExits130(t *testing.T) {
-	useFakeVMExec(t, nil, 130, vm.ErrInterrupted)
+	useFakeVMExec(t, nil, vm.ExitInterrupted, vm.ErrInterrupted)
 	env, _, stderr := vmTestEnv(t)
-	if code := runVM([]string{"exec", "--", "sleep", "60"}, env); code != 130 {
-		t.Fatalf("exit = %d, want 130; stderr:\n%s", code, stderr())
+	if code := runVM([]string{"exec", "--", "sleep", "60"}, env); code != vm.ExitInterrupted {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, vm.ExitInterrupted, stderr())
 	}
 	if !strings.Contains(stderr(), "interrupted") {
 		t.Errorf("stderr lacks the interruption:\n%s", stderr())
