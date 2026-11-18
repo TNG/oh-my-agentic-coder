@@ -466,10 +466,26 @@ func exitErr(t *testing.T, code int) error {
 	return err
 }
 
+// testDir creates rel inside a new temporary directory and returns its
+// path without symlinks.
+func testDir(t *testing.T, rel string) string {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 type execFakes struct {
 	order    []string // "rsync" and "ssh" in call order
 	runCalls []string
 	rsync    []string
+	rsyncWd  string // the working directory rsync started in
 	excludes string
 	rsyncErr error
 	remotes  []string
@@ -480,6 +496,7 @@ type execFakes struct {
 	// prints; by default the workdir is the top level.
 	top, prefix string
 	ttys        []bool // SSHTarget.TTY per ssh call
+	onRegister  func() // runs when the registration's ssh call starts
 	onCmd       func() // runs when the command's ssh call starts
 }
 
@@ -508,6 +525,7 @@ func (f *execFakes) run(_ context.Context, name string, args []string, stdin io.
 	case "rsync":
 		f.order = append(f.order, "rsync")
 		f.rsync = args
+		f.rsyncWd, _ = os.Getwd()
 		if slices.Contains(args, "--exclude-from=-") && stdin != nil {
 			raw, _ := io.ReadAll(stdin)
 			f.excludes = string(raw)
@@ -522,6 +540,9 @@ func (f *execFakes) ssh(_ context.Context, t SSHTarget, _ io.Reader, stdout, _ i
 	f.remotes = append(f.remotes, remote)
 	f.ttys = append(f.ttys, t.TTY)
 	if len(f.remotes) == 1 {
+		if f.onRegister != nil {
+			f.onRegister()
+		}
 		return f.regErr
 	}
 	if len(f.remotes) == 2 {
@@ -550,7 +571,7 @@ func (f *execFakes) opts(workdir string, out io.Writer) ExecOpts {
 
 func TestExecRunsRsyncThenSSH(t *testing.T) {
 	f := &execFakes{cmdErr: exitErr(t, 3)}
-	workdir := "/w/My Repo"
+	workdir := testDir(t, "My Repo")
 	slug := WorktreeSlug(workdir)
 	var out bytes.Buffer
 	code, err := Exec(context.Background(), f.opts(workdir, &out))
@@ -564,8 +585,11 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 	if want := []string{"ssh", "rsync", "ssh"}; !slices.Equal(f.order, want) {
 		t.Fatalf("call order = %q, want %q", f.order, want)
 	}
-	if n := len(f.rsync); n < 2 || f.rsync[n-2] != "/w/My Repo/" || f.rsync[n-1] != "alice@127.0.0.1:omac/"+slug+"/" {
+	if n := len(f.rsync); n < 2 || f.rsync[n-2] != "./" || f.rsync[n-1] != "alice@127.0.0.1:omac/"+slug+"/" {
 		t.Fatalf("rsync args = %q", f.rsync)
+	}
+	if f.rsyncWd != workdir {
+		t.Fatalf("rsync ran in %s, want %s", f.rsyncWd, workdir)
 	}
 	if !strings.HasPrefix(f.excludes, ".git\n.env\n") || !strings.HasSuffix(f.excludes, "\n/build/\n") {
 		t.Fatalf("exclude file = %q", f.excludes)
@@ -586,11 +610,12 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 
 func TestExecCleansWorkdir(t *testing.T) {
 	f := &execFakes{}
-	if _, err := Exec(context.Background(), f.opts("/w/repo/", io.Discard)); err != nil {
+	repo := testDir(t, "repo")
+	if _, err := Exec(context.Background(), f.opts(repo+"/", io.Discard)); err != nil {
 		t.Fatal(err)
 	}
-	slug := WorktreeSlug("/w/repo")
-	if !strings.Contains(f.remotes[0], ShellQuote(slug+" /w/repo")) {
+	slug := WorktreeSlug(repo)
+	if !strings.Contains(f.remotes[0], ShellQuote(slug+" "+repo)) {
 		t.Fatalf("registration = %s, want the cleaned path", f.remotes[0])
 	}
 	if n := len(f.rsync); f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
@@ -601,15 +626,16 @@ func TestExecCleansWorkdir(t *testing.T) {
 func TestExecCopiesTopLevelFromSubdir(t *testing.T) {
 	// Run from <repo>/backend with --cwd sub: the copy is the whole
 	// repository, and the command runs in backend/sub of it.
-	f := &execFakes{top: "/w/repo", prefix: "backend/"}
-	if _, err := Exec(context.Background(), f.opts("/w/repo/backend", io.Discard)); err != nil {
+	top := filepath.Dir(testDir(t, "repo/backend"))
+	f := &execFakes{top: top, prefix: "backend/"}
+	if _, err := Exec(context.Background(), f.opts(filepath.Join(top, "backend"), io.Discard)); err != nil {
 		t.Fatal(err)
 	}
-	slug := WorktreeSlug("/w/repo")
-	if n := len(f.rsync); f.rsync[n-2] != "/w/repo/" || f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
-		t.Fatalf("rsync = %q, want the top level copied to %s", f.rsync, RemoteDir(slug))
+	slug := WorktreeSlug(top)
+	if n := len(f.rsync); f.rsyncWd != top || f.rsync[n-1] != "alice@127.0.0.1:"+RemoteDir(slug) {
+		t.Fatalf("rsync = %q in %s, want the top level copied to %s", f.rsync, f.rsyncWd, RemoteDir(slug))
 	}
-	if f.remotes[0] != registerCmd(slug, "/w/repo") {
+	if f.remotes[0] != registerCmd(slug, top) {
 		t.Fatalf("registration = %s", f.remotes[0])
 	}
 	if want, _ := RemoteCommand(RemoteDir(slug), "backend/sub", []string{"A=b c"}, []string{"make", "test"}); f.remotes[1] != want {
@@ -637,8 +663,8 @@ func TestExecFromSubdirOfRealRepo(t *testing.T) {
 		if _, err := Exec(context.Background(), o); err != nil {
 			t.Fatal(err)
 		}
-		if n := len(f.rsync); f.rsync[n-2] != top+"/" {
-			t.Errorf("from %s: rsync source = %q, want %s/", c.workdir, f.rsync[n-2], top)
+		if f.rsyncWd != top {
+			t.Errorf("from %s: rsync ran in %s, want %s", c.workdir, f.rsyncWd, top)
 		}
 		if want, _ := RemoteCommand(RemoteDir(slug), "backend", []string{"A=b c"}, []string{"make", "test"}); f.remotes[1] != want {
 			t.Errorf("from %s: command = %s, want %s", c.workdir, f.remotes[1], want)
@@ -766,10 +792,45 @@ func TestExecRefusesUnreadableCopyRoot(t *testing.T) {
 	}
 }
 
+// The agent can replace the copy root with a link to ~/.ssh while the
+// registration runs; rsync must still read the directory that was checked.
+func TestExecCopiesTheCheckedRootAfterASwap(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, root := filepath.Join(base, "home"), filepath.Join(base, "repo", "svc")
+	writeFiles(t, home, map[string]string{".ssh/id_ed25519": "x"})
+	writeFiles(t, root, map[string]string{"a.go": "package a"})
+	t.Setenv("HOME", home)
+	moved := root + ".old"
+	f := &execFakes{notRepo: exitErr(t, 128), onRegister: func() {
+		if err := os.Rename(root, moved); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(filepath.Join(home, ".ssh"), root); err != nil {
+			t.Error(err)
+		}
+	}}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Exec(context.Background(), f.opts(root, io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	if f.rsyncWd != moved || f.rsync[len(f.rsync)-2] != "./" {
+		t.Fatalf("rsync copied %q from %s, want ./ from the checked directory %s", f.rsync, f.rsyncWd, moved)
+	}
+	if after, _ := os.Getwd(); after != wd {
+		t.Fatalf("working directory after Exec = %s, want %s", after, wd)
+	}
+}
+
 func TestExecRefusesWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	f := &execFakes{notRepo: exitErr(t, 128)}
-	if _, err := Exec(context.Background(), f.opts("/w/plain", io.Discard)); err == nil || !strings.Contains(err.Error(), "protects") {
+	if _, err := Exec(context.Background(), f.opts(testDir(t, "plain"), io.Discard)); err == nil || !strings.Contains(err.Error(), "protects") {
 		t.Fatalf("Exec without a home directory = %v, want a refusal about protected paths", err)
 	}
 	if f.rsync != nil {
@@ -800,7 +861,7 @@ func TestExecRefusesDirectoryGitIgnores(t *testing.T) {
 
 func TestExecAllowsNilWriters(t *testing.T) {
 	f := &execFakes{notRepo: exitErr(t, 128)}
-	o := f.opts("/w/plain", nil)
+	o := f.opts(testDir(t, "plain"), nil)
 	o.Stderr = nil
 	if _, err := Exec(context.Background(), o); err != nil {
 		t.Fatal(err)
@@ -810,7 +871,7 @@ func TestExecAllowsNilWriters(t *testing.T) {
 func TestExecWarnsOutsideRepo(t *testing.T) {
 	f := &execFakes{notRepo: exitErr(t, 128)}
 	var stderr bytes.Buffer
-	o := f.opts("/w/plain", io.Discard)
+	o := f.opts(testDir(t, "plain"), io.Discard)
 	o.Stderr = &stderr
 	if _, err := Exec(context.Background(), o); err != nil {
 		t.Fatal(err)
@@ -825,7 +886,7 @@ func TestExecWarnsOutsideRepo(t *testing.T) {
 
 func TestExecZeroExit(t *testing.T) {
 	f := &execFakes{}
-	code, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+	code, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 	if err != nil || code != 0 {
 		t.Fatalf("Exec = %d, %v", code, err)
 	}
@@ -833,7 +894,7 @@ func TestExecZeroExit(t *testing.T) {
 
 func TestExecRsyncFailureStopsBeforeCommand(t *testing.T) {
 	f := &execFakes{rsyncErr: errors.New("boom")}
-	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+	_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "rsync") {
 		t.Fatalf("err = %v, want rsync error", err)
 	}
@@ -844,7 +905,7 @@ func TestExecRsyncFailureStopsBeforeCommand(t *testing.T) {
 
 func TestExecRegistrationFailureStopsBeforeCopy(t *testing.T) {
 	f := &execFakes{regErr: exitErr(t, 1)}
-	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+	_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "register worktree") {
 		t.Fatalf("err = %v, want the registration error", err)
 	}
@@ -855,7 +916,7 @@ func TestExecRegistrationFailureStopsBeforeCopy(t *testing.T) {
 
 func TestExecSSHConnectionFailure(t *testing.T) {
 	f := &execFakes{cmdErr: exitErr(t, 255)}
-	_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+	_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "connection lost or remote command killed (is the VM running? `omac vm status`)") {
 		t.Fatalf("err = %v, want connection error naming omac vm status", err)
 	}
@@ -864,7 +925,7 @@ func TestExecSSHConnectionFailure(t *testing.T) {
 func TestExecRsyncConnectionFailure(t *testing.T) {
 	for _, code := range []int{255, 12} {
 		f := &execFakes{rsyncErr: exitErr(t, code)}
-		_, err := Exec(context.Background(), f.opts("/w/repo", io.Discard))
+		_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 		if err == nil || !strings.Contains(err.Error(), "omac vm status") {
 			t.Errorf("rsync exit %d: err = %v, want the connection hint", code, err)
 		}
@@ -876,7 +937,7 @@ func TestExecInterrupted(t *testing.T) {
 	defer cancel()
 	// Ctrl-C cancels the context; the stopped ssh then has no exit code.
 	f := &execFakes{onCmd: cancel, cmdErr: errors.New("signal: killed")}
-	code, err := Exec(ctx, f.opts("/w/repo", io.Discard))
+	code, err := Exec(ctx, f.opts(testDir(t, "repo"), io.Discard))
 	if code != 130 || !errors.Is(err, ErrInterrupted) {
 		t.Fatalf("Exec = %d, %v; want 130, ErrInterrupted", code, err)
 	}
@@ -884,7 +945,7 @@ func TestExecInterrupted(t *testing.T) {
 
 func TestExecTTYOnlyForTheCommand(t *testing.T) {
 	f := &execFakes{}
-	o := f.opts("/w/repo", io.Discard)
+	o := f.opts(testDir(t, "repo"), io.Discard)
 	o.TTY = true
 	if _, err := Exec(context.Background(), o); err != nil {
 		t.Fatal(err)
@@ -907,7 +968,7 @@ func TestExecRejectsBadInputBeforeCopy(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &execFakes{}
-			o := f.opts("/w/repo", io.Discard)
+			o := f.opts(testDir(t, "repo"), io.Discard)
 			mutate(&o)
 			if _, err := Exec(context.Background(), o); err == nil {
 				t.Fatal("want error")

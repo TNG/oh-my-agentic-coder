@@ -41,8 +41,9 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 	}
 	excludes := ExcludeList([]string{"build/", "foo[1]", "secret\nkey", "x[1]\ny"})
 
-	// The production arguments, minus the remote shell and with a local target.
-	prod := RsyncArgs(src, testTarget, "omac/slug/")
+	// The production arguments and directory, minus the remote shell and with
+	// a local target.
+	prod := RsyncArgs(".", testTarget, "omac/slug/")
 	var args []string
 	for i := 0; i < len(prod)-1; i++ {
 		if prod[i] == "-e" {
@@ -52,13 +53,21 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 		args = append(args, prod[i])
 	}
 	args = append(args, dst+"/")
+	srcDir, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcDir.Close()
 	var stderr bytes.Buffer
-	if err := ExecRunner(context.Background(), "rsync", args, strings.NewReader(excludes), io.Discard, &stderr); err != nil {
+	err = inDir(srcDir, func() error {
+		return ExecRunner(context.Background(), "rsync", args, strings.NewReader(excludes), io.Discard, &stderr)
+	})
+	if err != nil {
 		t.Fatalf("rsync %q: %v: %s", args, err, stderr.String())
 	}
 
 	var got []string
-	err := filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}

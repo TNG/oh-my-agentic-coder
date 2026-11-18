@@ -305,7 +305,8 @@ type ExecOpts struct {
 // Exec records the copy in ~/omac/.worktrees, copies the git top level of
 // Workdir (or Workdir outside a repository) into the VM (one way, never
 // deleting there), and runs Cmd in it. It refuses a copy that overlaps a
-// path the sandbox protects. It returns the remote command's exit code;
+// path the sandbox protects. While rsync runs, the process's working
+// directory is the copy root. It returns the remote command's exit code;
 // err is set only when omac itself failed.
 func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	logf := o.Log
@@ -353,9 +354,11 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if strings.ContainsAny(root, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
 	}
-	if err := refuseProtectedOverlap(root); err != nil {
+	rootDir, err := openCopyRoot(root)
+	if err != nil {
 		return 1, err
 	}
+	defer rootDir.Close()
 	if !isRepo {
 		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git, .envrc and the .env files\n", root)
 	}
@@ -373,7 +376,10 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	}
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
 	excludes := strings.NewReader(ExcludeList(ignored))
-	if err := o.Run(ctx, "rsync", RsyncArgs(root, target, remoteDir), excludes, o.Stderr, o.Stderr); err != nil {
+	err = inDir(rootDir, func() error {
+		return o.Run(ctx, "rsync", RsyncArgs(".", target, remoteDir), excludes, o.Stderr, o.Stderr)
+	})
+	if err != nil {
 		if exitCode(err) == 255 || exitCode(err) == 12 { // ssh failed, or the stream broke
 			err = fmt.Errorf("%w; %s", err, connectionHint)
 		}
@@ -408,29 +414,46 @@ func ignoredAncestor(dir string, ignored []string) (string, bool) {
 	return "", false
 }
 
-// refuseProtectedOverlap fails when root contains or lies in a path the
-// sandbox protects, such as ~/.ssh or the VM's admin key: every --vm
-// session can read the copy. Paths are compared by file identity, so a
+// openCopyRoot opens root for rsync to copy from, and fails when it
+// contains or lies in a path the sandbox protects, such as ~/.ssh or the
+// VM's admin key: every --vm session can read the copy. The check applies
+// to the opened directory, so swapping root for a symlink afterwards does
+// not change what is copied. Paths are compared by file identity, so a
 // symlink or another spelling of the same directory counts too. A protected
 // path that cannot be stat'ed, as inside the sandbox, is still found
 // through its parents.
-func refuseProtectedOverlap(root string) error {
+func openCopyRoot(root string) (*os.File, error) {
 	protected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
 	for _, p := range protected {
 		if !filepath.IsAbs(p) { // "~/.ssh" left unexpanded: no home directory
-			return fmt.Errorf("omac vm exec: cannot tell which paths the sandbox protects: %q does not expand", p)
+			return nil, fmt.Errorf("omac vm exec: cannot tell which paths the sandbox protects: %q does not expand", p)
 		}
 	}
-	rootInfo, err := os.Stat(root)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil // nothing to copy; rsync reports the missing directory
+	dir, err := os.Open(root)
+	if err != nil {
+		return nil, fmt.Errorf("omac vm exec: %w", err)
 	}
+	if err := refuseProtectedOverlap(root, dir, protected); err != nil {
+		dir.Close()
+		return nil, err
+	}
+	return dir, nil
+}
+
+func refuseProtectedOverlap(root string, dir *os.File, protected []string) error {
+	rootInfo, err := dir.Stat()
 	if err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("omac vm exec: %s is not a directory", root)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	if fi, err := os.Stat(realRoot); err != nil || !os.SameFile(fi, rootInfo) {
+		return fmt.Errorf("omac vm exec: %s changed while omac checked it", root)
 	}
 	for _, p := range protected {
 		forms := []string{p}
@@ -449,6 +472,27 @@ func refuseProtectedOverlap(root string) error {
 		}
 	}
 	return nil
+}
+
+// inDir runs fn with the process's working directory set to dir, so that
+// a command fn starts reads "." from dir however its path changes. The
+// working directory is shared by all goroutines, so nothing may resolve a
+// relative path while fn runs.
+func inDir(dir *os.File, fn func() error) (err error) {
+	prev, err := os.Open(".")
+	if err != nil {
+		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	defer prev.Close()
+	if err := dir.Chdir(); err != nil {
+		return fmt.Errorf("omac vm exec: %w", err)
+	}
+	defer func() {
+		if cerr := prev.Chdir(); cerr != nil && err == nil {
+			err = fmt.Errorf("omac vm exec: %w", cerr)
+		}
+	}()
+	return fn()
 }
 
 // hasAncestor reports whether path or one of its parents is dir.
