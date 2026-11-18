@@ -181,7 +181,7 @@ func TestServePasswordSuppressesHint(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, generates := range []bool{false, true} {
-				hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox), serveAuthAdvice(h, plan, noSandbox), generates)
+				hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox), serveAuthAdvice(h, plan, noSandbox), returns(generates))
 				if (hint == "") != (password != "") {
 					t.Errorf("noSandbox=%v password=%q generatesPassword=%v: hint = %q", noSandbox, password, generates, hint)
 				}
@@ -231,11 +231,11 @@ func TestServePasswordHintAdvice(t *testing.T) {
 			os.Unsetenv("OPENCODE_SERVER_PASSWORD")
 			advice := serveAuthAdvice(h, tc.plan, false)
 			getenv := serveAuthGetenv(h, tc.plan, nil, false)
-			if got := serverExposureWarning(h, inner, getenv, advice, true); got != tc.want {
+			if got := serverExposureWarning(h, inner, getenv, advice, returns(true)); got != tc.want {
 				t.Errorf("hint = %q\nwant   %q", got, tc.want)
 			}
 			// The OpenCode 1.x warning carries the same advice.
-			if got := serverExposureWarning(h, inner, getenv, advice, false); !strings.HasSuffix(got, "to require a password, "+advice+".") {
+			if got := serverExposureWarning(h, inner, getenv, advice, returns(false)); !strings.HasSuffix(got, "to require a password, "+advice+".") {
 				t.Errorf("OpenCode 1.x hint = %q, want it to end with the advice %q", got, advice)
 			}
 			// Advice that simply says to set OMAC_SERVE_PASSWORD must hold.
@@ -250,7 +250,7 @@ func TestServePasswordHintAdvice(t *testing.T) {
 	// there must silence the hint, as it did before OMAC_SERVE_PASSWORD.
 	t.Setenv("OPENCODE_SERVER_PASSWORD", "from-shell")
 	plan := sandboxPlan{Name: "nono"}
-	if got := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, nil, false), serveAuthAdvice(h, plan, false), false); got != "" {
+	if got := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, nil, false), serveAuthAdvice(h, plan, false), returns(false)); got != "" {
 		t.Errorf("other backend with OPENCODE_SERVER_PASSWORD set: hint = %q", got)
 	}
 }

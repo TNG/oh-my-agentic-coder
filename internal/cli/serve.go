@@ -685,12 +685,16 @@ func runServe(args []string, env *Env) int {
 	// Hint when the harness server gets no password through omac (sandboxed
 	// or not; the server listens either way). Project discovery classified
 	// OpenCode only on macOS with the native sandbox, so classify it here
-	// otherwise.
-	if ocClass == openCodeOther {
-		ocClass = classifyOpenCode(inner)
+	// otherwise, and only when the hint is actually printed: the probe runs
+	// `opencode --version`.
+	generatesPassword := func() bool {
+		if ocClass == openCodeOther {
+			ocClass = classifyOpenCode(inner)
+		}
+		return openCodeGeneratesPassword(ocClass)
 	}
 	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox),
-		serveAuthAdvice(harness, plan, noSandbox), openCodeGeneratesPassword(ocClass)); w != "" {
+		serveAuthAdvice(harness, plan, noSandbox), generatesPassword); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -826,7 +830,8 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 
 // serverExposureWarning returns a one-line hint when a harness's server will
 // bind a loopback port without a password supplied through omac. If the
-// server generates its own password (generatesPassword, OpenCode 2.x), the
+// server generates its own password (generatesPassword reports true for
+// OpenCode 2.x; it is called only when a hint is returned), the
 // hint says where it appears and how to keep a stable one; otherwise
 // (OpenCode 1.x, or a version omac cannot tell) it warns that any local
 // process can reach the port. Both end with advice, usually "set
@@ -835,7 +840,7 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 // what the server will see, i.e. after the sandbox's env filter (see
 // serveAuthGetenv). innerArgv is the launch's resolved inner command so the
 // hint names the port the server will really bind, not the harness default.
-func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string, advice string, generatesPassword bool) string {
+func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string, advice string, generatesPassword func() bool) string {
 	sl := h.ServerLaunch
 	port := h.ResolveListenPort(innerArgv)
 	if sl == nil || port <= 0 || sl.AuthEnvVar == "" {
@@ -844,7 +849,7 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
 	}
-	if !generatesPassword {
+	if !generatesPassword() {
 		return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local process; "+
 			"to require a password, %s.", h.Name, port, advice)
 	}

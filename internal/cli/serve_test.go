@@ -399,6 +399,10 @@ func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
 	}
 }
 
+// returns is a generatesPassword argument for serverExposureWarning that
+// answers v without probing OpenCode.
+func returns(v bool) func() bool { return func() bool { return v } }
+
 func TestServerExposureWarning(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
@@ -407,7 +411,7 @@ func TestServerExposureWarning(t *testing.T) {
 	// random password appears, and how to keep a stable one.
 	unset := func(string) string { return "" }
 	inner := []string{"opencode", "serve"}
-	w := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", true)
+	w := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(true))
 	for _, want := range []string{"127.0.0.1:4096", "random password", `"server password …"`, "set OMAC_SERVE_PASSWORD"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("hint %q does not contain %q", w, want)
@@ -418,12 +422,12 @@ func TestServerExposureWarning(t *testing.T) {
 	// hint must warn that the port is open instead of promising a password.
 	const v1Want = "omac serve: opencode server will listen on 127.0.0.1:4096, reachable by any local process; " +
 		"to require a password, set OMAC_SERVE_PASSWORD."
-	if w1 := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", false); w1 != v1Want {
+	if w1 := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(false)); w1 != v1Want {
 		t.Errorf("OpenCode 1.x hint = %q\nwant %q", w1, v1Want)
 	}
 
 	// The warning names the port actually bound, not the harness default.
-	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset, "set OMAC_SERVE_PASSWORD", false)
+	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset, "set OMAC_SERVE_PASSWORD", returns(false))
 	if !strings.Contains(ow, "4095") || strings.Contains(ow, "4096") {
 		t.Errorf("expected warning naming :4095 for `--port 4095`, got %q", ow)
 	}
@@ -436,13 +440,23 @@ func TestServerExposureWarning(t *testing.T) {
 		return ""
 	}
 	for _, generates := range []bool{false, true} {
-		if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD", generates); w != "" {
+		if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD", returns(generates)); w != "" {
 			t.Errorf("auth set should suppress the warning (generatesPassword=%v), got %q", generates, w)
 		}
 	}
 
+	// No hint -> no version probe: generatesPassword runs `opencode --version`.
+	probe := func() bool {
+		t.Error("generatesPassword called although no hint is printed")
+		return false
+	}
+	if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD", probe); w != "" {
+		t.Errorf("auth set should suppress the warning, got %q", w)
+	}
+	serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD", probe)
+
 	// Harness with no server mode -> nothing to warn about.
-	if w := serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD", false); w != "" {
+	if w := serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD", returns(false)); w != "" {
 		t.Errorf("non-server harness should not warn, got %q", w)
 	}
 }
