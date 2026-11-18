@@ -26,7 +26,11 @@ type PortList []int
 func (l *PortList) UnmarshalJSON(data []byte) error {
 	var entries []json.RawMessage
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("invalid port list %s: want a JSON array", data)
+		raw := string(data)
+		if len(raw) > 80 {
+			raw = raw[:80] + "..."
+		}
+		return fmt.Errorf("invalid port list %q: want a JSON array", raw)
 	}
 	ports := make([]int, 0, len(entries))
 	for _, entry := range entries {
@@ -44,7 +48,7 @@ func (l *PortList) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(entry, &s); err != nil {
 			return fmt.Errorf("invalid port list entry %q: want an integer or a port string", entry)
 		}
-		expanded, err := ParsePortEntry(s)
+		expanded, err := parsePortEntry(s)
 		if err != nil {
 			return err
 		}
@@ -54,11 +58,11 @@ func (l *PortList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ParsePortEntry parses one port entry: a decimal port "N" or an
+// parsePortEntry parses one port entry: a decimal port "N" or an
 // inclusive range "A-B". Surrounding whitespace is ignored and leading
 // zeros are allowed, so " 0080-0085 " yields 80 through 85. Every port
 // must be in 0-65535; callers enforce their own minimum.
-func ParsePortEntry(s string) ([]int, error) {
+func parsePortEntry(s string) ([]int, error) {
 	entry := strings.TrimSpace(s)
 	if entry == "" {
 		return nil, fmt.Errorf("invalid port list entry %q: empty", s)
@@ -93,12 +97,15 @@ func ParsePortEntry(s string) ([]int, error) {
 }
 
 func parsePort(s string) (int, error) {
-	port, err := strconv.Atoi(s)
+	port, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
+		if errors.Is(err, strconv.ErrRange) {
+			return 0, fmt.Errorf("port %s is outside 0-65535", s)
+		}
 		return 0, errors.New("not a decimal port number")
 	}
 	if port < 0 || port > 65535 {
 		return 0, fmt.Errorf("port %d is outside 0-65535", port)
 	}
-	return port, nil
+	return int(port), nil
 }

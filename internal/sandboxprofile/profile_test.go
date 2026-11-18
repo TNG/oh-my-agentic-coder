@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -150,6 +151,10 @@ func TestParsePortFieldNull(t *testing.T) {
 }
 
 func TestParsePortRangeValidationErrors(t *testing.T) {
+	intsAboveCap := make([]string, 0, maxExpandedPorts+1)
+	for port := 1; port <= maxExpandedPorts+1; port++ {
+		intsAboveCap = append(intsAboveCap, strconv.Itoa(port))
+	}
 	tests := []struct {
 		name   string
 		config string
@@ -174,6 +179,21 @@ func TestParsePortRangeValidationErrors(t *testing.T) {
 			name:   "single port above the field maximum",
 			config: `{"network": {"allow_tcp_connect": [70000]}}`,
 			want:   []string{"network.allow_tcp_connect", "invalid port 70000"},
+		},
+		{
+			name:   "plain integers above the cap",
+			config: `{"network": {"listen_port": [` + strings.Join(intsAboveCap, ",") + `]}}`,
+			want:   []string{"network.listen_port", "expands to 1001 ports", "1000-port limit"},
+		},
+		{
+			name:   "single range above the cap names the entry",
+			config: `{"network": {"listen_port": ["1-1001"]}}`,
+			want:   []string{`"1-1001"`, "expands to 1001 ports", "1000-port limit"},
+		},
+		{
+			name:   "open_port rejects a range",
+			config: `{"network": {"open_port": ["3000-3100"]}}`,
+			want:   []string{"open_port"},
 		},
 	}
 	for _, tt := range tests {
@@ -708,6 +728,17 @@ func TestParseFlagsAllowTCPConnectRange(t *testing.T) {
 	}
 }
 
+// Repeating a range flag keeps every port from every occurrence.
+func TestParseFlagsRepeatedRangeAddsAllPorts(t *testing.T) {
+	f, err := ParseFlags([]string{"--listen-port", "1-2", "--listen-port", "5-6", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{1, 2, 5, 6}; !slices.Equal(f.ListenPort, want) {
+		t.Errorf("listen-port = %v, want %v", f.ListenPort, want)
+	}
+}
+
 // A single port stays one entry, and --open-port keeps taking single ports only.
 func TestParseFlagsSinglePortEntries(t *testing.T) {
 	f, err := ParseFlags([]string{"--listen-port", "8000", "--", "true"})
@@ -737,6 +768,11 @@ func TestParseFlagsPortEntryErrors(t *testing.T) {
 			name: "range above the expansion cap",
 			argv: []string{"--listen-port", "1-65535", "--", "true"},
 			want: []string{"--listen-port", "1-65535", "1000"},
+		},
+		{
+			name: "range endpoint above the field maximum",
+			argv: []string{"--allow-tcp-connect", "8000-70000", "--", "true"},
+			want: []string{"--allow-tcp-connect", "8000-70000", "65535"},
 		},
 		{
 			name: "zero port",

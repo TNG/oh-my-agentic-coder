@@ -83,19 +83,15 @@ func ParseFlags(args []string) (*Flags, error) {
 			return nextPort(flag)
 		}
 		portVals := func(flag string) ([]int, error) {
-			v := inline
-			if !hasInline {
-				got, err := next(flag)
-				if err != nil {
-					return nil, err
-				}
-				v = got
-			}
-			ports, err := ParsePortEntry(v)
+			v, err := val(flag)
 			if err != nil {
-				return nil, fmt.Errorf("%s: invalid port or range %q: %w", flag, v, err)
+				return nil, err
 			}
-			// ParsePortEntry admits port 0; these two fields keep their minimum of 1.
+			ports, err := parsePortEntry(v)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", flag, err)
+			}
+			// parsePortEntry admits port 0; these two fields keep their minimum of 1.
 			for _, port := range ports {
 				if port < 1 {
 					return nil, fmt.Errorf("%s: invalid port or range %q: port 0 is not allowed", flag, v)
