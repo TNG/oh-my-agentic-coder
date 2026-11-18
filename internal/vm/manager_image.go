@@ -41,8 +41,12 @@ func (m *Manager) ImageAdd(ctx context.Context, ref string) error {
 		return fmt.Errorf("omac vm: %w", err)
 	}
 	defer f.Close()
-	if err := m.ssh(ctx, m.agentTarget(st), f, m.Out, dockerCmd("load")); err != nil {
+	out := cappedBuffer{max: vmOutputLimit}
+	if err := m.ssh(ctx, m.agentTarget(st), f, &out, dockerCmd("load")); err != nil {
 		return fmt.Errorf("omac vm: docker load %s: %w", norm, err)
+	}
+	for line := range strings.Lines(out.String()) {
+		fmt.Fprintln(m.Out, printable(strings.TrimRight(line, "\n")))
 	}
 	st.Images = addSorted(st.Images, norm)
 	return SaveState(m.Layout.StatePath, st)

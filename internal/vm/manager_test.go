@@ -418,7 +418,7 @@ func TestUpCreateNamesOnlyResetWhenSSHLoginIsRejected(t *testing.T) {
 	m, _, ssh := newTestManager(t)
 	ssh.fail = func(remote string) error {
 		if remote == dockerVersionCmd {
-			return errors.New("exit status 255: omac-alice@127.0.0.1: Permission denied (publickey).")
+			return fmt.Errorf("%w: omac-alice@127.0.0.1: Permission denied (publickey).", exitErr(t, 255))
 		}
 		return nil
 	}
@@ -1562,7 +1562,7 @@ func TestPrepareAttachNamesResetWhenSSHLoginIsRejected(t *testing.T) {
 	mustUp(t, m)
 	ssh.fail = func(remote string) error {
 		if remote == dockerVersionCmd {
-			return errors.New("exit status 255: omac-alice@127.0.0.1: Permission denied (publickey).")
+			return fmt.Errorf("%w: omac-alice@127.0.0.1: Permission denied (publickey).", exitErr(t, 255))
 		}
 		return nil
 	}
@@ -1659,5 +1659,27 @@ func TestPrintable(t *testing.T) {
 		if !utf8.ValidString(got) || strings.IndexFunc(got, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
 			t.Errorf("printable(%q) = %q, which a terminal could act on", in, got)
 		}
+	}
+}
+
+// A session can replace the Docker the agent user reaches, so the output
+// of `docker load` must not reach the host terminal as escape sequences.
+func TestImageAddEscapesDockerLoadOutput(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	mustUp(t, m)
+	answer := m.Deps.SSH
+	m.Deps.SSH = func(ctx context.Context, tg SSHTarget, stdin io.Reader, stdout, stderr io.Writer, remote string) error {
+		if remote == dockerCmd("load") {
+			fmt.Fprint(stdout, "Loaded image: alpine\x1b]52;c;Zm9v\a\n")
+		}
+		return answer(ctx, tg, stdin, stdout, stderr, remote)
+	}
+	var out bytes.Buffer
+	m.Out = &out
+	if err := m.ImageAdd(context.Background(), "alpine"); err != nil {
+		t.Fatalf("ImageAdd: %v", err)
+	}
+	if !strings.Contains(out.String(), `Loaded image: alpine\x1b]52;c;Zm9v\x07`) || strings.ContainsAny(out.String(), "\x1b\a") {
+		t.Errorf("output = %q, want the docker load line escaped", out.String())
 	}
 }

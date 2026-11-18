@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -36,7 +37,7 @@ var ErrSSHLoginRejected = errors.New("the VM rejected omac's SSH login; run `oma
 func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, error) {
 	ctx, cancel := context.WithTimeout(ctx, dockerCheckTimeout)
 	defer cancel()
-	var out bytes.Buffer
+	out := cappedBuffer{max: vmOutputLimit}
 	if err := m.ssh(ctx, m.agentTarget(st), nil, &out, dockerVersionCmd); err != nil {
 		if sshLoginRejected(err) {
 			return DockerVersion{}, fmt.Errorf("%w: %w", ErrSSHLoginRejected, err)
@@ -76,8 +77,44 @@ func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Durati
 }
 
 // sshLoginRejected matches the messages OpenSSH prints for a refused key and
-// for a changed host key; m.ssh folds them into the error.
+// for a changed host key; m.ssh folds them into the error. Only ssh's own
+// exit status 255 counts: a remote command can print the same text.
 func sshLoginRejected(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 255 {
+		return false
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "Permission denied (") || strings.Contains(msg, "Host key verification failed")
+}
+
+// vmOutputLimit bounds what omac keeps of a command's output from inside
+// the VM, which a session can make arbitrarily long.
+const vmOutputLimit = 4 << 10
+
+// cappedBuffer keeps the first max bytes written to it and drops the rest.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+// Write reports every byte as written, so that the command does not
+// fail on a short write.
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if room := c.max - c.buf.Len(); n > room {
+		c.truncated = true
+		p = p[:max(room, 0)]
+	}
+	c.buf.Write(p)
+	return n, nil
+}
+
+// String returns the kept bytes, marked when some were dropped.
+func (c *cappedBuffer) String() string {
+	if c.truncated {
+		return c.buf.String() + " [truncated]"
+	}
+	return c.buf.String()
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // answerDocker makes the manager's ssh print out for every command, or fail
@@ -55,15 +57,48 @@ func TestDockerVersionCmdNamesTheSocket(t *testing.T) {
 func TestManagerSSHEscapesStderr(t *testing.T) {
 	m, _, _ := newTestManager(t)
 	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, stderr io.Writer, _ string) error {
-		fmt.Fprint(stderr, "error\x1b]0;x\a\nomac vm: forged")
+		fmt.Fprint(stderr, "error\x1b]0;x\a\nomac vm: forged \x9b2J")
 		return errors.New("exit status 1")
 	}
 	_, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022})
 	if err == nil {
 		t.Fatal("dockerVersion succeeded, want an error")
 	}
-	if i := strings.IndexFunc(err.Error(), func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
-		t.Errorf("error holds control character %q: %q", err.Error()[i], err.Error())
+	if msg := err.Error(); !utf8.ValidString(msg) || strings.IndexFunc(msg, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		t.Errorf("error holds bytes a terminal could act on: %q", msg)
+	}
+}
+
+// A session can make a failing command print without end; omac keeps only
+// the start of it.
+func TestManagerSSHLimitsOutput(t *testing.T) {
+	big := strings.Repeat("x", 2<<20)
+	for name, answer := range map[string]func(stdout, stderr io.Writer) error{
+		"stdout": func(stdout, _ io.Writer) error { fmt.Fprint(stdout, big); return nil },
+		"stderr": func(_, stderr io.Writer) error { fmt.Fprint(stderr, big); return errors.New("exit status 1") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _, _ := newTestManager(t)
+			m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, stdout, stderr io.Writer, _ string) error {
+				return answer(stdout, stderr)
+			}
+			_, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022})
+			if err == nil || len(err.Error()) > 2*vmOutputLimit || !strings.Contains(err.Error(), "[truncated]") {
+				t.Fatalf("dockerVersion error has %d bytes, want an error of at most %d that says it was cut", len(fmt.Sprint(err)), 2*vmOutputLimit)
+			}
+		})
+	}
+}
+
+// Text a remote command prints is not ssh's own refusal, however it reads.
+func TestDockerVersionLoginRejectedOnlyFromSSH(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, stderr io.Writer, _ string) error {
+		fmt.Fprint(stderr, "Error response from daemon: Permission denied (x)")
+		return exitErr(t, 1)
+	}
+	if _, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022}); err == nil || errors.Is(err, ErrSSHLoginRejected) {
+		t.Fatalf("dockerVersion = %v, want an error that is not ErrSSHLoginRejected", err)
 	}
 }
 
@@ -146,7 +181,7 @@ func TestWaitDockerStopsWhenSSHLoginIsRejected(t *testing.T) {
 			m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, errOut io.Writer, _ string) error {
 				calls++
 				fmt.Fprintln(errOut, stderr)
-				return errors.New("exit status 255")
+				return exitErr(t, 255)
 			}
 			err := m.waitDocker(context.Background(), &State{SSHPort: 42022}, time.Minute)
 			if !errors.Is(err, ErrSSHLoginRejected) || !strings.Contains(err.Error(), "omac vm reset") {
