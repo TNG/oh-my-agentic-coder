@@ -5,18 +5,38 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// TestGitRunsOnlyThroughRunGit fails when a non-test file under internal/
-// passes "git" to a call outside runGit, which would skip its hardening
-// against git config the sandbox planted.
+// TestGitRunsOnlyThroughRunGit fails when a non-test Go file of the module
+// holds the string "git", or a path ending in "/git", outside the function
+// runGit in internal/vm/exec.go. Such a string would start git without
+// runGit's hardening against git config the sandbox planted. The test
+// cannot see git started through a shell string or a name built at
+// runtime.
 func TestGitRunsOnlyThroughRunGit(t *testing.T) {
+	root := moduleRoot(t)
 	fset := token.NewFileSet()
-	err := filepath.WalkDir("..", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+	sawRunGit := false
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" || d.Name() == "node_modules") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
 			return err
 		}
 		file, err := parser.ParseFile(fset, p, nil, 0)
@@ -24,19 +44,17 @@ func TestGitRunsOnlyThroughRunGit(t *testing.T) {
 			return err
 		}
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if ok && fn.Name.Name == "runGit" && file.Name.Name == "vm" {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "runGit" && filepath.ToSlash(rel) == "internal/vm/exec.go" {
+				sawRunGit = true
 				continue
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+				lit, ok := n.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
 					return true
 				}
-				for _, arg := range call.Args {
-					if lit, ok := arg.(*ast.BasicLit); ok && lit.Kind == token.STRING && lit.Value == `"git"` {
-						t.Errorf("%s: git runs outside vm.runGit", fset.Position(lit.Pos()))
-					}
+				if v, err := strconv.Unquote(lit.Value); err == nil && (v == "git" || strings.HasSuffix(v, "/git")) {
+					t.Errorf("%s: %s outside vm.runGit", fset.Position(lit.Pos()), lit.Value)
 				}
 				return true
 			})
@@ -45,5 +63,27 @@ func TestGitRunsOnlyThroughRunGit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !sawRunGit {
+		t.Fatal("found no func runGit in internal/vm/exec.go")
+	}
+}
+
+// moduleRoot is the directory of the go.mod above the test's directory.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("found no go.mod above the test directory")
+		}
+		dir = parent
 	}
 }
