@@ -99,10 +99,16 @@ func TestRepoRoot(t *testing.T) {
 // the copy must not then come from another directory.
 func TestRepoRootRefusesRedirectedWorktree(t *testing.T) {
 	other := newRepo(t, map[string]string{"secret.txt": "other client"})
-	top := newRepo(t, map[string]string{"a.go": "package a"})
+	top := newRepo(t, map[string]string{"a.go": "package a", "src/b.go": "package b"})
 	git(t, top, "config", "core.worktree", other)
-	if got, _, _, err := RepoRoot(context.Background(), ExecRunner, top); err == nil {
-		t.Fatalf("RepoRoot = %q, nil; want an error for a top level outside the workdir's repository", got)
+	link := filepath.Join(t.TempDir(), "link") // a symlink into the repository
+	if err := os.Symlink(filepath.Join(top, "src"), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{top, link} {
+		if got, _, _, err := RepoRoot(context.Background(), ExecRunner, dir); err == nil {
+			t.Errorf("RepoRoot(%s) = %q, nil; want an error for a top level outside the workdir's repository", dir, got)
+		}
 	}
 }
 

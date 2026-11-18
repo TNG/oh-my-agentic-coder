@@ -101,6 +101,13 @@ func RepoRoot(ctx context.Context, run CommandRunner, dir string) (top, prefix s
 // write would otherwise make omac copy another directory. Without any
 // .git entry, the user's own environment (GIT_DIR) chose the repository.
 func checkTopLevel(dir, top string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	switch {
+	case err == nil:
+		dir = resolved
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("omac vm exec: %w", err)
+	}
 	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
 		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
 			a, errA := os.Stat(d)
