@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1035,6 +1036,88 @@ func TestInDirRestoresAfterAnError(t *testing.T) {
 	}
 	if after, _ := os.Getwd(); after != wd {
 		t.Fatalf("working directory after a failed fn = %s, want %s", after, wd)
+	}
+}
+
+func TestInDirRestoresAnUnreadableCaller(t *testing.T) {
+	caller := testDir(t, "caller")
+	t.Chdir(caller)
+	if err := os.Chmod(caller, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(caller, 0o755) })
+	dir, err := os.Open(testDir(t, "d"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := inDir(dir, func() error { return nil }); err != nil {
+		t.Fatalf("inDir from a directory omac cannot read = %v", err)
+	}
+	if after, _ := os.Getwd(); after != caller {
+		t.Fatalf("working directory after inDir = %s, want %s", after, caller)
+	}
+}
+
+func TestInDirRestoresADeletedCaller(t *testing.T) {
+	caller := testDir(t, "caller")
+	t.Chdir(caller)
+	if err := os.Remove(caller); err != nil {
+		t.Fatal(err)
+	}
+	d := testDir(t, "d")
+	dir, err := os.Open(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := inDir(dir, func() error { return nil }); err != nil {
+		t.Fatalf("inDir from a deleted directory = %v", err)
+	}
+	if after, err := os.Getwd(); err == nil && after == d {
+		t.Fatal("inDir left the process in the copy root")
+	}
+}
+
+func TestInDirRestoresAfterAPanic(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.Open(testDir(t, "d"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	func() {
+		defer func() { _ = recover() }()
+		_ = inDir(dir, func() error { panic("boom") })
+	}()
+	if after, _ := os.Getwd(); after != wd {
+		t.Fatalf("working directory after a panic in fn = %s, want %s", after, wd)
+	}
+}
+
+func TestInDirReportsFnAndRestoreErrors(t *testing.T) {
+	caller := testDir(t, "caller")
+	t.Chdir(caller)
+	if err := os.Chmod(caller, 0o100); err != nil { // restore by path, not by handle
+		t.Fatal(err)
+	}
+	dir, err := os.Open(testDir(t, "d"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	boom := errors.New("boom")
+	err = inDir(dir, func() error {
+		if err := os.Remove(caller); err != nil {
+			t.Fatal(err)
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("inDir = %v, want both the fn error and the failed restore", err)
 	}
 }
 

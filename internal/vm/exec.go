@@ -513,19 +513,37 @@ func refuseProtectedOverlap(root string, dir *os.File, protected []string) error
 // a command fn starts reads "." from dir however its path changes. The
 // working directory is shared by all goroutines, so nothing may resolve a
 // relative path while fn runs.
-func inDir(dir *os.File, fn func() error) error {
-	prev, err := os.Getwd()
+func inDir(dir *os.File, fn func() error) (err error) {
+	restore, err := saveWorkingDir()
 	if err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
 	}
 	if err := dir.Chdir(); err != nil {
-		return fmt.Errorf("omac vm exec: %w", err)
+		return errors.Join(fmt.Errorf("omac vm exec: %w", err), restore())
 	}
-	err = fn()
-	if cerr := os.Chdir(prev); cerr != nil {
-		err = errors.Join(err, fmt.Errorf("omac vm exec: %w", cerr))
+	defer func() {
+		if rerr := restore(); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("omac vm exec: %w", rerr))
+		}
+	}()
+	return fn()
+}
+
+// saveWorkingDir returns a func that changes back to the current working
+// directory: through a handle, which also works after the directory was
+// renamed or deleted, or by path when the directory cannot be opened.
+func saveWorkingDir() (func() error, error) {
+	if h, err := os.Open("."); err == nil {
+		return func() error {
+			defer h.Close()
+			return h.Chdir()
+		}, nil
 	}
-	return err
+	prev, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	return func() error { return os.Chdir(prev) }, nil
 }
 
 // hasAncestor reports whether path or one of its parents is dir.
