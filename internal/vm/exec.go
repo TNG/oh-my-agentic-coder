@@ -227,6 +227,11 @@ var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // ValidateCwd accepts a working directory relative to the copy that does
 // not leave it.
 func ValidateCwd(cwd string) error {
+	// Go's flag package takes the next argument as the value, so in
+	// `--cwd -- make` the -- would become the directory.
+	if strings.HasPrefix(cwd, "-") {
+		return fmt.Errorf("omac vm exec: --cwd needs a directory, got %q", cwd)
+	}
 	if strings.HasPrefix(cwd, "/") {
 		return fmt.Errorf("omac vm exec: working directory %q must be relative to the worktree", cwd)
 	}

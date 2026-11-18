@@ -578,6 +578,8 @@ func TestRemoteCommand(t *testing.T) {
 	}{
 		{"parent cwd", "../x", nil, []string{"true"}},
 		{"nested parent cwd", "a/../../x", nil, []string{"true"}},
+		{"cwd taken from --", "--", nil, []string{"true"}},
+		{"cwd looks like a flag", "-x", nil, []string{"true"}},
 		{"absolute cwd", "/abs", nil, []string{"true"}},
 		{"bad env name", "", []string{"1X=y"}, []string{"true"}},
 		{"env without =", "", []string{"X"}, []string{"true"}},

@@ -179,6 +179,8 @@ func TestVMExecMisuse(t *testing.T) {
 		"unknown flag":   {"exec", "--bogus", "--", "true"},
 		"cwd leaves":     {"exec", "--cwd", "../x", "--", "true"},
 		"cwd absolute":   {"exec", "--cwd=/etc", "--", "true"},
+		"cwd is --":      {"exec", "--cwd", "--", "true"},
+		"cwd is a flag":  {"exec", "--cwd", "-x", "--", "true"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
