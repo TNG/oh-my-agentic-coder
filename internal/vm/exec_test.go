@@ -973,6 +973,45 @@ func TestExecRefusesWorkdirSwappedAfterGit(t *testing.T) {
 	}
 }
 
+// In a repository the workdir sits below the top level, and the agent may
+// swap either of them after git read them.
+func TestExecRefusesSwapInsideRepository(t *testing.T) {
+	for _, swapped := range []string{"backend", "top level"} {
+		t.Run(swapped, func(t *testing.T) {
+			top := filepath.Dir(testDir(t, "repo/backend"))
+			other := filepath.Dir(testDir(t, "other/backend"))
+			victim := filepath.Join(top, "backend")
+			target := filepath.Join(other, "backend")
+			if swapped == "top level" {
+				victim, target = top, other
+			}
+			f := &execFakes{top: top, prefix: "backend/"}
+			o := f.opts(filepath.Join(top, "backend"), io.Discard)
+			o.Cwd = ""
+			done := false
+			o.Run = func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+				err := f.run(ctx, name, args, stdin, stdout, stderr)
+				if name == "git" && !done {
+					done = true
+					if renameErr := os.Rename(victim, victim+".old"); renameErr != nil {
+						t.Error(renameErr)
+					}
+					if linkErr := os.Symlink(target, victim); linkErr != nil {
+						t.Error(linkErr)
+					}
+				}
+				return err
+			}
+			if _, err := Exec(context.Background(), o); err == nil || !strings.Contains(err.Error(), "changed") {
+				t.Fatalf("Exec = %v, want a refusal", err)
+			}
+			if f.rsync != nil || len(f.remotes) != 0 {
+				t.Fatalf("copied after the swap: rsync=%q ssh=%q", f.rsync, f.remotes)
+			}
+		})
+	}
+}
+
 func TestExecHardensEveryGitCall(t *testing.T) {
 	top := filepath.Dir(testDir(t, "repo/backend"))
 	f := &execFakes{top: top, prefix: "backend/"}
@@ -1014,9 +1053,23 @@ func TestRefuseProtectedOverlapNeedsTheOpenedRoot(t *testing.T) {
 }
 
 func TestRefuseUntrackedPrefixFailsOnGitError(t *testing.T) {
-	run := func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error { return exitErr(t, 128) }
-	if err := refuseUntrackedPrefix(context.Background(), run, "/w/repo", "svc"); err == nil {
-		t.Fatal("refuseUntrackedPrefix with a failing git = nil error")
+	run := func(_ context.Context, _ string, _ []string, _ io.Reader, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "svc/a.go\x00")
+		return exitErr(t, 128)
+	}
+	if err := refuseUntrackedPrefix(context.Background(), run, "/w/repo", "svc"); err == nil || !strings.Contains(err.Error(), "git ls-files") {
+		t.Fatalf("refuseUntrackedPrefix with a failing git = %v, want an error naming git ls-files", err)
+	}
+}
+
+func TestCheckTopLevelFailsWhenGitEntryCannotBeRead(t *testing.T) {
+	dir := testDir(t, "repo")
+	if err := os.Chmod(dir, 0o600); err != nil { // listable, not searchable
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := checkTopLevel(dir, filepath.Dir(dir)); err == nil {
+		t.Fatal("checkTopLevel with an unreadable .git entry = nil error, want a failure")
 	}
 }
 
@@ -1148,8 +1201,10 @@ func TestExecRefusesDirectoryGitDoesNotTrack(t *testing.T) {
 	git(t, top, "add", ".gitignore", "svc")
 	git(t, top, "commit", "-qm", "init")
 	f := &execFakes{}
+	var gitCalls [][]string
 	run := func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if name == "git" {
+			gitCalls = append(gitCalls, args)
 			return ExecRunner(ctx, name, args, stdin, stdout, stderr)
 		}
 		return f.run(ctx, name, args, stdin, stdout, stderr)
@@ -1166,11 +1221,17 @@ func TestExecRefusesDirectoryGitDoesNotTrack(t *testing.T) {
 		{"", "build/reports", false}, // --cwd names a directory in the VM's copy
 	} {
 		*f = execFakes{}
+		gitCalls = nil
 		o := f.opts(filepath.Join(top, c.workdir), io.Discard)
 		o.Cwd, o.Run = c.cwd, run
 		_, err := Exec(context.Background(), o)
 		if c.refused && (err == nil || !strings.Contains(err.Error(), "tracks nothing") || f.rsync != nil || len(f.remotes) != 0) {
 			t.Errorf("Exec in %s = %v, rsync %q; want a refusal before any copy", c.workdir, err, f.rsync)
+		}
+		for _, args := range gitCalls {
+			if c.refused && (slices.Contains(args, "--ignored") || slices.Contains(args, "submodule")) {
+				t.Errorf("Exec in %s ran git %q before refusing; the refusal must come before git reads the clone", c.workdir, args)
+			}
 		}
 		if !c.refused && err != nil {
 			t.Errorf("Exec in %s --cwd %q = %v, want nil", c.workdir, c.cwd, err)
