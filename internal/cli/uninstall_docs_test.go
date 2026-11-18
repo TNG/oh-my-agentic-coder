@@ -120,10 +120,14 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 			redirect("XDG_STATE_HOME")
 		}
 		check(general, must(vm.InstanceRoot(vm.DefaultVMName)), "vm.InstanceRoot")
+		check(general, filepath.Dir(must(vm.InstanceRoot("acme"))), "vm.InstanceRoot (named VMs)")
 	}
 	unset("XDG_STATE_HOME")
 	if body, _ := markdownSection(doc, general); !strings.Contains(body, `rm -rf "$XDG_STATE_HOME/omac"`) {
 		t.Errorf("%s: section %q does not delete $XDG_STATE_HOME/omac, where the VM state lives on every OS", uninstallDoc, general)
+	}
+	if body, _ := markdownSection(doc, "2. Stop the omac VM"); !strings.Contains(body, "omac vm list") || !strings.Contains(body, "omac vm down --name") {
+		t.Errorf("%s: step 2 must stop every VM that omac vm list shows, not only the default one", uninstallDoc)
 	}
 	for _, xdg := range []bool{false, true} {
 		if xdg {

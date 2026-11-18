@@ -42,10 +42,12 @@ If you skipped this step, or it reported an error or 0 secrets, you can remove t
 
 ### 2. Stop the omac VM
 
-Skip this step if you never ran `omac vm up`. The VM keeps running in the background until you stop it, and deleting its folder later does not stop it:
+Skip this step if you never ran `omac vm up`. A VM keeps running in the background until you stop it, and deleting its folder later does not stop it. `omac vm list` shows every VM; stop the default VM `omac` and each named one:
 
 ```bash
+omac vm list
 omac vm down
+omac vm down --name <name>   # once per named VM in the list
 ```
 
 ### 3. Remove the package
@@ -84,6 +86,7 @@ omac's own folders:
 | `~/.cache/omac` | Packages (npm, pip, cargo, ...) that tools downloaded inside the sandbox, kept apart from your normal caches. See [Tool cache](../advanced/cache.md). | on the first session |
 | `~/.local/state/omac` | The sandbox log, `sandbox.log` (on Linux also the audit log and session files, see [Linux](#linux)) | when omac first logs something |
 | `~/.local/state/omac/vm` | The omac VM: its disk, its SSH keys and its state file. Stop the VM first, see [step 2](#2-stop-the-omac-vm). If `XDG_STATE_HOME` is set, it is in `$XDG_STATE_HOME/omac/vm` instead. | on `omac vm up` |
+| `~/.local/state/omac/vms` | The named VMs, one folder each (see [Several VMs](../usage/cli.md#several-vms-and-the-project-map)). Stop them first, see [step 2](#2-stop-the-omac-vm). If `XDG_STATE_HOME` is set, it is in `$XDG_STATE_HOME/omac/vms` instead. | on `omac vm up --name <name>` |
 
 ```bash
 rm -rf ~/.config/omac ~/.cache/omac ~/.local/state/omac
