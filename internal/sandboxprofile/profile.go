@@ -148,11 +148,11 @@ type Network struct {
 	DenyDomain  []string `json:"deny_domain,omitempty"`
 	// ListenPort: TCP ports the child may bind/listen on; entries are
 	// ints, numeric strings, or "A-B" range strings.
-	ListenPort PortList `json:"listen_port,omitempty"`
+	ListenPort ListenPortList `json:"listen_port,omitempty"`
 	// AllowTCPConnect: direct outbound TCP to ANY host on these ports
 	// (kernel cannot constrain the destination host). E.g. 22 for SSH.
 	// Entries are ints, numeric strings, or "A-B" range strings.
-	AllowTCPConnect PortList `json:"allow_tcp_connect,omitempty"`
+	AllowTCPConnect AllowTCPConnectList `json:"allow_tcp_connect,omitempty"`
 	// OpenPort: localhost TCP, both connect and bind (bridge port).
 	OpenPort []int `json:"open_port,omitempty"`
 	// NetworkPrompt configures the interactive allow/deny dialog.
@@ -378,6 +378,7 @@ func (p *Profile) Validate() error {
 	}
 	for _, group := range []struct {
 		name  string
+		flag  string
 		ports []int
 		// open_port alone accepts the 0 sentinel.
 		allowZero bool
@@ -385,8 +386,8 @@ func (p *Profile) Validate() error {
 		// is a plain integer list whose behavior must stay unchanged.
 		capTotal bool
 	}{
-		{name: "listen_port", ports: p.Network.ListenPort, capTotal: true},
-		{name: "allow_tcp_connect", ports: p.Network.AllowTCPConnect, capTotal: true},
+		{name: "listen_port", flag: "--listen-port", ports: p.Network.ListenPort, capTotal: true},
+		{name: "allow_tcp_connect", flag: "--allow-tcp-connect", ports: p.Network.AllowTCPConnect, capTotal: true},
 		{name: "open_port", ports: p.Network.OpenPort, allowZero: true},
 	} {
 		for _, port := range group.ports {
@@ -398,7 +399,7 @@ func (p *Profile) Validate() error {
 			}
 		}
 		if group.capTotal && len(group.ports) > maxExpandedPorts {
-			return fmt.Errorf("sandbox profile: network.%s expands to %d ports, above the %d-port limit", group.name, len(group.ports), maxExpandedPorts)
+			return fmt.Errorf("sandbox profile: network.%s has %d ports (profile entries plus %s flags), above the %d-port limit", group.name, len(group.ports), group.flag, maxExpandedPorts)
 		}
 	}
 	for _, v := range p.Environment.AllowVars {

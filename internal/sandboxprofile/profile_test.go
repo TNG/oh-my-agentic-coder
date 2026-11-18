@@ -168,12 +168,12 @@ func TestParsePortRangeValidationErrors(t *testing.T) {
 		{
 			name:   "entries summing above the cap",
 			config: `{"network": {"listen_port": ["1-600", "601-1200"]}}`,
-			want:   []string{"network.listen_port", "expands to 1200 ports", "1000-port limit"},
+			want:   []string{"network.listen_port", `"601-1200"`, "1000-port limit"},
 		},
 		{
 			name:   "allow_tcp_connect entries summing above the cap",
 			config: `{"network": {"allow_tcp_connect": ["1-600", "601-1200"]}}`,
-			want:   []string{"network.allow_tcp_connect", "expands to 1200 ports", "1000-port limit"},
+			want:   []string{"network.allow_tcp_connect", `"601-1200"`, "1000-port limit"},
 		},
 		{
 			name:   "single port above the field maximum",
@@ -183,12 +183,12 @@ func TestParsePortRangeValidationErrors(t *testing.T) {
 		{
 			name:   "plain integers above the cap",
 			config: `{"network": {"listen_port": [` + strings.Join(intsAboveCap, ",") + `]}}`,
-			want:   []string{"network.listen_port", "expands to 1001 ports", "1000-port limit"},
+			want:   []string{"network.listen_port", "1001", "would exceed the 1000-port limit"},
 		},
 		{
 			name:   "single range above the cap names the entry",
 			config: `{"network": {"listen_port": ["1-1001"]}}`,
-			want:   []string{`"1-1001"`, "expands to 1001 ports", "1000-port limit"},
+			want:   []string{"network.listen_port", `"1-1001"`, "expands to 1001 ports", "1000-port limit"},
 		},
 		{
 			name:   "open_port rejects a range",
@@ -208,6 +208,29 @@ func TestParsePortRangeValidationErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A decode failure inside a PortList must name the field it came from,
+// matching the field path Go's decoder reports for plain fields.
+func TestParsePortErrorsNameTheField(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		field  string
+	}{
+		{`{"network": {"listen_port": ["abc"]}}`, "network.listen_port"},
+		{`{"network": {"allow_tcp_connect": ["abc"]}}`, "network.allow_tcp_connect"},
+	} {
+		_, err := Parse([]byte(tc.config))
+		if err == nil {
+			t.Fatalf("Parse(%s): want error", tc.config)
+		}
+		if !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("error %q does not name %q", err, tc.field)
+		}
+		if got := strings.Count(err.Error(), "sandbox profile:"); got != 1 {
+			t.Errorf("error %q carries %d %q prefixes, want the loader's single one", err, got, "sandbox profile:")
+		}
 	}
 }
 
@@ -918,7 +941,7 @@ func TestMergePortRangesOverCapRejectedByValidate(t *testing.T) {
 	if err == nil {
 		t.Fatal("merged profile above the port cap passed Validate")
 	}
-	for _, want := range []string{"network.listen_port", "expands to", "1000-port limit"} {
+	for _, want := range []string{"network.listen_port", "has 1101 ports", "(profile entries plus --listen-port flags)", "1000-port limit"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}

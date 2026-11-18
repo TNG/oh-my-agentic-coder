@@ -113,9 +113,9 @@ func TestPortListUnmarshal(t *testing.T) {
 			wantErr: []string{`"99999999999999999999"`, "65535"},
 		},
 		{
-			name:  "multi-entry total above the cap is left to Validate",
-			input: `["1-600", "601-1200"]`,
-			want:  portSeq(1, 1200),
+			name:    "multi-entry total above the cap",
+			input:   `["1-600", "601-1200"]`,
+			wantErr: []string{`"601-1200"`, "1000-port limit"},
 		},
 	}
 	for _, tt := range tests {
@@ -174,6 +174,21 @@ func TestParsePortEntry(t *testing.T) {
 			want:  portSeq(80, 85),
 		},
 		{
+			name:  "single port with leading plus sign",
+			entry: "+80",
+			want:  []int{80},
+		},
+		{
+			name:  "range end with leading plus sign",
+			entry: "8000-+8100",
+			want:  portSeq(8000, 8100),
+		},
+		{
+			name:  "spaces around the dash",
+			entry: "8000 - 8100",
+			want:  portSeq(8000, 8100),
+		},
+		{
 			name:  "single-port range",
 			entry: "8000-8000",
 			want:  []int{8000},
@@ -216,7 +231,12 @@ func TestParsePortEntry(t *testing.T) {
 		{
 			name:    "not a number",
 			entry:   "abc",
-			wantErr: []string{"abc", "not a decimal port number"},
+			wantErr: []string{`invalid port or range "abc"`, "want a port such as 8000 or a range such as 8000-8100"},
+		},
+		{
+			name:    "too many dashes",
+			entry:   "80-90-100",
+			wantErr: []string{`invalid port or range "80-90-100"`, "want a port such as 8000 or a range such as 8000-8100"},
 		},
 		{
 			name:    "empty",
