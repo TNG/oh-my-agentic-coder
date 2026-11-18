@@ -382,6 +382,16 @@ func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 	}
 }
 
+func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
+	_, sessions := useAttachOrderManager(t, nil)
+	if _, err := attachVM(context.Background(), devnullEnv(t), t.TempDir()); err == nil {
+		t.Fatal("attachVM succeeded without an agent key, want an error")
+	}
+	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
+		t.Errorf("markers left after a failed key copy: %v", entries)
+	}
+}
+
 func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
 	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}
