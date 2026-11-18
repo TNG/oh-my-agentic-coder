@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -73,17 +72,90 @@ func TestProtectDesktopStores(t *testing.T) {
 			}
 		})
 	}
-	// A consulted path must not be reroutable via an agent-writable link.
-	link := filepath.Join(home, "link")
-	if err := os.Symlink(state, link); err != nil {
+}
+
+// A home reached through a symlink works, as long as no grant lets the
+// agent re-point the link or change its target (ADR 0002).
+func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
+	realHome, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("XDG_STATE_HOME", link)
-	if err := protectDesktopStores(&Grants{}, false, "linux"); err == nil {
-		t.Fatal("symlink routing accepted")
+	linkDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(opencodestate.DesktopStorePaths()) == 0 {
-		t.Fatal("no discovery sources protected")
+	home := filepath.Join(linkDir, "home")
+	if err := os.Symlink(realHome, home); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	const rel = ".config/ai.opencode.desktop"
+	if err := os.MkdirAll(filepath.Join(realHome, rel), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &Grants{}
+	if err := protectDesktopStores(g, false, "linux"); err != nil {
+		t.Fatalf("symlinked home: %v", err)
+	}
+	for _, dir := range []string{home, realHome} {
+		if p := filepath.Join(dir, rel, "opencode.global.dat"); !slices.Contains(g.ProtectedPaths, p) {
+			t.Errorf("%s not in ProtectedPaths", p)
+		}
+	}
+
+	for name, grant := range map[string]string{
+		"folder holding the link": linkDir,
+		"target of the link":      realHome,
+	} {
+		err := protectDesktopStores(&Grants{AllowPaths: []string{grant}}, false, "linux")
+		if err == nil {
+			t.Errorf("write grant on the %s: accepted", name)
+		}
+	}
+
+	store := filepath.Join(realHome, rel, "opencode.global.dat")
+	if err := os.Symlink(filepath.Join(realHome, "elsewhere.dat"), store); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectDesktopStores(&Grants{}, false, "linux"); err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Errorf("symlinked store: error = %v, want a refusal", err)
+	}
+}
+
+// A link whose target is missing at startup (an unmounted disk) holds no
+// Desktop data, so it doesn't refuse the start. The place where its
+// target would appear is checked and denied like a real path, so the
+// agent cannot create the target itself.
+func TestProtectDesktopStoresAcceptsDanglingLink(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if err := os.Symlink(filepath.Join("unmounted", "config"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &Grants{}
+	if err := protectDesktopStores(g, false, "linux"); err != nil {
+		t.Fatalf("dangling link: %v", err)
+	}
+	for _, dir := range []string{filepath.Join(home, ".config"), filepath.Join(home, "unmounted", "config")} {
+		if p := filepath.Join(dir, "ai.opencode.desktop", "opencode.global.dat"); !slices.Contains(g.ProtectedPaths, p) {
+			t.Errorf("%s not in ProtectedPaths", p)
+		}
+	}
+	grant := &Grants{AllowPaths: []string{filepath.Join(home, "unmounted")}}
+	if err := protectDesktopStores(grant, false, "linux"); err == nil {
+		t.Error("write grant where the link's target would appear: accepted")
 	}
 }
 

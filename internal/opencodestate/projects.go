@@ -160,21 +160,35 @@ func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
 }
 
 // containsAny reports whether dir is one of paths or an ancestor of one.
-// dir is checked as written and with symlinks resolved, because the
-// sandbox resolves a grant's symlinks before comparing it.
+// Both sides are checked as written and with symlinks resolved, because
+// the sandbox checks a store's route in both forms.
 func containsAny(dir string, paths []string) bool {
-	dirs := []string{filepath.Clean(dir)}
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		dirs = append(dirs, real)
-	}
-	for _, d := range dirs {
-		for _, p := range paths {
-			if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
-				return true
+	for _, d := range pathForms(dir) {
+		for _, path := range paths {
+			for _, p := range pathForms(path) {
+				if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// pathForms returns p cleaned and, when it differs, with symlinks
+// resolved. A missing file is resolved through its folder.
+func pathForms(p string) []string {
+	forms := []string{filepath.Clean(p)}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if dir, derr := filepath.EvalSymlinks(filepath.Dir(p)); derr == nil {
+			real, err = filepath.Join(dir, filepath.Base(p)), nil
+		}
+	}
+	if err == nil && real != forms[0] {
+		forms = append(forms, real)
+	}
+	return forms
 }
 
 // isInHome reports whether wt lies anywhere inside home: equal to it,

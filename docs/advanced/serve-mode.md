@@ -106,16 +106,23 @@ server you never chose. omac therefore hides these files from the agent. In
 Desktop's folder, only the `opencode` subfolder, where the OpenCode server
 keeps its runtime state, is writable.
 
-Desktop's folder is, depending on the platform:
+Desktop keeps these files in one of the following folders, depending on the
+platform and the install. omac checks and protects all of them on every
+platform, and also the folder `XDG_STATE_HOME` points to:
 
-- macOS: `~/Library/Application Support/ai.opencode.desktop`
-- Linux: `~/.config/ai.opencode.desktop` (or under `$XDG_CONFIG_HOME`), on
-  older installs `~/.local/share/ai.opencode.desktop` (or under
-  `$XDG_DATA_HOME`)
+- `~/Library/Application Support/ai.opencode.desktop` (macOS)
+- `~/.config/ai.opencode.desktop`, or under `$XDG_CONFIG_HOME` (Linux)
+- `~/.local/share/ai.opencode.desktop`, or under `$XDG_DATA_HOME` (older
+  Linux installs)
 
 The beta app uses `ai.opencode.desktop.beta` instead. omac reads your project
-list from `opencode.global.dat` in all of these folders, and protects these
-files in all of them and in the folder `XDG_STATE_HOME` points to.
+list from `opencode.global.dat` in all of these folders.
+
+The path to these folders may go through a symlink, for example a home folder
+on another disk or a `~/.config` that a dotfiles tool links into a
+repository. omac then checks and protects both the path as written and the
+real path. [ADR 0002](../adr/0002-desktop-store-symlinks.md) explains which
+setups work.
 
 ### What omac refuses
 
@@ -126,9 +133,10 @@ error in these cases:
 - with `--no-sandbox` or `--learn`;
 - with a sandbox profile other than omac's own (`builtin`), such as
   [nono](./nono.md);
-- when a write grant covers one of Desktop's folders above. For example, a
-  sandbox profile with `"allow": ["~/.config"]` on Linux gives the agent write
-  access to `~/.config/ai.opencode.desktop`. omac then prints:
+- when a write grant covers one of Desktop's folders above, on the path as
+  written or on the real path. For example, a sandbox profile with
+  `"allow": ["~/.config"]` gives the agent write access to
+  `~/.config/ai.opencode.desktop`. omac then prints:
 
   ```text
   omac sandbox: the OpenCode Desktop project store "/home/you/.config/ai.opencode.desktop/opencode.global.dat" would be writable by the agent through the write grant "/home/you/.config". Narrow that grant (sandbox profile, --allow or --write) to your project folders
@@ -140,9 +148,7 @@ error in these cases:
   `"read": ["~/.config"]`. The Linux sandbox can hide only files that exist
   when it starts, and Desktop creates some of these files later (the
   `drafts.sqlite-wal` file, for example), so the agent could read them;
-- when the path to one of Desktop's folders goes through a symlink, for
-  example a home directory that is a symlink to another disk. Point `HOME`
-  and the `XDG_*` variables at the real directories;
+- when one of Desktop's files is itself a symlink;
 - when `XDG_STATE_HOME` is set to a relative path.
 
 A project in Desktop's list whose folder contains Desktop's own files, such as

@@ -325,6 +325,46 @@ func TestWorktreesSkipsFolderContainingDesktopStore(t *testing.T) {
 	}
 }
 
+// With ~/.config linked into a dotfiles repository, a project at that
+// repository holds Desktop's stores through the link, so it is skipped too.
+func TestWorktreesSkipsLinkTargetHoldingDesktopStore(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	dotfiles := filepath.Join(home, "dotfiles")
+	store := filepath.Join(dotfiles, "config", "ai.opencode.desktop")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "config"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	records := `{"value":[{"worktree":"` + dotfiles + `"}]}`
+	data, err := json.Marshal(map[string]any{"globalSync.project": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("worktrees = %v, want none", worktrees)
+	}
+	if !slices.Contains(skipped, SkippedWorktree{Path: dotfiles, Reason: SkipDesktopStore}) {
+		t.Errorf("%s not skipped as a Desktop store folder: %v", dotfiles, skipped)
+	}
+}
+
 // Discovery and the sandbox protection share one list of Desktop dirs, with
 // no duplicates, covering the stable and beta app in every location.
 func TestDesktopStorePathsListsEachDirOnce(t *testing.T) {

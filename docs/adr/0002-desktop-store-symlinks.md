@@ -36,7 +36,7 @@ Option B. A symlink is fine as long as the agent can change neither the link nor
 - **Both paths are checked.** No write grant may cover a folder on the path as written or on the real path. This includes the working directory and the temp folder, which the agent can always write. On every OS, no read grant may cover them either, because Desktop keeps cookies and browser storage next to its project list.
 - **Both forms are denied.** Each file is denied under the path as written and under the real path. macOS matches sandbox rules against the real path; Linux hides a file at the path it is given.
 - **The files themselves must not be links.** A symlinked `opencode.global.dat` or `drafts.sqlite` is refused.
-- **A link to a missing target skips that folder.** If the target doesn't exist at startup, no Desktop data can be there; omac skips that candidate folder instead of refusing to start.
+- **A link to a missing target doesn't refuse the start.** If the target doesn't exist at startup, no Desktop data can be there. omac checks and denies the place where the target would appear like a real path, so the agent can't create it there.
 
 | Setup | Result |
 |---|---|
@@ -44,11 +44,11 @@ Option B. A symlink is fine as long as the agent can change neither the link nor
 | the same, but serve started in `~/dotfiles` (writable working directory) | refused: the real path is writable |
 | `/home/anna → /data/home/anna`, profile grants write access to `/home` | refused: the link can be re-pointed |
 | `opencode.global.dat → ~/Dropbox/desktop.dat` | refused: the file is a link |
-| `~/.config → /Volumes/dotfiles/config`, disk not mounted | starts, that folder is skipped |
+| `~/.config → /Volumes/dotfiles/config`, disk not mounted | starts |
 
 ## Consequences
 
 - Symlinked home folders and dotfile-managed `~/.config` work with Desktop mode.
 - The check runs once at startup. The agent can't change a link on the path during the session, because no grant covers the folder that holds it. A change made outside the sandbox, by the user or another program, takes effect only after a restart of `omac serve`.
-- **Accepted risk:** a skipped folder whose target appears during the session (a disk mounted later) is not protected until the next start. Mounting a disk is a host action the agent can't take.
+- **Accepted risk:** a missing link target that appears during the session (a disk mounted later) is not protected until the next start. Mounting a disk is a host action the agent can't take.
 - Tests cover: a symlinked home starts; a write grant on the folder that holds a link is refused; a write grant on a link's target is refused; both forms of each file are denied.
