@@ -137,8 +137,9 @@ omac start --vm
 ```
 
 `omac continue`, `omac resume` and `omac serve` accept `--vm` as well. omac
-refuses `--vm` while the VM is online, with `--no-sandbox`, in learn mode
-(`--learn`), with `omac serve --no-inner` or
+refuses `--vm` while the VM is online, with `--no-sandbox`, with
+`omac serve --learn` or a launcher profile that runs the sandbox with
+`--learn`, with `omac serve --no-inner` or
 `omac serve --for-opencode-desktop`, and with launcher profiles that use a
 sandbox other than omac's own. Once the human has started the session,
 offer to check the connection with `omac vm exec -- true`.
