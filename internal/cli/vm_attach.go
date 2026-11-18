@@ -18,11 +18,10 @@ import (
 // vmSession is a session attached to the omac VM (--vm). A nil *vmSession
 // means no --vm, and every method is then a no-op.
 type vmSession struct {
-	info      vm.AttachInfo
-	stateRoot string
-	env       map[string]string
-	markers   *vmMarkers
-	stderr    io.Writer
+	info    vm.AttachInfo
+	env     map[string]string
+	markers *vmMarkers
+	stderr  io.Writer
 }
 
 // attachVM registers the session with the VM, checks that the VM can take
@@ -40,19 +39,16 @@ func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) 
 		markers.release()
 		return nil, err
 	}
-	return &vmSession{info: info, stateRoot: markers.layout.Root, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
+	return &vmSession{info: info, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
 }
 
 // grant opens the VM's Docker and SSH ports for the sandbox and lets
-// DOCKER_HOST and DOCKER_CONFIG through its env filter. It also blocks the
-// VM state this session attached to by its exact path, because the sandbox
-// may resolve the baseline entries for it against another XDG_STATE_HOME,
-// and the profile's override_deny cannot lift a --deny-literal.
+// DOCKER_HOST and DOCKER_CONFIG through its env filter. The VM state is
+// blocked on every launch, see injectSandboxDenies.
 func (s *vmSession) grant(argv []string, plan sandboxPlan) []string {
 	if s == nil {
 		return argv
 	}
-	argv = injectSandboxFlag(argv, "--deny-literal", s.stateRoot)
 	argv = injectOpenPort(argv, strconv.Itoa(s.info.DockerPort))
 	argv = injectOpenPort(argv, strconv.Itoa(s.info.SSHPort))
 	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)

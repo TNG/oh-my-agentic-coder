@@ -15,6 +15,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -438,25 +439,37 @@ func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 	}
 }
 
-func TestAttachVMRecordsStateRoot(t *testing.T) {
-	fake, sessions := useAttachOrderManager(t, nil)
-	fake.agentKey = testAgentKey(t)
-	s, err := attachVM(context.Background(), devnullEnv(t), t.TempDir())
+// The opencode v2 pin hands the sandbox its own XDG_STATE_HOME, so the
+// baseline entries no longer name the host's VM state. Every native launch,
+// with or without --vm, must still keep the sandbox out of it.
+func TestSandboxDeniesKeepHostVMStateUnderAnotherStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	hostRoot, err := vm.DefaultRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.release()
-	if want := filepath.Dir(sessions); s.stateRoot != want {
-		t.Errorf("stateRoot = %q, want %q", s.stateRoot, want)
+	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
+	argv := injectSandboxDenies([]string{"omac", "sandbox", "run", "--", "opencode"}, nil, native)
+	flags, err := sandboxprofile.ParseFlags(argv[3:])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if _, ok := sandboxrun.NewProtectedPathSet(sandboxprofile.DefaultProfile()).IsProtected(hostRoot); ok {
+		t.Fatal("the baseline alone protects the host's VM state; this test no longer checks the launch's own deny")
+	}
+	session, _ := sandboxprofile.Merge(sandboxprofile.DefaultProfile(), flags)
+	if _, ok := sandboxrun.NewProtectedPathSet(session).IsProtected(hostRoot); !ok {
+		t.Errorf("a session with its own XDG_STATE_HOME can reach the host's VM state %s; argv %q", hostRoot, argv)
 	}
 }
 
 func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
-	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, stateRoot: "/state/omac/vm"}
+	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}
 	got := s.grant(argv, sandboxPlan{Native: true})
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
-		"--deny-literal", "/state/omac/vm",
 		"--open-port", "31234", "--open-port", "31022",
 		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",
 		"--", "opencode"}

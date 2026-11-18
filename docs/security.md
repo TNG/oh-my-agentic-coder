@@ -330,7 +330,7 @@ Known limits:
 - On macOS another running session can also write this session's temp dir, for example a `config.json` in its `DOCKER_CONFIG` that makes this session's `docker` run a program of that session's choice.
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
 
-The VM's state lives in `~/.local/state/omac/vm` (or `$XDG_STATE_HOME/omac/vm`) and includes the key for root access to the VM. The sandbox blocks this directory. A `--vm` session also blocks the VM state directory omac attached to, even when the sandbox sees a different `XDG_STATE_HOME`. omac refuses `--vm` when the sandbox profile cannot be loaded or unblocks this directory, and when the sandbox would run in learn mode.
+The VM's state lives in `~/.local/state/omac/vm` (or `$XDG_STATE_HOME/omac/vm`) and includes the key for root access to the VM. The sandbox blocks this directory. omac's own sandbox also blocks it by its exact path on every launch, with or without `--vm`, so it stays blocked when the sandbox sees a different `XDG_STATE_HOME`, as an OpenCode v2 session does, and `filesystem.override_deny` cannot unblock it. omac refuses `--vm` when the sandbox profile cannot be loaded or unblocks this directory, and when the sandbox would run in learn mode.
 
 ## Self-authored skills
 

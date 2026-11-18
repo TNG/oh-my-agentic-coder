@@ -1428,7 +1428,7 @@ func TestSandboxServeArgvDeniesOpenCodeServiceFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sandboxServeArgv (claude-code): %v", err)
 	}
-	if j := strings.Join(ccArgv, " "); contains(j, "--deny") {
+	if j := strings.Join(ccArgv, " "); contains(j, "--deny ") {
 		t.Errorf("claude-code argv must carry no harness deny: %s", j)
 	}
 
@@ -1443,14 +1443,18 @@ func TestSandboxServeArgvDeniesOpenCodeServiceFiles(t *testing.T) {
 }
 
 func TestInjectSandboxDenies(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	vmState := filepath.Join(state, "omac", "vm")
 	native := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--"}}
 	in := []string{"omac", "sandbox", "run", "--", "opencode"}
 	got := injectSandboxDenies(in, []string{"/a/service.json", "", "/b/service.json"}, native)
-	want := []string{"omac", "sandbox", "run", "--deny", "/a/service.json", "--deny", "/b/service.json", "--", "opencode"}
+	want := []string{"omac", "sandbox", "run", "--deny", "/a/service.json", "--deny", "/b/service.json", "--deny-literal", vmState, "--", "opencode"}
 	if !equalStrings(got, want) {
 		t.Errorf("injectSandboxDenies = %v, want %v", got, want)
 	}
-	if got := injectSandboxDenies(in, nil, native); !equalStrings(got, in) {
-		t.Errorf("no deny paths must be a no-op: %v", got)
+	want = []string{"omac", "sandbox", "run", "--deny-literal", vmState, "--", "opencode"}
+	if got := injectSandboxDenies(in, nil, native); !equalStrings(got, want) {
+		t.Errorf("without harness paths = %v, want %v", got, want)
 	}
 }
