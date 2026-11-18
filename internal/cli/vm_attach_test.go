@@ -254,6 +254,22 @@ func TestVMSandboxEnvWithoutKnownHosts(t *testing.T) {
 	}
 }
 
+// Without the pinned entry, the session's ssh would trust whatever key it
+// sees first, so a known_hosts that exists but cannot be read is an error.
+func TestVMSandboxEnvUnreadableKnownHosts(t *testing.T) {
+	key := testAgentKey(t)
+	if err := os.Mkdir(filepath.Join(filepath.Dir(key), "known_hosts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scope := t.TempDir()
+	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: key}, scope); err == nil || !strings.Contains(err.Error(), "known_hosts") {
+		t.Fatalf("vmSandboxEnv = %v, want an error naming known_hosts", err)
+	}
+	if _, err := os.Stat(filepath.Join(scope, "vm", "agent_key")); !os.IsNotExist(err) {
+		t.Fatalf("agent_key copy: %v, want absent", err)
+	}
+}
+
 func TestVMSandboxEnvMissingKey(t *testing.T) {
 	if _, err := vmSandboxEnv(vm.AttachInfo{AgentKeyPath: filepath.Join(t.TempDir(), "nope")}, t.TempDir()); err == nil {
 		t.Fatal("vmSandboxEnv succeeded without an agent key")
