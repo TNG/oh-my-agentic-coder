@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -18,42 +19,41 @@ import (
 // vmSession is a session attached to the omac VM (--vm). A nil *vmSession
 // means no --vm, and every method is then a no-op.
 type vmSession struct {
-	info    vm.AttachInfo
-	env     map[string]string
-	markers *vmMarkers
-	stderr  io.Writer
+	info      vm.AttachInfo
+	stateRoot string
+	env       map[string]string
+	markers   *vmMarkers
+	stderr    io.Writer
 }
 
 // attachVM registers the session with the VM, checks that the VM can take
 // it, and prepares the agent's files in <tmpDir>/vm. tmpDir must be the
 // session's temp dir, removed when omac exits normally, because it holds a
 // copy of the agent's SSH key. The VM is never booted or stopped here; it
-// outlives every session. It refuses when protected, the session sandbox's
-// protected paths, does not cover the VM state with its admin key.
-func attachVM(ctx context.Context, env *Env, tmpDir string, protected *sandboxrun.ProtectedPathSet) (*vmSession, error) {
+// outlives every session.
+func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) {
 	info, markers, err := prepareVMAttach(ctx, env)
 	if err != nil {
 		return nil, err
-	}
-	root := markers.layout.Root
-	if _, ok := protected.IsProtected(root); !ok {
-		markers.release()
-		return nil, fmt.Errorf("the sandbox could reach the VM state in %s; the sandbox profile must keep it protected", root)
 	}
 	vmEnv, err := vmSandboxEnv(info, tmpDir)
 	if err != nil {
 		markers.release()
 		return nil, err
 	}
-	return &vmSession{info: info, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
+	return &vmSession{info: info, stateRoot: markers.layout.Root, env: vmEnv, markers: markers, stderr: env.Stderr}, nil
 }
 
 // grant opens the VM's Docker and SSH ports for the sandbox and lets
-// DOCKER_HOST and DOCKER_CONFIG through its env filter.
+// DOCKER_HOST and DOCKER_CONFIG through its env filter. It also blocks the
+// VM state this session attached to by its exact path, because the sandbox
+// may resolve the baseline entries for it against another XDG_STATE_HOME,
+// and the profile's override_deny cannot lift a --deny-literal.
 func (s *vmSession) grant(argv []string, plan sandboxPlan) []string {
 	if s == nil {
 		return argv
 	}
+	argv = injectSandboxFlag(argv, "--deny-literal", s.stateRoot)
 	argv = injectOpenPort(argv, strconv.Itoa(s.info.DockerPort))
 	argv = injectOpenPort(argv, strconv.Itoa(s.info.SSHPort))
 	return injectSandboxEnvAllow(argv, []string{"DOCKER_HOST", "DOCKER_CONFIG"}, plan)
@@ -228,15 +228,25 @@ func writeVMFiles(tmpDir string, key []byte) error {
 }
 
 // vmProfileMisuse returns why plan cannot carry a --vm session, or "".
-// Only omac's own sandbox can open the VM's ports, and its
-// environment.deny_vars must not strip the VM variables: FilterEnv applies
-// deny_vars after every grant.
+// Only omac's own sandbox can open the VM's ports, it must keep the VM
+// state protected, and its environment.deny_vars must not strip the VM
+// variables: FilterEnv applies deny_vars after every grant.
 func vmProfileMisuse(plan sandboxPlan) string {
 	if !plan.Native {
 		return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
 	}
+	if launcherLearns(plan.Launcher.Command) {
+		return fmt.Sprintf("--vm: launcher profile %q runs the sandbox with --learn, which would let the agent reach the VM's admin key", plan.Name)
+	}
 	if plan.Policy == nil {
-		return ""
+		return fmt.Sprintf("--vm: sandbox profile %q could not be loaded (%v), so omac cannot check that it keeps the VM state protected", plan.PolicyRef, plan.PolicyErr)
+	}
+	root, err := vm.DefaultRoot()
+	if err != nil {
+		return "--vm: " + err.Error()
+	}
+	if _, ok := sandboxrun.NewProtectedPathSet(plan.Policy).IsProtected(root); !ok {
+		return fmt.Sprintf("--vm: the sandbox could reach the VM state in %s; sandbox profile %q must keep it protected (check filesystem.override_deny)", root, plan.PolicyRef)
 	}
 	for _, name := range vmEnvNames {
 		if sandboxprofile.EnvDenied(name, plan.Policy.Environment.DenyVars) {
@@ -244,4 +254,18 @@ func vmProfileMisuse(plan sandboxPlan) string {
 		}
 	}
 	return ""
+}
+
+// launcherLearns reports whether a `{{self}} sandbox run` launcher command
+// passes --learn, which lifts every filesystem restriction.
+func launcherLearns(command []string) bool {
+	for _, arg := range command {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--learn" || strings.HasPrefix(arg, "--learn=") {
+			return true
+		}
+	}
+	return false
 }

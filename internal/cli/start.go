@@ -788,7 +788,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// 7b. omac VM (--vm): attach only. The VM must already run offline.
 	var vmSess *vmSession
 	if opts.vm {
-		vmSess, err = attachVM(ctx, env, sandboxTmp, sessionProtectedPaths(false, plan))
+		vmSess, err = attachVM(ctx, env, sandboxTmp)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, prefix+": --vm:", err)
 			return vmAttachExitCode(err)

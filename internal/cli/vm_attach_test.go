@@ -15,7 +15,6 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
-	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -247,8 +246,11 @@ func TestVMSandboxEnvRefusesExistingDir(t *testing.T) {
 }
 
 func TestVMProfileMisuse(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	denies := func(pats ...string) *sandboxprofile.Profile {
-		return &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: pats}}
+		p := sandboxprofile.DefaultProfile()
+		p.Environment.DenyVars = pats
+		return p
 	}
 	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: denies("AWS_*")}); msg != "" {
 		t.Errorf("unrelated deny_vars refused: %s", msg)
@@ -261,6 +263,36 @@ func TestVMProfileMisuse(t *testing.T) {
 		if !strings.Contains(msg, `"strict"`) || !strings.Contains(msg, "deny_vars") {
 			t.Errorf("deny_vars %q: %q, want a refusal naming the profile", pat, msg)
 		}
+	}
+}
+
+// The sandbox must never reach the VM state: it holds the admin key and the
+// session markers.
+func TestVMProfileMisuseRefusesReachableState(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root, err := vm.DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unprotected := sandboxprofile.DefaultProfile()
+	unprotected.Filesystem.OverrideDeny = []string{root}
+	learnLauncher := config.SandboxProfile{Command: []string{"{{self}}", "sandbox", "run", "--learn", "--", "{{inner_cmd}}"}}
+	cases := []struct {
+		name string
+		plan sandboxPlan
+		want string
+	}{
+		{"override_deny unblocks the state", sandboxPlan{Native: true, PolicyRef: "custom", Policy: unprotected}, root},
+		{"launcher runs --learn", sandboxPlan{Name: "learner", Native: true, Launcher: learnLauncher, Policy: sandboxprofile.DefaultProfile()}, "--learn"},
+		{"policy not loaded", sandboxPlan{Native: true, PolicyRef: "broken", PolicyErr: errors.New("bad json")}, "bad json"},
+	}
+	for _, c := range cases {
+		if msg := vmProfileMisuse(c.plan); !strings.Contains(msg, c.want) {
+			t.Errorf("%s: %q, want a refusal containing %q", c.name, msg, c.want)
+		}
+	}
+	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: sandboxprofile.DefaultProfile()}); msg != "" {
+		t.Errorf("default profile refused: %s", msg)
 	}
 }
 
@@ -386,64 +418,33 @@ func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 
 func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, nil)
-	_, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), defaultSessionProtection())
-	if err == nil || !strings.Contains(err.Error(), "agent key") {
-		t.Fatalf("attachVM = %v, want the missing agent key error", err)
+	if _, err := attachVM(context.Background(), devnullEnv(t), t.TempDir()); err == nil {
+		t.Fatal("attachVM succeeded without an agent key, want an error")
 	}
 	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
 		t.Errorf("markers left after a failed key copy: %v", entries)
 	}
 }
 
-func defaultSessionProtection() *sandboxrun.ProtectedPathSet {
-	return sessionProtectedPaths(false, sandboxPlan{Native: true, Policy: sandboxprofile.DefaultProfile()})
-}
-
-func TestAttachVMDefaultProfileAttaches(t *testing.T) {
-	fake, _ := useAttachOrderManager(t, nil)
-	fake.agentKey = testAgentKey(t)
-	s, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), defaultSessionProtection())
-	if err != nil {
-		t.Fatalf("attachVM with the default profile: %v", err)
-	}
-	s.release()
-}
-
-// The sandbox must never reach the VM state: it holds the admin key and
-// the session markers. start and serve both pass sessionProtectedPaths.
-func TestAttachVMRefusesReachableState(t *testing.T) {
+func TestAttachVMRecordsStateRoot(t *testing.T) {
 	fake, sessions := useAttachOrderManager(t, nil)
 	fake.agentKey = testAgentKey(t)
-	root := filepath.Dir(sessions)
-	unprotected := sandboxprofile.DefaultProfile()
-	unprotected.Filesystem.OverrideDeny = []string{root}
-	cases := map[string]*sandboxrun.ProtectedPathSet{
-		"override_deny removes the folder": sessionProtectedPaths(false, sandboxPlan{Native: true, Policy: unprotected}),
-		"serve --learn":                    sessionProtectedPaths(true, sandboxPlan{Native: true, Policy: sandboxprofile.DefaultProfile()}),
-		"policy not resolved":              sessionProtectedPaths(false, sandboxPlan{Native: true}),
+	s, err := attachVM(context.Background(), devnullEnv(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, protected := range cases {
-		t.Run(name, func(t *testing.T) {
-			tmp := t.TempDir()
-			_, err := attachVM(context.Background(), devnullEnv(t), tmp, protected)
-			if err == nil || !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "must keep it protected") {
-				t.Fatalf("attachVM = %v, want a refusal naming %s", err, root)
-			}
-			if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
-				t.Errorf("markers left after the refusal: %v", entries)
-			}
-			if _, err := os.Stat(filepath.Join(tmp, "vm")); err == nil {
-				t.Error("agent key copied although the attach was refused")
-			}
-		})
+	defer s.release()
+	if want := filepath.Dir(sessions); s.stateRoot != want {
+		t.Errorf("stateRoot = %q, want %q", s.stateRoot, want)
 	}
 }
 
 func TestVMSessionGrant(t *testing.T) {
 	argv := []string{"omac", "sandbox", "run", "--profile", "default", "--", "opencode"}
-	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}}
+	s := &vmSession{info: vm.AttachInfo{DockerPort: 31234, SSHPort: 31022}, stateRoot: "/state/omac/vm"}
 	got := s.grant(argv, sandboxPlan{Native: true})
 	want := []string{"omac", "sandbox", "run", "--profile", "default",
+		"--deny-literal", "/state/omac/vm",
 		"--open-port", "31234", "--open-port", "31022",
 		"--allow-env", "DOCKER_HOST", "--allow-env", "DOCKER_CONFIG",
 		"--", "opencode"}

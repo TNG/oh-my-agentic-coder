@@ -378,7 +378,7 @@ func runServe(args []string, env *Env) int {
 
 	var vmSess *vmSession
 	if parsed.vm {
-		vmSess, err = attachVM(ctx, env, sandboxTmp, sessionProtectedPaths(learn, plan))
+		vmSess, err = attachVM(ctx, env, sandboxTmp)
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
 			return vmAttachExitCode(err)
