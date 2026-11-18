@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -216,7 +218,8 @@ func runVMExec(args []string, env *Env) int {
 // online, which also means no session is attached. A sandbox is refused
 // before any lookup, since it filters most variables and "not set" would
 // send the agent looking for the secret; on the host a bad --env is
-// reported before the user brings the VM online for nothing.
+// reported before the user brings the VM online for nothing. Once --env is
+// accepted, the user is reminded that the VM can read these variables.
 func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int, bool) {
 	if len(specs) == 0 {
 		return nil, ExitOK, true
@@ -237,7 +240,28 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	if st == nil || st.Mode != vm.ModeOnline {
 		return nil, vmExecMisuse(env, reason+"; run `omac vm online` first"), false
 	}
+	printVMExecTokenNotice(env.Stderr, envs)
 	return envs, ExitOK, true
+}
+
+// printVMExecTokenNotice names the variables in envs (NAME=VALUE), never
+// their values.
+func printVMExecTokenNotice(w io.Writer, envs []string) {
+	var names []string
+	for _, kv := range envs {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	list, tokens := names[0], "this token"
+	if n := len(names); n > 1 {
+		list = strings.Join(names[:n-1], ", ") + " and " + names[n-1]
+		tokens = "these tokens"
+	}
+	fmt.Fprintf(w, "omac vm exec: the build in the VM can read %s.\n"+
+		"If a session you do not trust used the VM since your last `omac vm reset`, stop and run it first:\n"+
+		"files that session left in the VM run with %s.\n", list, tokens)
 }
 
 func vmExecMisuse(env *Env, msg string) int {

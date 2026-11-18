@@ -93,6 +93,63 @@ func TestVMExecEnvFromHost(t *testing.T) {
 	}
 }
 
+func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
+	const tail = "If a session you do not trust used the VM since your last `omac vm reset`, stop and run it first:\n"
+	for name, tc := range map[string]struct {
+		envArgs []string
+		want    string
+	}{
+		"one name": {
+			[]string{"--env", "MY_REPO_TOKEN"},
+			"omac vm exec: the build in the VM can read MY_REPO_TOKEN.\n" + tail +
+				"files that session left in the VM run with this token.\n",
+		},
+		"two names": {
+			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=secret-b"},
+			"omac vm exec: the build in the VM can read MY_REPO_TOKEN and B.\n" + tail +
+				"files that session left in the VM run with these tokens.\n",
+		},
+		"three names, one repeated": {
+			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=secret-b", "--env", "C=secret-c", "--env", "B=secret-b2"},
+			"omac vm exec: the build in the VM can read MY_REPO_TOKEN, B and C.\n" + tail +
+				"files that session left in the VM run with these tokens.\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := useFakeVMExec(t, nil, 0, nil)
+			t.Setenv("MY_REPO_TOKEN", "secret-host")
+			env, _, stderr := vmTestEnv(t)
+			var stderrAtRun string
+			runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
+				*calls = append(*calls, o)
+				stderrAtRun = stderr()
+				return 0, nil
+			}
+			args := append(append([]string{"exec"}, tc.envArgs...), "--", "true")
+			if code := runVM(args, env); code != ExitOK {
+				t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
+			}
+			if stderrAtRun != tc.want {
+				t.Errorf("stderr before the command ran:\n%s\nwant:\n%s", stderrAtRun, tc.want)
+			}
+			if strings.Contains(stderr(), "secret") {
+				t.Errorf("stderr shows a value:\n%s", stderr())
+			}
+		})
+	}
+}
+
+func TestVMExecWithoutEnvPrintsNoNotice(t *testing.T) {
+	useFakeVMExec(t, nil, 0, nil)
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"exec", "--", "true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
+	}
+	if stderr() != "" {
+		t.Errorf("stderr = %q, want empty", stderr())
+	}
+}
+
 func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
 	for _, spec := range []string{"A=1", "OMAC_TEST_SURELY_UNSET_VAR"} {
 		t.Run(spec, func(t *testing.T) {
@@ -150,6 +207,9 @@ func TestVMExecEnvRefusedUnlessOnline(t *testing.T) {
 			}
 			if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
 				t.Errorf("stderr lacks the reason:\n%s", stderr())
+			}
+			if strings.Contains(stderr(), "can read") {
+				t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
 			}
 			if len(*calls) != 0 {
 				t.Errorf("runVMExecFn called despite the refusal")
