@@ -79,18 +79,17 @@ func UnrestrictedProtectedPathSet() *ProtectedPathSet { return &ProtectedPathSet
 
 // AddLaunchPaths records paths the sandbox denies from launch on although
 // the profile does not list them, e.g. OpenCode Desktop's stores under
-// --for-opencode-desktop. Call it before the set is shared: unlike Add it
-// changes the launch entries, which are read without a lock. Nil-safe.
+// --for-opencode-desktop. The paths must be absolute and are used as
+// written, like --deny-literal: no ~ or $VAR expansion. Call it before
+// the set is shared: unlike Add it changes the launch entries, which are
+// read without a lock. Nil-safe.
 func (s *ProtectedPathSet) AddLaunchPaths(paths []string, rule string) {
 	if s == nil {
 		return
 	}
-	// Expanded like the constructor's entries, so IsProtected matches them the same way.
 	for _, p := range paths {
-		if exp, err := sandboxprofile.ExpandPath(p); err == nil {
-			s.entries = append(s.entries, exp)
-			s.rules = append(s.rules, rule)
-		}
+		s.entries = append(s.entries, filepath.Clean(p))
+		s.rules = append(s.rules, rule)
 	}
 }
 
