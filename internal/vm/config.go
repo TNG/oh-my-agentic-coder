@@ -75,8 +75,9 @@ func LoadUserConfig(path string) (UserConfig, error) {
 	return cfg, nil
 }
 
-// ResolveResources applies the spec defaults: half the host cores (min 4),
-// a quarter of host RAM clamped to 8-12GiB, 60GiB disk; explicit values win.
+// ResolveResources fills what cfg leaves unset: half the host cores, at
+// least minCPUs; a quarter of host RAM, between minMemGiB and maxMemGiB;
+// defaultDisk. Explicit values win.
 func ResolveResources(cfg UserConfig, host HostResources) Resources {
 	res := Resources{CPUs: cfg.CPUs, Memory: cfg.Memory, Disk: cfg.Disk}
 	if res.CPUs <= 0 {

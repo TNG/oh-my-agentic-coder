@@ -288,8 +288,12 @@ func DesktopStateDir() string {
 	return defaultDesktopStateDir(home)
 }
 
+// stableDesktopAppID is the app whose folder omac creates when no Desktop
+// folder exists yet.
+const stableDesktopAppID = "ai.opencode.desktop"
+
 // desktopAppIDs are the stable and the beta Desktop app, most likely first.
-var desktopAppIDs = []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"}
+var desktopAppIDs = []string{stableDesktopAppID, "ai.opencode.desktop.beta"}
 
 // desktopStateCandidates lists the per-user directories the OpenCode
 // Desktop (an Electron app) may use for its data/state — the location it
@@ -338,7 +342,7 @@ func IsDesktopStateDir(dir string) bool {
 // installed). macOS: ~/Library/Application Support/<id>; Linux:
 // $XDG_CONFIG_HOME (~/.config)/<id>.
 func defaultDesktopStateDir(home string) string {
-	appID := desktopAppIDs[0]
+	appID := stableDesktopAppID
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", appID)
 	}

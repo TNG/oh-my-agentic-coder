@@ -24,11 +24,10 @@ type vmSession struct {
 	stderr  io.Writer
 }
 
-// attachVM picks the VM for a session in dir (see selectVM), registers the
-// session with it, checks that the VM can take it, and prepares the agent's files in <tmpDir>/vm. tmpDir must be the
-// session's temp dir, removed when omac exits normally, because it holds a
-// copy of the agent's SSH key. The VM is never booted or stopped here; it
-// outlives every session.
+// attachVM attaches a session in dir to the VM that selectVM picks. tmpDir
+// must be the session's temp dir, removed when omac exits normally,
+// because <tmpDir>/vm holds a copy of the agent's SSH key. The VM is never
+// booted or stopped here; it outlives every session.
 func attachVM(ctx context.Context, env *Env, tmpDir, explicit, dir string) (*vmSession, error) {
 	info, markers, err := prepareVMAttach(ctx, env, explicit, dir)
 	if err != nil {
