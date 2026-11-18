@@ -3,9 +3,10 @@
 //
 // The built-ins are guidance-only Markdown skills. omac deliberately ignores
 // skill directories without an omac.yaml (see internal/skillsource), so these
-// bundles are NOT registered or activated by omac; they are placed into a harness's own native skills directory and
-// surfaced by that harness's loader directly. Provisioning is therefore pure
-// file placement — see `omac setup`.
+// bundles are NOT registered or activated by omac; they are placed into a
+// harness's own native skills directory and surfaced by that harness's
+// loader directly. Provisioning is therefore pure file placement, done by
+// `omac setup`, `omac start` and `omac serve`.
 //
 // The bundles are embedded so `omac setup` works in any folder, independent of
 // the source tree the binary was built from, with no network access. Each

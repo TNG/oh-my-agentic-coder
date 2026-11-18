@@ -57,8 +57,10 @@ For a Gradle project in `backend/`, `<module>` is `backend`.
 
 - Each `omac vm exec` first copies the worktree into the VM, so your edits are
   there. `--cwd` is relative to your current directory. In a directory in
-  which git tracks no file yet, such as a new module, omac refuses to copy;
-  run it from the top level with `--cwd <dir>`.
+  which git tracks no file yet, such as a new module, omac refuses to copy
+  with `git in <top> tracks nothing in <dir>`. If `<top>` is your own
+  worktree, rerun from it with `--cwd <dir>`. Otherwise your worktree lost
+  its `.git` file: stop and ask the human to restore it.
 - The copy has no `.git`, no `.env` files and nothing git ignores, so build
   steps that call git fail in the VM. Files you delete are not deleted in the
   VM; remove a stale one with `omac vm exec -- rm -rf <path>`.
@@ -105,8 +107,8 @@ instead.
   or `No cached version ... available for offline mode`. Do not drop
   `--offline`. Name the dependency and the build file you changed, and ask
   the human to prime the VM from the host, as described in "Prime the build
-  caches" in [setup.md](setup.md). They prime from a clean clone that
-  contains your change, and omac refuses `omac vm online` while a session is
+  caches" in [setup.md](setup.md). They prime from a fresh clone, in a
+  new folder, of a commit with your change, and omac refuses `omac vm online` while a session is
   attached, so they end this session first.
 - **A JDK or system package is missing.** Gradle reports `No matching
   toolchains found` or `Cannot find a Java installation`, or a command is
