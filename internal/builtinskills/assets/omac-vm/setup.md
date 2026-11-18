@@ -218,12 +218,13 @@ project (a line such as `/home/alex/work/acme: acme`), else `omac`;
 `--vm=<name>` picks one. omac refuses `--vm` while the VM is online, with
 `--no-sandbox`, with `omac serve --learn` or a launcher profile that runs
 the sandbox with `--learn`, with `omac serve --no-inner`, and with launcher
-profiles that use a sandbox other than omac's own. When the
-OpenCode Desktop app starts `omac serve --vm --for-opencode-desktop`, omac
-looks for the VM under `~/.local/state/omac`; if the human exports
-`XDG_STATE_HOME`, they create and manage the VM with
-`env -u XDG_STATE_HOME omac vm ...`. Once the human has started the session,
-offer to check the connection with `omac vm exec -- true`.
+profiles that use a sandbox other than omac's own.
+`omac serve --vm --for-opencode-desktop` looks for the VM where
+`omac vm up` in the same environment puts it; if `XDG_STATE_HOME` points at
+the OpenCode Desktop app's folder, it looks under `~/.local/state/omac`
+instead, so create that VM with `env -u XDG_STATE_HOME omac vm up`. Once the
+human has started the session, offer to check the connection with
+`omac vm exec -- true`.
 
 ## 9. Day-to-day
 
