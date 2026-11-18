@@ -291,10 +291,15 @@ func TestVMProfileMisuseRefusesReachableState(t *testing.T) {
 			t.Errorf("%s: %q, want a refusal containing %q", c.name, msg, c.want)
 		}
 	}
+	builtin := config.DefaultLauncherConfig().Sandbox.Profiles["builtin"].Command
+	builtinLearn := injectSandboxFlag(slices.Clone(builtin), "--learn", "")
+	plan := sandboxPlan{Name: "builtin-learn", Native: true, PolicyRef: "default", Launcher: config.SandboxProfile{Command: builtinLearn}, Policy: sandboxprofile.DefaultProfile()}
+	if msg := vmProfileMisuse(plan); !strings.Contains(msg, "--learn") {
+		t.Errorf("builtin launcher with --learn: %q, want a refusal", msg)
+	}
 	for _, cmd := range [][]string{
-		{"{{self}}", "sandbox", "run", "--profile", "default", "--", "{{inner_cmd}}"},
+		builtin,
 		{"{{self}}", "sandbox", "run", "--", "{{inner_cmd}}", "--learn"},
-		{"{{self}}", "sandbox", "run", "--allow", "--learn", "--", "{{inner_cmd}}"},
 	} {
 		plan := sandboxPlan{Native: true, PolicyRef: "default", Launcher: config.SandboxProfile{Command: cmd}, Policy: sandboxprofile.DefaultProfile()}
 		if msg := vmProfileMisuse(plan); msg != "" {

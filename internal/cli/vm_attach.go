@@ -227,9 +227,7 @@ func writeVMFiles(tmpDir string, key []byte) error {
 }
 
 // vmProfileMisuse returns why plan cannot carry a --vm session, or "".
-// Only omac's own sandbox can open the VM's ports, it must keep the VM
-// state protected, and its environment.deny_vars must not strip the VM
-// variables: FilterEnv applies deny_vars after every grant.
+// deny_vars is checked because FilterEnv applies it after every grant.
 func vmProfileMisuse(plan sandboxPlan) string {
 	if !plan.Native {
 		return fmt.Sprintf("--vm needs omac's own sandbox; launcher profile %q runs a different sandbox, so omac cannot open the VM's ports there", plan.Name)
@@ -256,18 +254,12 @@ func vmProfileMisuse(plan sandboxPlan) string {
 }
 
 // launcherLearns reports whether a `{{self}} sandbox run` launcher command
-// passes --learn, which lifts every filesystem restriction. A command the
-// sandbox's own parser rejects, e.g. for a templated port, is scanned
-// instead, and a --learn anywhere before "--" counts.
+// passes --learn, which lifts every filesystem restriction. It scans instead
+// of using sandboxprofile.ParseFlags because launcher templates such as
+// {{tmpdir_flags}} fail that parser; a flag value spelled "--learn" is
+// refused too, which errs on the safe side.
 func launcherLearns(command []string) bool {
-	if len(command) < 3 {
-		return false
-	}
-	args := command[3:]
-	if f, err := sandboxprofile.ParseFlags(args); err == nil {
-		return f.Learn
-	}
-	for _, arg := range args {
+	for _, arg := range command {
 		if arg == "--" {
 			return false
 		}
