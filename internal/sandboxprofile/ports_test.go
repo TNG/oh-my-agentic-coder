@@ -98,9 +98,9 @@ func TestPortListUnmarshal(t *testing.T) {
 			wantErr: []string{`"1-2000"`, "1000"},
 		},
 		{
-			name:    "entries together above the cap",
-			input:   `["1-600", "601-1200"]`,
-			wantErr: []string{"1000"},
+			name:  "multi-entry total above the cap is left to Validate",
+			input: `["1-600", "601-1200"]`,
+			want:  portSeq(1, 1200),
 		},
 	}
 	for _, tt := range tests {

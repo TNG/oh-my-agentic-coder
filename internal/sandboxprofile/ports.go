@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// maxExpandedPorts caps how many ports a single list may expand to.
+// maxExpandedPorts caps how many ports one range entry may expand to.
 // Without it a typo like "1-65535" would silently grant every port,
 // which defeats the purpose of naming ports at all.
 const maxExpandedPorts = 1000
@@ -19,8 +19,9 @@ const maxExpandedPorts = 1000
 type PortList []int
 
 // UnmarshalJSON accepts a JSON array whose entries are integers or
-// strings such as "8000" or "8100-8200". The expanded list may not
-// exceed maxExpandedPorts.
+// strings such as "8000" or "8100-8200". A single range entry may not
+// expand beyond maxExpandedPorts; the total across entries is capped
+// later by the per-field validation.
 func (l *PortList) UnmarshalJSON(data []byte) error {
 	var entries []json.RawMessage
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -47,9 +48,6 @@ func (l *PortList) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		ports = append(ports, expanded...)
-	}
-	if len(ports) > maxExpandedPorts {
-		return fmt.Errorf("port list expands to %d ports, above the %d-port limit", len(ports), maxExpandedPorts)
 	}
 	*l = ports
 	return nil
