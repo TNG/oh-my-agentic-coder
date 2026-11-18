@@ -63,18 +63,19 @@ The supported fields are:
   absent or empty means all variables pass (subject to the blocklist)
 
 Port-grant entries in `network.listen_port` and `network.allow_tcp_connect`
-SHALL be either a JSON number or a JSON string of the form `N` or `A-B`, where
-both endpoints are inclusive decimal port numbers in 0–65535 and `A` does not
-exceed `B`; whitespace around a string entry is ignored. String entries SHALL be
-expanded to individual ports when the profile is loaded, so the in-memory value
-holds numbers only and the profile file on disk is left unchanged. The expansion
-of one field SHALL NOT exceed 1000 ports. An over-cap expansion, a reversed
-range, an out-of-bounds endpoint, and an entry that is neither a number nor a
-valid string SHALL be rejected at load time, before any process is launched,
-with an error naming the offending value. Both fields SHALL keep their minimum
-of 1, so an expansion that includes port 0 is rejected by validation.
-`network.open_port` SHALL remain an integer list and SHALL NOT accept range
-strings.
+SHALL be either a JSON integer (no fractional part) or a JSON string of the
+form `N` or `A-B`, where both endpoints are inclusive decimal port numbers in
+0–65535 and `A` does not exceed `B`; leading zeros in a string entry are
+allowed, and whitespace around it is ignored. String entries SHALL be expanded
+to individual ports when the profile is loaded, so the in-memory value holds
+numbers only and the profile file on disk is left unchanged. The expansion of
+one field SHALL NOT exceed 1000 ports. An over-cap expansion, a reversed range,
+an out-of-bounds endpoint, a fractional number, and an entry that is neither an
+integer nor a valid string SHALL be rejected at load time, before any process
+is launched, with an error naming the offending value. Both fields SHALL keep
+their minimum of 1, so an expansion that includes port 0 is rejected by
+validation. `network.open_port` SHALL remain an integer list and SHALL NOT
+accept range strings.
 
 #### Scenario: Valid profile is parsed
 
@@ -153,11 +154,14 @@ strings.
 `--deny-domain <domain>`, `--block-net`, `--workdir-access <level>`, and
 `--profile <ref>`, each repeatable where list-valued. A `<port|A-B>` value is
 either a single port or an inclusive range using the same syntax as the profile
-fields, and it expands before merging. Flag values SHALL be merged additively
-into the loaded profile, except `--block-net` which sets `network.mode` to
-`blocked` and overrides all other network settings, and `--workdir-access` which
-replaces `workdir.access`. The `--deny` flag merges into `filesystem.deny`. The
-command to run inside the sandbox follows a `--` separator.
+fields, and it expands before merging. The merged list of one field, profile
+entries plus flag entries, SHALL NOT exceed 1000 ports, and a merge above that
+cap SHALL be rejected before any process is launched. Flag values SHALL be
+merged additively into the loaded profile, except `--block-net` which sets
+`network.mode` to `blocked` and overrides all other network settings, and
+`--workdir-access` which replaces `workdir.access`. The `--deny` flag merges
+into `filesystem.deny`. The command to run inside the sandbox follows a `--`
+separator.
 
 #### Scenario: Launcher-style invocation
 
