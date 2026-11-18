@@ -78,7 +78,7 @@ This is handled by `omac serve` instead of `omac start`. Desktop integration is 
   Alternatively, from a session started with `--vm`, run the build in the
   omac VM with [`omac vm exec`](./usage/cli.md#omac-vm), where the daemon
   works. This needs a JDK in `vm.yaml` and one priming run.
-- **Docker is not available inside the sandbox.** Start the session with
+- **Docker is not available inside the sandbox by default.** Start the session with
   `--vm` and run Docker, and tests that need it, through `omac vm exec`; see
   [omac vm](./usage/cli.md#omac-vm).
 

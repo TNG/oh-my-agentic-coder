@@ -32,8 +32,8 @@ type StatusReport struct {
 // Status reports the VM state without modifying the VM. A failed Docker check
 // only leaves Docker nil. An existing instance without state.json is an
 // error: its mode and SSH port are unknown, so the report would be misleading.
-// Copied worktrees are read here, not in report, so an idempotent Up needs only
-// the Docker check over SSH.
+// Copied worktrees are read here, not in report: report runs on every Up,
+// and listing them takes a second SSH call that only Status needs.
 func (m *Manager) Status(ctx context.Context) (StatusReport, error) {
 	inst, err := m.instance(ctx)
 	if err != nil {

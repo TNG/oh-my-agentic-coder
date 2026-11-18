@@ -118,11 +118,12 @@ instead.
   while a session is attached, so they end this session first. Never look
   for the registry token the build needs yourself.
 - **The Gradle wrapper cannot download Gradle.** The wrapper fails with
-  `UnknownHostException: services.gradle.org` before the build starts: the
-  VM was not primed for this project's Gradle version, for example after
-  `omac vm reset` or a wrapper upgrade. Name the Gradle version from
-  `distributionUrl` in `gradle/wrapper/gradle-wrapper.properties`, and ask
-  the human to prime the VM as described in [setup.md](setup.md).
+  `UnknownHostException` for the host in `distributionUrl` (usually
+  `services.gradle.org`) before the build starts: the VM was not primed for
+  this project's Gradle version, for example after `omac vm reset` or a
+  wrapper upgrade. Name the Gradle version from `distributionUrl` in
+  `gradle/wrapper/gradle-wrapper.properties`, and ask the human to prime
+  the VM as described in [setup.md](setup.md); they end this session first.
 - **A JDK or system package is missing.** Gradle reports `No matching
   toolchains found` or `Cannot find a Java installation`, or a command is
   not found. Name it, for example `temurin-21`, and ask the human to add it

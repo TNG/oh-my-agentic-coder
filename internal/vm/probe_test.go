@@ -42,8 +42,6 @@ func TestDockerVersionParsesOutput(t *testing.T) {
 	}
 }
 
-// The SSH port is now the only way omac reaches Docker in the VM, and a
-// non-interactive ssh command does not read DOCKER_HOST from ~/.bashrc.
 func TestDockerVersionCmdNamesTheSocket(t *testing.T) {
 	want := "docker -H unix:///run/user/$(id -u)/docker.sock version --format '{{.Server.APIVersion}} {{.Server.Version}}'"
 	if dockerVersionCmd != want {
