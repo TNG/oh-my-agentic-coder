@@ -10,10 +10,9 @@ integers by hand is tedious and easy to get wrong, and a missing port surfaces
 much later as a bind failure inside the sandbox.
 
 The two fields that need this are `network.listen_port` and
-`network.allow_tcp_connect`. Both are `[]int` today
-(`internal/sandboxprofile/profile.go:150` and
-`internal/sandboxprofile/profile.go:153`), and the matching CLI flags accept a
-single port.
+`network.allow_tcp_connect`. Both hold a plain integer list today (the
+`Network.ListenPort` and `Network.AllowTCPConnect` fields), and the matching
+CLI flags accept a single port.
 
 ## What Changes
 
@@ -37,9 +36,9 @@ single port.
 - **Expand at load time, not at enforcement time.** Every consumer of these
   fields already works on a list of integers. Expanding once, where the profile
   is decoded, keeps that surface unchanged and makes a range pure shorthand.
-  Profiles are user-edited files that omac never rewrites
-  (`docs/configuration.md:88`), so the expanded list is never written back and
-  the readable `"8000-8100"` stays in the user's file.
+  Loading a profile never rewrites it, so the readable `"8000-8100"` stays in
+  the user's file. A learn-mode save (`omac sandbox run --learn`) does rewrite
+  the file, and writes the expanded integer list.
 - **Cap the expanded list at 1000 ports per field.** The expanded list reaches
   the argv of the Linux stage-2 helper and becomes one Landlock rule per port;
   the cap bounds both. An over-cap profile is rejected instead of being clamped,

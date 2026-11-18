@@ -51,16 +51,13 @@
   as the fast inner loop while iterating
 - [x] 5.3 `go test ./...` as the final gate before the PR: a `PortList` retypes a
   widely constructed struct, so only the full suite catches downstream breakage.
-  Run in the sandbox host; 8 packages fail there for environmental reasons that
-  reproduce on `main` (see the PR body). The clean re-run is part of the
-  unsandboxed-host gate below.
-- [ ] 5.4 Exercise the surface: with `--listen-port 8000-8100`, a bind on 8050
-  succeeds and a bind on 9000 is denied. Host gate, pending before the PR: the
-  outer omac sandbox denies every bind, including plain `python3`, so an inner
-  sandbox cannot show the grant
+  Run it on an unsandboxed host; the Linux integration tests need a host that
+  permits nested user namespaces and Landlock.
+- [ ] 5.4 Exercise the surface on an unsandboxed host: with
+  `--listen-port 8000-8100`, a bind on 8050 succeeds and a bind on 9000 is
+  denied. An outer omac sandbox blocks the nested bind, so this cannot run
+  inside one.
 - [x] 5.5 Open the PR following `.github/pull_request_template.md`, titled
   `feat(sandbox): port ranges for listen_port and allow_tcp_connect`, with
   `Closes #<issue>`, the verification commands and their output, the
-  `🤖 Generated with ...` agent footer, and one reviewer. Body drafted in
-  `.superpowers/sdd/2026-11-18-sandbox-port-ranges/pr-body.md`; creating the
-  issue and opening the PR are GitHub gates that need a host with network access
+  `🤖 Generated with ...` agent footer, and one reviewer.

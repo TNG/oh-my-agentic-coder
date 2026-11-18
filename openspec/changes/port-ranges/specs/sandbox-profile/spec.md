@@ -66,11 +66,13 @@ Port-grant entries in `network.listen_port` and `network.allow_tcp_connect`
 SHALL be either a JSON integer (no fractional part) or a JSON string of the
 form `N` or `A-B`, where both endpoints are inclusive decimal port numbers in
 0–65535 and `A` does not exceed `B`; leading zeros in a string entry are
-allowed, and whitespace around it is ignored. String entries SHALL be expanded
-to individual ports when the profile is loaded, so the in-memory value holds
-numbers only and the profile file on disk is left unchanged. The expansion of
-one field SHALL NOT exceed 1000 ports. The cap counts entries as written,
-before duplicate removal, whatever their form: a plain integer and a range both
+allowed, and whitespace around an entry and around the dash of a range is
+ignored. String entries SHALL be expanded to individual ports when the profile
+is loaded, so the in-memory value holds numbers only; loading SHALL NOT modify
+the profile file. A learn-mode save of the profile writes the expanded integer
+list, not the range. The expansion of one field SHALL NOT exceed 1000 ports.
+The cap counts entries as written, before duplicate removal, whatever their
+form: a plain integer and a range both
 contribute every port they name. An over-cap expansion, a reversed range,
 an out-of-bounds endpoint, a fractional number, and an entry that is neither an
 integer nor a valid string SHALL be rejected at load time, before any process
@@ -96,7 +98,8 @@ accept range strings.
 - **WHEN** a profile contains `"listen_port": [4097, "8000-8100"]`
 - **THEN** loading succeeds and the child may bind 4097 and every port from 8000
   through 8100, inclusive (102 ports)
-- **AND** the profile file on disk is left unchanged
+- **AND** loading leaves the profile file on disk unchanged; a later learn-mode
+  save writes the expanded integer list
 
 #### Scenario: String entries in allow_tcp_connect
 
