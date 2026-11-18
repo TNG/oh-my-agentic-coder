@@ -117,8 +117,8 @@ func TestVMHelpListsEveryVerb(t *testing.T) {
 	}
 }
 
-// vmUsageArgumentForms are arguments the help must show. Their parsing
-// sits outside the switch statements that dispatchedVMVerbs reads.
+// vmUsageArgumentForms are arguments the help must show. dispatchedVMVerbs
+// reads only case labels, not the argument parsing in the case bodies.
 var vmUsageArgumentForms = []string{"up [--reprovision]", "image add <ref>", "image rm <ref>"}
 
 // dispatchedVMVerbs reads the verbs from the switch statements in
