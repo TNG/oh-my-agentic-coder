@@ -722,6 +722,66 @@ func (f *execFakes) opts(workdir string, out io.Writer) ExecOpts {
 		SSH:     f.ssh,
 		Stdout:  out,
 		Stderr:  io.Discard,
+		LookPath: func(string) (string, error) {
+			return "/usr/bin/ssh", nil
+		},
+	}
+}
+
+func TestExecRefusesWithoutSSH(t *testing.T) {
+	for name, tc := range map[string]struct {
+		path string
+		err  error
+		want string
+	}{
+		"not found": {err: exec.ErrNotFound, want: "cannot find ssh"},
+		"relative":  {path: "node_modules/.bin/ssh", want: "must be an absolute path"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &execFakes{}
+			o := f.opts(testDir(t, "repo"), io.Discard)
+			o.LookPath = func(string) (string, error) { return tc.path, tc.err }
+			_, err := Exec(context.Background(), o)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Exec = %v, want %q", err, tc.want)
+			}
+			if len(f.runCalls) != 0 || len(f.remotes) != 0 {
+				t.Fatalf("calls before the refusal: run %q, ssh %q", f.runCalls, f.remotes)
+			}
+		})
+	}
+}
+
+func TestExecReportsAFailedReturnToTheCaller(t *testing.T) {
+	skipIfRoot(t)
+	caller := testDir(t, "caller")
+	t.Chdir(caller)
+	if err := os.Chmod(caller, 0o100); err != nil { // restore by path, not by handle
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(caller, 0o755) })
+	f := &execFakes{}
+	o := f.opts(testDir(t, "repo"), io.Discard)
+	o.Run = func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if name == "rsync" {
+			if err := os.Remove(caller); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f.run(ctx, name, args, stdin, stdout, stderr)
+	}
+	_, err := Exec(context.Background(), o)
+	if err == nil || strings.Contains(err.Error(), "rsync to the VM failed") || !strings.Contains(err.Error(), "cannot return to the caller's directory") {
+		t.Fatalf("Exec = %v, want the failed return, not an rsync failure", err)
+	}
+}
+
+// skipIfRoot skips a test that relies on directory permissions, which do
+// not stop root.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not stop root")
 	}
 }
 
@@ -921,6 +981,7 @@ func TestExecRefusesProtectedPathLinkedIntoRoot(t *testing.T) {
 // Inside the sandbox, stat on a protected path fails; the check must still
 // see that the copy root contains it.
 func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
+	skipIfRoot(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores permissions")
 	}
@@ -942,6 +1003,7 @@ func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
 }
 
 func TestExecRefusesUnreadableCopyRoot(t *testing.T) {
+	skipIfRoot(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores permissions")
 	}
@@ -1118,6 +1180,7 @@ func TestRefuseUntrackedPrefixQuotesTheHint(t *testing.T) {
 }
 
 func TestCheckTopLevelFailsWhenGitEntryCannotBeRead(t *testing.T) {
+	skipIfRoot(t)
 	dir := testDir(t, "repo")
 	if err := os.Chmod(dir, 0o600); err != nil { // listable, not searchable
 		t.Fatal(err)
@@ -1148,6 +1211,7 @@ func TestInDirRestoresAfterAnError(t *testing.T) {
 }
 
 func TestInDirRestoresAnUnreadableCaller(t *testing.T) {
+	skipIfRoot(t)
 	caller := testDir(t, "caller")
 	t.Chdir(caller)
 	if err := os.Chmod(caller, 0o100); err != nil {
@@ -1207,11 +1271,13 @@ func TestInDirRestoresAfterAPanic(t *testing.T) {
 }
 
 func TestInDirReportsFnAndRestoreErrors(t *testing.T) {
+	skipIfRoot(t)
 	caller := testDir(t, "caller")
 	t.Chdir(caller)
 	if err := os.Chmod(caller, 0o100); err != nil { // restore by path, not by handle
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Chmod(caller, 0o755) })
 	dir, err := os.Open(testDir(t, "d"))
 	if err != nil {
 		t.Fatal(err)
@@ -1224,8 +1290,8 @@ func TestInDirReportsFnAndRestoreErrors(t *testing.T) {
 		}
 		return boom
 	})
-	if !errors.Is(err, boom) || !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("inDir = %v, want both the fn error and the failed restore", err)
+	if !errors.Is(err, boom) || !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "cannot return to the caller's directory") {
+		t.Fatalf("inDir = %v, want both the fn error and the labelled failed restore", err)
 	}
 }
 

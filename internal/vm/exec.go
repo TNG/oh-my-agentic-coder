@@ -304,6 +304,8 @@ type ExecOpts struct {
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Log     func(string, ...any)
+	// LookPath finds ssh; nil means exec.LookPath.
+	LookPath func(string) (string, error)
 }
 
 // Exec records the copy in ~/omac/.worktrees, copies the git top level of
@@ -336,9 +338,13 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	// rsync runs in the copy root, where the agent picks the files, and
 	// would find a bare "ssh" through a relative PATH entry such as
 	// node_modules/.bin.
-	sshPath, err := exec.LookPath("ssh")
-	if err != nil || !filepath.IsAbs(sshPath) {
-		return 1, fmt.Errorf("omac vm exec: no ssh at an absolute path in PATH (%q, %v)", sshPath, err)
+	lookPath := o.LookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	sshPath, err := lookPath("ssh")
+	if err != nil {
+		return 1, fmt.Errorf("omac vm exec: cannot find ssh: %w", err)
 	}
 	for _, p := range []string{sshPath, o.Conn.Target.KeyPath, o.Conn.Target.KnownHosts} {
 		// rsync's -e parser does not understand the '\'' that ShellQuote emits.
@@ -406,14 +412,19 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	}
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
 	excludes := strings.NewReader(ExcludeList(ignored))
+	var rsyncErr error
 	err = inDir(rootDir, func() error {
-		return o.Run(ctx, "rsync", RsyncArgs(sshPath, ".", target, remoteDir), excludes, o.Stderr, o.Stderr)
+		rsyncErr = o.Run(ctx, "rsync", RsyncArgs(sshPath, ".", target, remoteDir), excludes, o.Stderr, o.Stderr)
+		return nil
 	})
-	if err != nil {
-		if exitCode(err) == 255 || exitCode(err) == 12 { // ssh failed, or the stream broke
-			err = fmt.Errorf("%w; %s", err, connectionHint)
+	if rsyncErr != nil {
+		if exitCode(rsyncErr) == 255 || exitCode(rsyncErr) == 12 { // ssh failed, or the stream broke
+			rsyncErr = fmt.Errorf("%w; %s", rsyncErr, connectionHint)
 		}
-		return failure(ctx, fmt.Errorf("omac vm exec: rsync to the VM failed: %w", err))
+		return failure(ctx, errors.Join(fmt.Errorf("omac vm exec: rsync to the VM failed: %w", rsyncErr), err))
+	}
+	if err != nil {
+		return failure(ctx, err)
 	}
 
 	target.TTY = o.TTY
@@ -519,14 +530,16 @@ func inDir(dir *os.File, fn func() error) (err error) {
 	if err != nil {
 		return fmt.Errorf("omac vm exec: %w", err)
 	}
-	if err := dir.Chdir(); err != nil {
-		return errors.Join(fmt.Errorf("omac vm exec: %w", err), restore())
-	}
-	defer func() {
-		if rerr := restore(); rerr != nil {
-			err = errors.Join(err, fmt.Errorf("omac vm exec: %w", rerr))
+	restoreErr := func() error {
+		if err := restore(); err != nil {
+			return fmt.Errorf("omac vm exec: cannot return to the caller's directory: %w", err)
 		}
-	}()
+		return nil
+	}
+	if err := dir.Chdir(); err != nil {
+		return errors.Join(fmt.Errorf("omac vm exec: %w", err), restoreErr())
+	}
+	defer func() { err = errors.Join(err, restoreErr()) }()
 	return fn()
 }
 
