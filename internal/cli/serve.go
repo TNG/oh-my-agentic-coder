@@ -569,6 +569,7 @@ func runServe(args []string, env *Env) int {
 
 	var argv []string
 	var watch *protectedWatch
+	ocClass := openCodeOther
 	if noSandbox {
 		argv = inner
 	} else {
@@ -617,7 +618,6 @@ func runServe(args []string, env *Env) int {
 		// harness runtime dirs are granted inside sandboxServeArgv.)
 		argv = forwardHarnessEnv(env, argv, harness, plan)
 		argv = injectServeAuthAllow(argv, harness, plan, password)
-		var ocClass openCodeVersionKind
 		if !learn {
 			argv, ocClass, err = injectOpenCodeProjectDiscovery(argv, extra, harness, inner, plan)
 			if err != nil {
@@ -682,10 +682,15 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}
 
-	// Hint when the harness server gets no password through omac and will use
-	// a random one (sandboxed or not; the server listens either way).
+	// Hint when the harness server gets no password through omac (sandboxed
+	// or not; the server listens either way). Project discovery classified
+	// OpenCode only on macOS with the native sandbox, so classify it here
+	// otherwise.
+	if ocClass == openCodeOther {
+		ocClass = classifyOpenCode(inner)
+	}
 	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox),
-		serveAuthAdvice(harness, plan, noSandbox)); w != "" {
+		serveAuthAdvice(harness, plan, noSandbox), openCodeGeneratesPassword(ocClass)); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -820,16 +825,17 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 }
 
 // serverExposureWarning returns a one-line hint when a harness's server will
-// bind a loopback port without a password supplied through omac. OpenCode
-// then protects the port with a random password that changes on every
-// restart and prints it itself; the hint says so and ends with advice on
-// keeping a stable one ("To keep the same password, <advice>."), usually
-// "set OMAC_SERVE_PASSWORD" (see serveAuthAdvice). It returns "" when there
-// is no server port or getenv reports the auth env var as set. getenv must
-// answer what the server will see, i.e. after the sandbox's env filter (see
+// bind a loopback port without a password supplied through omac. If the
+// server generates its own password (generatesPassword, OpenCode 2.x), the
+// hint says where it appears and how to keep a stable one; otherwise
+// (OpenCode 1.x, or a version omac cannot tell) it warns that any local
+// process can reach the port. Both end with advice, usually "set
+// OMAC_SERVE_PASSWORD" (see serveAuthAdvice). It returns "" when there is no
+// server port or getenv reports the auth env var as set. getenv must answer
+// what the server will see, i.e. after the sandbox's env filter (see
 // serveAuthGetenv). innerArgv is the launch's resolved inner command so the
 // hint names the port the server will really bind, not the harness default.
-func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string, advice string) string {
+func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(string) string, advice string, generatesPassword bool) string {
 	sl := h.ServerLaunch
 	port := h.ResolveListenPort(innerArgv)
 	if sl == nil || port <= 0 || sl.AuthEnvVar == "" {
@@ -837,6 +843,10 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 	}
 	if getenv(sl.AuthEnvVar) != "" {
 		return ""
+	}
+	if !generatesPassword {
+		return fmt.Sprintf("omac serve: %s server will listen on 127.0.0.1:%d, reachable by any local process; "+
+			"to require a password, %s.", h.Name, port, advice)
 	}
 	return fmt.Sprintf("omac serve: %s server on 127.0.0.1:%d uses a random password that changes on every restart "+
 		"(%s prints it as \"server password …\"). To keep the same password, %s.",

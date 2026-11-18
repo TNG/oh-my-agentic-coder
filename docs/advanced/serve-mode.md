@@ -28,14 +28,24 @@ omac serve opencode --workdir ~/my-project
 ```
 
 omac automatically launches `opencode serve` on port 4096. Add that server in OpenCode Desktop.
-By default, OpenCode generates a new random password on every start. It prints the password in the `omac serve` output, right after the line saying where the server listens:
+Without a password from omac, the server's protection depends on the OpenCode version:
 
-```text
-server listening on http://127.0.0.1:4096
-server password <random password>
-```
+- **OpenCode 2.x** generates a new random password on every start. It prints the password in the `omac serve` output, right after the line saying where the server listens:
 
-For a stable password across restarts, set a password used only for this server:
+  ```text
+  server listening on http://127.0.0.1:4096
+  server password <random password>
+  ```
+
+- **OpenCode 1.x** starts without a password and prints `server is unsecured`. Any process on your machine can then use the server, for example to read your OpenCode config or start a session. omac warns about this when it starts the server.
+
+  ```text
+  omac serve: opencode server will listen on 127.0.0.1:4096, reachable by any local process; to require a password, set OMAC_SERVE_PASSWORD.
+  ```
+
+Checked with OpenCode 1.18.29, 1.19.6, 2.0.20 and 2.3.2.
+
+To protect the server with OpenCode 1.x, or to keep a stable password across restarts with 2.x, set a password used only for this server:
 
 ```bash
 # Read the password from a password manager rather than typing it inline,

@@ -180,9 +180,11 @@ func TestServePasswordSuppressesHint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox), serveAuthAdvice(h, plan, noSandbox))
-			if (hint == "") != (password != "") {
-				t.Errorf("noSandbox=%v password=%q: hint = %q", noSandbox, password, hint)
+			for _, generates := range []bool{false, true} {
+				hint := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, extra, noSandbox), serveAuthAdvice(h, plan, noSandbox), generates)
+				if (hint == "") != (password != "") {
+					t.Errorf("noSandbox=%v password=%q generatesPassword=%v: hint = %q", noSandbox, password, generates, hint)
+				}
 			}
 		}
 	}
@@ -228,8 +230,13 @@ func TestServePasswordHintAdvice(t *testing.T) {
 			t.Setenv("OPENCODE_SERVER_PASSWORD", "")
 			os.Unsetenv("OPENCODE_SERVER_PASSWORD")
 			advice := serveAuthAdvice(h, tc.plan, false)
-			if got := serverExposureWarning(h, inner, serveAuthGetenv(h, tc.plan, nil, false), advice); got != tc.want {
+			getenv := serveAuthGetenv(h, tc.plan, nil, false)
+			if got := serverExposureWarning(h, inner, getenv, advice, true); got != tc.want {
 				t.Errorf("hint = %q\nwant   %q", got, tc.want)
+			}
+			// The OpenCode 1.x warning carries the same advice.
+			if got := serverExposureWarning(h, inner, getenv, advice, false); !strings.HasSuffix(got, "to require a password, "+advice+".") {
+				t.Errorf("OpenCode 1.x hint = %q, want it to end with the advice %q", got, advice)
 			}
 			// Advice that simply says to set OMAC_SERVE_PASSWORD must hold.
 			_, err := prepareServeAuthEnv("serve-only", h, tc.plan, false)
@@ -243,7 +250,7 @@ func TestServePasswordHintAdvice(t *testing.T) {
 	// there must silence the hint, as it did before OMAC_SERVE_PASSWORD.
 	t.Setenv("OPENCODE_SERVER_PASSWORD", "from-shell")
 	plan := sandboxPlan{Name: "nono"}
-	if got := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, nil, false), serveAuthAdvice(h, plan, false)); got != "" {
+	if got := serverExposureWarning(h, inner, serveAuthGetenv(h, plan, nil, false), serveAuthAdvice(h, plan, false), false); got != "" {
 		t.Errorf("other backend with OPENCODE_SERVER_PASSWORD set: hint = %q", got)
 	}
 }

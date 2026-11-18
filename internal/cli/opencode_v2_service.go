@@ -654,6 +654,19 @@ func openCodeIsV2(inner []string) bool {
 	}
 }
 
+// openCodeGeneratesPassword reports whether OpenCode of this class protects
+// its server with a random password when OPENCODE_SERVER_PASSWORD is unset.
+// OpenCode 2.x does; 1.x starts without one ("server is unsecured"), and an
+// unknown version gets the same caution as 1.x.
+func openCodeGeneratesPassword(class openCodeVersionKind) bool {
+	switch class {
+	case openCodeV20x, openCodeV21Plus, openCodeV2MajorOnly:
+		return true
+	default:
+		return false
+	}
+}
+
 // classifyOpenCode determines which OpenCode the inner command launches, from a wrapper's pinned
 // package spec or a direct opencode binary's --version probe. openCodeOther avoids the probe cost
 // for non-opencode commands and unresolvable binaries.
