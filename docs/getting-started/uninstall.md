@@ -95,7 +95,7 @@ If `XDG_STATE_HOME` is set, also run:
 rm -rf "$XDG_STATE_HOME/omac"
 ```
 
-Lima keeps downloaded VM images in `~/Library/Caches/lima` (macOS) or `~/.cache/lima` (Linux). Delete that folder if you use Lima only for omac; you can then uninstall Lima and QEMU too.
+Lima keeps downloaded VM images in `~/Library/Caches/lima` (macOS) or `~/.cache/lima` (Linux; `$XDG_CACHE_HOME/lima` if that is set). Delete that folder if you use Lima only for omac; you can then uninstall Lima, and on Linux QEMU, too.
 
 If you set `XDG_CONFIG_HOME`, the registered skills, their configuration, approvals and preferences are in `$XDG_CONFIG_HOME/omac` instead. Delete that folder too. The sandbox profiles always stay in `~/.config/omac`.
 
