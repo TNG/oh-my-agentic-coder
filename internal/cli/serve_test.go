@@ -926,7 +926,7 @@ func TestServeDesktopVMStateIsProtected(t *testing.T) {
 				lifted.Policy = sandboxprofile.DefaultProfile()
 				// The baseline protects a named VM through its parent, vms/.
 				lifted.Policy.Filesystem.OverrideDeny = []string{root, filepath.Dir(root)}
-				if _, _, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), lifted); !errors.Is(err, errVMStateReachable) {
+				if _, _, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), lifted); !errors.Is(err, errVMStateUnprotected) {
 					t.Errorf("VM %s: override_deny on %s not refused: %v", name, root, err)
 				}
 			}

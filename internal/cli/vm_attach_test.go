@@ -573,7 +573,7 @@ func TestPrepareVMAttachRefusesReachableState(t *testing.T) {
 				{Native: true, PolicyRef: "broken"},
 			} {
 				_, markers, err := prepareVMAttach(context.Background(), devnullEnv(t), name, t.TempDir(), plan)
-				if !errors.Is(err, errVMStateReachable) || !strings.Contains(err.Error(), root) || markers != nil {
+				if !errors.Is(err, errVMStateUnprotected) || !strings.Contains(err.Error(), root) || markers != nil {
 					t.Errorf("profile %s: prepareVMAttach = (markers=%v, %v), want a refusal naming %s", plan.PolicyRef, markers != nil, err, root)
 				}
 				if code := vmAttachExitCode(err); code != ExitMisuse {

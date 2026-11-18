@@ -221,11 +221,12 @@ func (e errNoVMInstance) Error() string {
 
 func (e errNoVMInstance) Is(target error) bool { return target == vm.ErrNotCreated }
 
-// prepareVMAttach selects the VM for a session in dir, registers this process
-// as attached, then checks that the VM can take a session. Registering first
-// means `omac vm online`, which re-checks the markers after marking itself
-// online, either sees this session or makes the check below fail. Tests
-// replace it.
+// prepareVMAttach selects the VM for a session in dir, refuses it when the
+// sandbox profile of plan does not protect its state, registers this
+// process as attached, then checks that the VM can take a session.
+// Registering first means `omac vm online`, which re-checks the markers
+// after marking itself online, either sees this session or makes the check
+// below fail. Tests replace it.
 var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string, plan sandboxPlan) (vm.AttachInfo, *vmMarkers, error) {
 	sel, err := selectVM(explicit, dir)
 	if err != nil {
@@ -248,7 +249,7 @@ var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string, 
 	if err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
-	if err := vmStateReachable(plan, root); err != nil {
+	if err := requireVMStateProtected(plan, root); err != nil {
 		return vm.AttachInfo{}, nil, err
 	}
 	markers := &vmMarkers{layout: vm.NewLayout(root)}
@@ -269,7 +270,7 @@ var prepareVMAttach = func(ctx context.Context, env *Env, explicit, dir string, 
 // are missing prerequisites of the session.
 func vmAttachExitCode(err error) int {
 	switch {
-	case errors.Is(err, errVMStateReachable):
+	case errors.Is(err, errVMStateUnprotected):
 		return ExitMisuse
 	case errors.Is(err, vm.ErrLimaMissing),
 		errors.Is(err, vm.ErrNotCreated),
@@ -374,18 +375,18 @@ func vmProfileMisuse(plan sandboxPlan) string {
 	return ""
 }
 
-var errVMStateReachable = errors.New("the sandbox could reach the VM state")
+var errVMStateUnprotected = errors.New("the sandbox could reach the VM state")
 
-// vmStateReachable refuses a VM whose state directory root the sandbox
-// policy of plan does not protect, for example because its
+// requireVMStateProtected refuses a VM whose state directory root the
+// sandbox policy of plan does not protect, for example because its
 // filesystem.override_deny lifts it.
-func vmStateReachable(plan sandboxPlan, root string) error {
+func requireVMStateProtected(plan sandboxPlan, root string) error {
 	if plan.Policy != nil {
 		if _, ok := sandboxrun.NewProtectedPathSet(plan.Policy).IsProtected(root); ok {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w in %s; sandbox profile %q must keep it protected (check filesystem.override_deny)", errVMStateReachable, root, plan.PolicyRef)
+	return fmt.Errorf("%w in %s; sandbox profile %q must keep it protected (check filesystem.override_deny)", errVMStateUnprotected, root, plan.PolicyRef)
 }
 
 // launcherLearns reports whether a `{{self}} sandbox run` launcher command

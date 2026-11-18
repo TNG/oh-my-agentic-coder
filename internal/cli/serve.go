@@ -297,19 +297,6 @@ func runServe(args []string, env *Env) int {
 		return ExitMisuse
 	}
 
-	// --for-opencode-desktop: the OpenCode Desktop app runs opencode with
-	// XDG_STATE_HOME pointing at its own data dir (auth, credentials,
-	// config), and both omac's desktop provisioning AND the inner
-	// opencode must resolve state against that same store. When the
-	// Desktop launches omac it exports XDG_STATE_HOME for us; a manual
-	// `omac serve --for-opencode-desktop` from a shell does not, so the
-	// inner reads an empty state dir, providers resolve without
-	// credentials, and opencode's /config/providers 500s (which clients
-	// like `opencode attach` report as an opaque "Unexpected server
-	// error"). Set it in omac's OWN environment when unset so it both
-	// drives our provisioning and is inherited by the sandboxed child;
-	// an explicit value is respected. The dir is granted read+write in
-	// the sandbox in the --for-opencode-desktop block below.
 	restoreVMState, dir, err := setDesktopStateHome(forDesktop)
 	defer restoreVMState()
 	if err != nil {
@@ -770,7 +757,7 @@ func runServe(args []string, env *Env) int {
 
 // resolveDesktopStateDir decides the XDG_STATE_HOME to use under
 // --for-opencode-desktop, so omac and the inner opencode share the
-// Desktop app's auth/config/state (see the call site). It returns the
+// Desktop app's auth/config/state (see setDesktopStateHome). It returns the
 // directory and whether omac should set it in its own environment.
 //
 //   - not desktop mode               -> ("", false)
@@ -794,9 +781,14 @@ func resolveDesktopStateDir(forDesktop bool) (dir string, setEnv bool) {
 }
 
 // setDesktopStateHome sets XDG_STATE_HOME as resolveDesktopStateDir decides
-// and returns the directory it set, "" for none. It also pins the VM state
-// home (see vmStateHome) for the attach that runs later; restore undoes the
-// pin.
+// and returns the directory it set, "" for none. The Desktop app exports it
+// for the commands it starts; a manual `omac serve --for-opencode-desktop`
+// from a shell does not, and the inner opencode then finds no provider
+// credentials, which clients report as "Unexpected server error". omac's
+// own environment drives its provisioning and is inherited by the
+// sandboxed child; the --for-opencode-desktop grants give that directory
+// read+write. It also pins the VM state home (see vmStateHome) for the
+// attach that runs later; restore undoes the pin.
 func setDesktopStateHome(forDesktop bool) (restore func(), dir string, err error) {
 	restore = func() {}
 	if forDesktop {
