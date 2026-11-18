@@ -122,7 +122,10 @@ omac gives the agent access only to what it needs:
 
 Even when you grant broader access, certain paths are always blocked:
 `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, and `.env` / `.envrc` files
-anywhere in the project. You can block additional file patterns by adding glob entries to
+anywhere in the project. Blocked also means the agent cannot connect to a
+Unix socket inside such a path, for example Docker's
+`~/.docker/run/docker.sock` or the GnuPG agent in `~/.gnupg`, whatever the
+network mode. You can block additional file patterns by adding glob entries to
 `filesystem.deny` in `~/.config/omac/sandbox-profiles/default.json` — for
 example, `"*.key"` blocks all files ending in `.key` inside any directory the
 agent can access. See [Configuration](./configuration.md) for how to edit the

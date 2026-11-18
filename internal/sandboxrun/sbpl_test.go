@@ -109,21 +109,6 @@ func TestSBPLFilesystemRules(t *testing.T) {
 	}
 }
 
-func TestSBPLRuleOrderReadDenyWrite(t *testing.T) {
-	p := GenerateSBPL(baseGrants())
-	readPos := strings.Index(p, `(allow file-read* (subpath "/usr/lib"))`)
-	denyPos := strings.Index(p, `(deny file-read* (subpath "/home/u/.ssh"))`)
-	writePos := strings.Index(p, `(allow file-write* (subpath "/scratch"))`)
-	if readPos < 0 || denyPos < 0 || writePos < 0 {
-		t.Fatal("expected rules missing")
-	}
-	// Seatbelt is last-match-wins: protected denies must appear after both
-	// read and write allows so they cannot be overridden by a broad grant.
-	if !(readPos < writePos && writePos < denyPos) {
-		t.Errorf("rule order wrong: read=%d write=%d deny=%d (want read < write < deny)", readPos, writePos, denyPos)
-	}
-}
-
 func TestSBPLNetworkFiltered(t *testing.T) {
 	p := GenerateSBPL(baseGrants())
 	for _, want := range []string{
@@ -265,7 +250,7 @@ func TestSBPLNoUnixSocketDirByDefault(t *testing.T) {
 	g := baseGrants()
 	g.UnixSocketDirs = nil
 	p := GenerateSBPL(g)
-	if strings.Contains(p, "network-outbound (subpath") {
+	if strings.Contains(p, "(allow network-outbound (subpath") {
 		t.Error("no unix dir grant: must not emit any subpath network-outbound rule")
 	}
 }

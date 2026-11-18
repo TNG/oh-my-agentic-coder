@@ -242,6 +242,48 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 	}
 }
 
+// A protected folder must refuse a Unix-socket connect even where a rule
+// allows the connect: (allow network*) in open mode, or an allow_unix_dir
+// grant for that same folder.
+func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
+	sock := filepath.Join(sockDir, "daemon.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "protected-socket-reached")
+	}))
+
+	for _, mode := range []string{sandboxprofile.ModeOpen, sandboxprofile.ModeFiltered} {
+		t.Run(mode, func(t *testing.T) {
+			p := &sandboxprofile.Profile{
+				Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+				Filesystem: sandboxprofile.Filesystem{
+					AllowUnixDir: []string{sockDir},
+					Deny:         []string{sockDir},
+				},
+				Network: sandboxprofile.Network{Mode: mode},
+			}
+			g, err := ResolveGrants(p, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
+				"--unix-socket", sock, "http://x/")
+			if code == 0 || strings.Contains(out, "protected-socket-reached") {
+				t.Errorf("connect to a socket in a protected folder must fail: exit=%d out=%s", code, out)
+			}
+		})
+	}
+}
+
 func TestIntegrationKeychainDenied(t *testing.T) {
 	// The hard guarantee is layered: (a) the keychain DB files under
 	// ~/Library/Keychains are protected paths (unreadable even under a

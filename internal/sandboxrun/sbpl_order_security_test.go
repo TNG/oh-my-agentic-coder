@@ -1,50 +1,83 @@
 package sandboxrun
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// TestSecurityWriteAllowsDoNotOverrideProtectedDenies asserts that a broad
-// write grant covering a protected path does not let Seatbelt's
-// last-match-wins semantics override that path's protected-write deny.
-//
-// GenerateSBPL emits, in order: read allows, then protected-path denies,
-// then write allows. Seatbelt evaluates rules last-match-wins, so for a
-// path that is both write-granted (e.g. via a broad $HOME allow) and
-// protected (e.g. ~/.ssh), the write-allow — emitted after the deny —
-// wins, silently overriding the protection for writes. Reads stay denied,
-// since nothing write-related follows the read-allow section.
-func TestSecurityWriteAllowsDoNotOverrideProtectedDenies(t *testing.T) {
-	home := "/Users/u"
-	ssh := home + "/.ssh"
+// TestSecurityNoAllowAfterProtectedDenies guards the rule that a protected
+// path is closed to every operation that can name a path and that no later
+// rule can reopen it. Seatbelt is last-match-wins, so any allow emitted after
+// a deny may override it: (allow network*) in open mode once let a sandboxed
+// process connect to Unix sockets inside protected folders (docker.sock in
+// ~/.docker, the GnuPG agent in ~/.gnupg).
+func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
+	const (
+		home      = "/Users/u"
+		protected = home + "/.docker"
+	)
+	ops := []string{"file-read*", "file-write*", "file-ioctl", "file-map-executable", "process-exec*", "network-outbound"}
 
-	g := &Grants{
-		Workdir:        home,
-		AllowPaths:     []string{home},
-		ProtectedPaths: []string{ssh},
-		NetworkMode:    "blocked",
-	}
-	sbpl := GenerateSBPL(g)
+	for _, mode := range []string{sandboxprofile.ModeFiltered, sandboxprofile.ModeBlocked, sandboxprofile.ModeOpen} {
+		for _, enforcement := range []string{sandboxprofile.EnforceKernel, sandboxprofile.EnforceEnvOnly} {
+			t.Run(mode+"/"+enforcement, func(t *testing.T) {
+				g := &Grants{
+					Workdir:         home + "/work",
+					AllowPaths:      []string{home, protected + "/run/docker.sock"},
+					ProtectedPaths:  []string{protected},
+					NameDenyRoots:   []string{home},
+					NameDenyGlobs:   []string{".env"},
+					NetworkMode:     mode,
+					Enforcement:     enforcement,
+					ProxyPort:       54321,
+					ListenPorts:     []int{4097},
+					AllowTCPConnect: []int{22},
+					OpenPorts:       []int{0},
+					UnixSockets:     []string{protected + "/run/docker.sock"},
+					UnixSocketDirs:  []string{protected + "/run"},
+				}
+				lines := strings.Split(GenerateSBPL(g), "\n")
 
-	writeAllowIdx := strings.Index(sbpl, "(allow file-write* (subpath \""+home+"\"))")
-	denyWriteIdx := strings.Index(sbpl, "(deny file-write* (subpath \""+ssh+"\"))")
-	if writeAllowIdx < 0 || denyWriteIdx < 0 {
-		t.Fatalf("control: expected rules not found in generated profile:\n%s", sbpl)
+				lastAllow := -1
+				for i, l := range lines {
+					if strings.HasPrefix(l, "(allow ") {
+						lastAllow = i
+					}
+				}
+				var denies []string
+				for _, op := range ops {
+					denies = append(denies, fmt.Sprintf("(deny %s (subpath %q))", op, protected))
+				}
+				res, err := sbplNameRegex(home, g.NameDenyGlobs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, op := range ops {
+					denies = append(denies, fmt.Sprintf("(deny %s (regex #\"%s\"))", op, res[0]))
+				}
+				for _, deny := range denies {
+					i := indexOfLine(lines, deny)
+					if i < 0 {
+						t.Errorf("profile lacks %s", deny)
+						continue
+					}
+					if i < lastAllow {
+						t.Errorf("%s comes before %s; Seatbelt is last-match-wins, so that allow can reopen the denied path", deny, lines[lastAllow])
+					}
+				}
+			})
+		}
 	}
+}
 
-	// Control: the read side is correctly ordered (deny after nothing
-	// write-related follows it) — reads of a protected path under a broad
-	// read grant stay denied. This isolates the assertion to the write
-	// side specifically.
-	readAllowIdx := strings.Index(sbpl, "(allow file-read* (subpath \""+home+"\"))")
-	denyReadIdx := strings.Index(sbpl, "(deny file-read* (subpath \""+ssh+"\"))")
-	if readAllowIdx < 0 || denyReadIdx < 0 || readAllowIdx > denyReadIdx {
-		t.Fatalf("control: the read-side ordering is not as expected: the fixture is broken, not the security property")
+func indexOfLine(lines []string, want string) int {
+	for i, l := range lines {
+		if l == want {
+			return i
+		}
 	}
-
-	if denyWriteIdx < writeAllowIdx {
-		t.Errorf("(deny file-write* (subpath %q)) appears before (allow file-write* (subpath %q)) in the generated profile: "+
-			"Seatbelt is last-match-wins, so the later write-allow overrides the protected-path deny and %s becomes writable", ssh, home, ssh)
-	}
+	return -1
 }
