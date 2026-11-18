@@ -40,7 +40,15 @@ If you skipped this step, or it reported an error or 0 secrets, you can remove t
 - **macOS:** open Keychain Access and search for `omac/`.
 - **Linux:** open Seahorse ("Passwords and Keys") and search for `omac/`.
 
-### 2. Remove the package
+### 2. Stop the omac VM
+
+Skip this step if you never ran `omac vm up`. The VM keeps running in the background until you stop it, and deleting its folder later does not stop it:
+
+```bash
+omac vm down
+```
+
+### 3. Remove the package
 
 Use the command that matches how you installed omac:
 
@@ -54,7 +62,7 @@ Use the command that matches how you installed omac:
 
 If you are unsure, `which omac` shows where the program is.
 
-### 3. Delete the files omac wrote
+### 4. Delete the files omac wrote
 
 Go through the sections below and delete what applies to you:
 
@@ -75,6 +83,7 @@ omac's own folders:
 | `~/.config/omac` | Your settings: globally registered skills, their configuration and approvals, sandbox profiles, preferences | on first use |
 | `~/.cache/omac` | Packages (npm, pip, cargo, ...) that tools downloaded inside the sandbox, kept apart from your normal caches. See [Tool cache](../advanced/cache.md). | on the first session |
 | `~/.local/state/omac` | The sandbox log, `sandbox.log` (on Linux also the audit log and session files, see [Linux](#linux)) | when omac first logs something |
+| `~/.local/state/omac/vm` | The omac VM: its disk, its SSH keys and its state file. Stop the VM first, see [step 2](#2-stop-the-omac-vm). If `XDG_STATE_HOME` is set, it is in `$XDG_STATE_HOME/omac/vm` instead. | on `omac vm up` |
 
 ```bash
 rm -rf ~/.config/omac ~/.cache/omac ~/.local/state/omac
