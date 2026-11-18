@@ -1,10 +1,11 @@
-package sandboxprofile
+package sandboxprofile_test
 
 import (
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
@@ -22,11 +23,11 @@ func TestSecurityVMStateRootIsProtected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for name, b := range map[string]Baseline{
-				"linux":  linuxBaseline(),
-				"darwin": darwinBaseline(),
+			for name, b := range map[string]sandboxprofile.Baseline{
+				"linux":  sandboxprofile.LinuxBaselineForTest(),
+				"darwin": sandboxprofile.DarwinBaselineForTest(),
 			} {
-				if !coveredBy(root, EffectiveProtectedPaths(b, nil)) {
+				if !coveredBy(root, sandboxprofile.EffectiveProtectedPaths(b, nil)) {
 					t.Errorf("%s baseline does not protect the VM state root %s: the sandbox could read admin_key", name, root)
 				}
 			}
