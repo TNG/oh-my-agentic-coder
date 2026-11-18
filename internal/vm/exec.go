@@ -409,7 +409,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	target := o.Conn.Target
 	target.TTY = false
 	if err := o.SSH(ctx, target, nil, io.Discard, o.Stderr, registerCmd(slug, root)); err != nil {
-		return failure(ctx, sshError("register worktree", err))
+		return failure(ctx, sshError("register worktree", err, o.Conn.FromSandbox))
 	}
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
 	excludes := strings.NewReader(ExcludeList(ignored))
@@ -420,7 +420,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	})
 	if rsyncErr != nil {
 		if exitCode(rsyncErr) == 255 || exitCode(rsyncErr) == 12 { // ssh failed, or the stream broke
-			rsyncErr = fmt.Errorf("%w; %s", rsyncErr, connectionHint)
+			rsyncErr = fmt.Errorf("%w; %s", rsyncErr, connectionHint(o.Conn.FromSandbox))
 		}
 		return failure(ctx, errors.Join(fmt.Errorf("omac vm exec: rsync to the VM failed: %w", rsyncErr), err))
 	}
@@ -437,7 +437,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return code, nil
 	}
 	if err != nil {
-		return 1, sshError("run command", err)
+		return 1, sshError("run command", err, o.Conn.FromSandbox)
 	}
 	return 0, nil
 }
@@ -573,7 +573,14 @@ func hasAncestor(path string, dir os.FileInfo) bool {
 	}
 }
 
-const connectionHint = "connection lost or remote command killed (is the VM running? `omac vm status`)"
+// connectionHint explains ssh's exit status 255. `omac vm status` fails in
+// a session, because the sandbox blocks the VM's state directory.
+func connectionHint(fromSandbox bool) string {
+	if fromSandbox {
+		return "connection lost or remote command killed (is the VM running? run `omac vm status` on the host)"
+	}
+	return "connection lost or remote command killed (is the VM running? `omac vm status`)"
+}
 
 // failure reports err, or an interruption when the context was cancelled.
 func failure(ctx context.Context, err error) (int, error) {
@@ -603,9 +610,9 @@ func registerCmd(slug, workdir string) string {
 
 // sshError maps ssh's exit status 255 to a hint. ssh exits 255 when the
 // connection fails and also when the remote command dies from a signal.
-func sshError(step string, err error) error {
+func sshError(step string, err error, fromSandbox bool) error {
 	if exitCode(err) == 255 {
-		return errors.New("omac vm exec: " + connectionHint)
+		return errors.New("omac vm exec: " + connectionHint(fromSandbox))
 	}
 	return fmt.Errorf("omac vm exec: %s: %w", step, err)
 }

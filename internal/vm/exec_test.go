@@ -1417,6 +1417,24 @@ func TestExecSSHConnectionFailure(t *testing.T) {
 	}
 }
 
+// In a session `omac vm status` cannot read the VM's state, so the hint
+// must send the reader to the host.
+func TestExecConnectionHintFromSandboxNamesHost(t *testing.T) {
+	cases := map[string]*execFakes{
+		"register": {regErr: exitErr(t, 255)},
+		"rsync":    {rsyncErr: exitErr(t, 255)},
+		"command":  {cmdErr: exitErr(t, 255)},
+	}
+	for name, f := range cases {
+		o := f.opts(testDir(t, "repo"), io.Discard)
+		o.Conn.FromSandbox = true
+		_, err := Exec(context.Background(), o)
+		if err == nil || !strings.Contains(err.Error(), "run `omac vm status` on the host") {
+			t.Errorf("%s: err = %v, want the hint to name the host", name, err)
+		}
+	}
+}
+
 func TestExecRsyncConnectionFailure(t *testing.T) {
 	for _, code := range []int{255, 12} {
 		f := &execFakes{rsyncErr: exitErr(t, code)}
