@@ -661,17 +661,22 @@ func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
 	if err := os.Symlink(home, link); err != nil {
 		t.Fatal(err)
 	}
+	keysLink := filepath.Join(base, "keys")
+	if err := os.Symlink(filepath.Join(home, ".ssh", "keys"), keysLink); err != nil {
+		t.Fatal(err)
+	}
 	type copyRoot struct {
 		workdir string
 		repo    bool
 	}
 	cases := map[string]copyRoot{
-		"home":                 {home, false},
-		"home as a repository": {home, true},
-		"parent of home":       {base, false},
-		"protected directory":  {filepath.Join(home, ".ssh"), false},
-		"inside protected":     {filepath.Join(home, ".ssh", "keys"), false},
-		"symlink to home":      {link, false},
+		"home":                   {home, false},
+		"home as a repository":   {home, true},
+		"parent of home":         {base, false},
+		"protected directory":    {filepath.Join(home, ".ssh"), false},
+		"inside protected":       {filepath.Join(home, ".ssh", "keys"), false},
+		"symlink to home":        {link, false},
+		"symlink into protected": {keysLink, false},
 	}
 	if upper := strings.ToUpper(home); upper != home {
 		if a, err1 := os.Stat(upper); err1 == nil {
@@ -741,6 +746,23 @@ func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
 	f := &execFakes{notRepo: exitErr(t, 128)}
 	if _, err := Exec(context.Background(), f.opts(home, io.Discard)); err == nil || f.rsync != nil {
 		t.Fatalf("Exec from a home whose ~/.ssh cannot be read = %v, rsync %q; want a refusal", err, f.rsync)
+	}
+}
+
+func TestExecRefusesUnreadableCopyRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permissions")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "proj")
+	writeFiles(t, root, map[string]string{"a.go": "package a"})
+	if err := os.Chmod(parent, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	f := &execFakes{notRepo: exitErr(t, 128)}
+	if _, err := Exec(context.Background(), f.opts(root, io.Discard)); err == nil || f.rsync != nil {
+		t.Fatalf("Exec from a root it cannot stat = %v, rsync %q; want a refusal", err, f.rsync)
 	}
 }
 
