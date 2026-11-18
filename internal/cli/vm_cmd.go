@@ -182,6 +182,7 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
+	printVMExecTokenNotice(env.Stderr, envs)
 	var logf func(string, ...any)
 	if a.verbose {
 		logf = func(format string, v ...any) { fmt.Fprintf(env.Stderr, format+"\n", v...) }
@@ -218,8 +219,7 @@ func runVMExec(args []string, env *Env) int {
 // online, which also means no session is attached. A sandbox is refused
 // before any lookup, since it filters most variables and "not set" would
 // send the agent looking for the secret; on the host a bad --env is
-// reported before the user brings the VM online for nothing. Once --env is
-// accepted, the user is reminded that the VM can read these variables.
+// reported before the user brings the VM online for nothing.
 func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int, bool) {
 	if len(specs) == 0 {
 		return nil, ExitOK, true
@@ -240,13 +240,15 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	if st == nil || st.Mode != vm.ModeOnline {
 		return nil, vmExecMisuse(env, reason+"; run `omac vm online` first"), false
 	}
-	printVMExecTokenNotice(env.Stderr, envs)
 	return envs, ExitOK, true
 }
 
 // printVMExecTokenNotice names the variables in envs (NAME=VALUE), never
-// their values.
+// their values. It prints nothing when envs is empty.
 func printVMExecTokenNotice(w io.Writer, envs []string) {
+	if len(envs) == 0 {
+		return
+	}
 	var names []string
 	for _, kv := range envs {
 		name, _, _ := strings.Cut(kv, "=")

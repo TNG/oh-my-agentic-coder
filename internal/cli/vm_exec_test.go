@@ -105,19 +105,19 @@ func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 				"files that session left in the VM run with this token.\n",
 		},
 		"two names": {
-			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=secret-b"},
+			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=VALUE-MUST-NOT-PRINT-b"},
 			"omac vm exec: the build in the VM can read MY_REPO_TOKEN and B.\n" + tail +
 				"files that session left in the VM run with these tokens.\n",
 		},
 		"three names, one repeated": {
-			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=secret-b", "--env", "C=secret-c", "--env", "B=secret-b2"},
+			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=VALUE-MUST-NOT-PRINT-b", "--env", "C=VALUE-MUST-NOT-PRINT-c", "--env", "B=VALUE-MUST-NOT-PRINT-b2"},
 			"omac vm exec: the build in the VM can read MY_REPO_TOKEN, B and C.\n" + tail +
 				"files that session left in the VM run with these tokens.\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := useFakeVMExec(t, nil, 0, nil)
-			t.Setenv("MY_REPO_TOKEN", "secret-host")
+			t.Setenv("MY_REPO_TOKEN", "VALUE-MUST-NOT-PRINT-host")
 			env, _, stderr := vmTestEnv(t)
 			var stderrAtRun string
 			runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
@@ -132,7 +132,7 @@ func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 			if stderrAtRun != tc.want {
 				t.Errorf("stderr before the command ran:\n%s\nwant:\n%s", stderrAtRun, tc.want)
 			}
-			if strings.Contains(stderr(), "secret") {
+			if strings.Contains(stderr(), "VALUE-MUST-NOT-PRINT") {
 				t.Errorf("stderr shows a value:\n%s", stderr())
 			}
 		})
