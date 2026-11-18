@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -167,11 +168,16 @@ func TestVMExecEnvOnTerminalWaitsForEnter(t *testing.T) {
 	calls := useFakeVMExec(t, nil, 0, nil)
 	t.Setenv("MY_REPO_TOKEN", "x")
 	env, _, stderr := vmTestEnv(t)
-	useFakeTerminalStdin(t, env, "\n")
-	var stderrAtRun string
+	useFakeTerminalStdin(t, env, "\ninput for the command")
+	var stderrAtRun, stdinAtRun string
 	runVMExecFn = func(_ context.Context, o vm.ExecOpts) (int, error) {
 		*calls = append(*calls, o)
 		stderrAtRun = stderr()
+		b, err := io.ReadAll(o.Stdin)
+		if err != nil {
+			t.Error(err)
+		}
+		stdinAtRun = string(b)
 		return 0, nil
 	}
 	if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != ExitOK {
@@ -182,6 +188,34 @@ func TestVMExecEnvOnTerminalWaitsForEnter(t *testing.T) {
 	}
 	if !strings.HasPrefix(stderrAtRun, tokenNoticeStart) || !strings.HasSuffix(stderrAtRun, "with this token.\n"+tokenConfirmPrompt) {
 		t.Errorf("stderr before the command ran:\n%s\nwant the notice, then %q", stderrAtRun, tokenConfirmPrompt)
+	}
+	if stdinAtRun != "input for the command" {
+		t.Errorf("command's stdin = %q, want the input after the Enter", stdinAtRun)
+	}
+}
+
+// The prompt can wait for hours; a session may attach to the VM meanwhile.
+func TestVMExecEnvRefusedWhenVMWentOfflineDuringPrompt(t *testing.T) {
+	calls := useFakeVMExec(t, nil, 0, nil)
+	t.Setenv("MY_REPO_TOKEN", "x")
+	modes := []string{vm.ModeOnline, vm.ModeOffline}
+	loadVMState = func() (*vm.State, error) {
+		st := &vm.State{Mode: modes[0]}
+		if len(modes) > 1 {
+			modes = modes[1:]
+		}
+		return st, nil
+	}
+	env, _, stderr := vmTestEnv(t)
+	useFakeTerminalStdin(t, env, "\n")
+	if code := runVM([]string{"exec", "--env", "MY_REPO_TOKEN", "--", "true"}, env); code != ExitMisuse {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitMisuse, stderr())
+	}
+	if len(*calls) != 0 {
+		t.Errorf("the command ran in a VM that is no longer online")
+	}
+	if !strings.Contains(stderr(), "run `omac vm online` first") {
+		t.Errorf("stderr lacks the reason:\n%s", stderr())
 	}
 }
 

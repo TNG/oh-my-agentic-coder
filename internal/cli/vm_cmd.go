@@ -191,10 +191,14 @@ func runVMExec(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "Press Enter to continue, Ctrl-C to stop.")
 		if !waitForEnter(ctx, env.Stdin) {
 			if ctx.Err() != nil {
-				fmt.Fprintln(env.Stderr) // end the line the terminal's ^C echo started
+				fmt.Fprintln(env.Stderr) // finish the line a ^C echo may have left open
 			}
 			fmt.Fprintln(env.Stderr, vm.ErrInterrupted)
 			return 130
+		}
+		// The wait can be long; a session may have attached meanwhile.
+		if code, ok := requireVMOnline(env); !ok {
+			return code
 		}
 	}
 	var logf func(string, ...any)
@@ -236,23 +240,31 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	if len(specs) == 0 {
 		return nil, ExitOK, true
 	}
-	const reason = "--env is for priming from the host while the VM is online"
 	if conn.FromSandbox {
-		return nil, vmExecMisuse(env, reason), false
+		return nil, vmExecMisuse(env, vmExecEnvReason), false
 	}
 	envs, err := vm.ResolveEnv(specs, os.LookupEnv)
 	if err != nil {
 		return nil, vmExecMisuseErr(env, err), false
 	}
+	if code, ok := requireVMOnline(env); !ok {
+		return nil, code, false
+	}
+	return envs, ExitOK, true
+}
+
+const vmExecEnvReason = "--env is for priming from the host while the VM is online"
+
+func requireVMOnline(env *Env) (int, bool) {
 	st, err := loadVMState()
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
-		return nil, ExitIOError, false
+		return ExitIOError, false
 	}
 	if st == nil || st.Mode != vm.ModeOnline {
-		return nil, vmExecMisuse(env, reason+"; run `omac vm online` first"), false
+		return vmExecMisuse(env, vmExecEnvReason+"; run `omac vm online` first"), false
 	}
-	return envs, ExitOK, true
+	return ExitOK, true
 }
 
 // envNames returns the distinct names in envs (NAME=VALUE), in order.
