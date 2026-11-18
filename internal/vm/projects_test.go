@@ -223,3 +223,37 @@ func TestMappedInstanceIgnoresGitMarkersBelowAnEntry(t *testing.T) {
 	mkdir(t, filepath.Join(repo, "inner", ".git"))
 	wantEntry(t, filepath.Join(repo, "inner"), "a")
 }
+
+// caseInsensitiveDir returns a directory named Acme, or skips when the file
+// system tells acme and Acme apart. macOS volumes are case-insensitive by
+// default, so ~/work/acme and ~/work/Acme are one directory there.
+func caseInsensitiveDir(t *testing.T) (mixed, lower string) {
+	t.Helper()
+	parent := canonicalPath(t.TempDir())
+	mixed = mkdir(t, filepath.Join(parent, "Acme"))
+	lower = filepath.Join(parent, "acme")
+	if _, err := os.Stat(lower); err != nil {
+		t.Skip("the file system is case-sensitive")
+	}
+	return mixed, lower
+}
+
+// A key and the session directory spelled in different case name one
+// directory on macOS; both must select the same VM.
+func TestMappedInstanceIgnoresCaseOnCaseInsensitiveFS(t *testing.T) {
+	mixed, lower := caseInsensitiveDir(t)
+	writeProjectMap(t, lower+": acme\n")
+	wantEntry(t, mixed, "acme")
+	wantEntry(t, mkdir(t, filepath.Join(mixed, "src")), "acme")
+
+	writeProjectMap(t, mixed+": acme\n")
+	wantEntry(t, lower, "acme")
+	wantEntry(t, filepath.Join(lower, "src"), "acme")
+}
+
+func TestLoadProjectMapRejectsKeysDifferingInCase(t *testing.T) {
+	mixed, lower := caseInsensitiveDir(t)
+	if _, err := LoadProjectMap(writeProjectMap(t, mixed+": a\n"+lower+": b\n")); err == nil {
+		t.Fatal("LoadProjectMap accepted two spellings of one directory")
+	}
+}

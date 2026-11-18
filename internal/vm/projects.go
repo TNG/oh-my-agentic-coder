@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -62,14 +63,45 @@ func LoadProjectMap(path string) (map[string]string, error) {
 	return out, nil
 }
 
-// canonicalPath cleans p and resolves symlinks, so /tmp and /private/tmp
-// compare equal; a path that does not exist keeps its cleaned form.
+// canonicalPath cleans p, resolves symlinks and takes each name's spelling
+// from its directory, so /tmp and /private/tmp compare equal, and so do
+// ~/work/acme and ~/work/Acme on a case-insensitive file system such as
+// macOS's default. A path that does not exist keeps its cleaned form.
 func canonicalPath(p string) string {
 	p = filepath.Clean(p)
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		return resolved
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
 	}
-	return p
+	return onDiskSpelling(resolved)
+}
+
+// onDiskSpelling returns the existing absolute path p with each name as its
+// parent directory lists it. A name the listing lacks exactly but holds in
+// other case is the same entry, because p exists.
+func onDiskSpelling(p string) string {
+	parent, name := filepath.Dir(p), filepath.Base(p)
+	if parent == p {
+		return p
+	}
+	parent = onDiskSpelling(parent)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return filepath.Join(parent, name)
+	}
+	match := ""
+	for _, e := range entries {
+		if e.Name() == name {
+			return filepath.Join(parent, name)
+		}
+		if strings.EqualFold(e.Name(), name) {
+			match = e.Name()
+		}
+	}
+	if match == "" {
+		match = name
+	}
+	return filepath.Join(parent, match)
 }
 
 // lookupPaths are the paths whose entries apply to dir, most specific

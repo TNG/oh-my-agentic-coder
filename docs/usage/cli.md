@@ -282,9 +282,9 @@ An entry applies to its directory and everything below it; when several entries 
 - A repository's entry also covers its subdirectories, its submodules and the git worktrees inside it, such as under `.worktrees/`.
 - A git worktree outside the repository's directory uses the repository's entry, unless an entry covers the worktree's own path.
 - Worktrees of a bare repository (one without a working directory of its own) need an entry that covers their own path.
-- Keys are compared case by case, also on macOS, where the file system ignores case: a session started in `~/work/Acme` does not match the key `~/work/acme` and lands in the default VM. Write each key with the spelling you use with `cd`, which `echo $PWD` shows: omac compares the directory as the shell reports it, not its spelling on disk.
+- omac compares keys and directories by their spelling on disk. On macOS, where the file system ignores case by default, the key `/Users/alex/work/acme` also covers a session started in `/Users/alex/work/Acme`.
 
-Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
+Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it, or on macOS two spellings that differ only in case) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 
 Projects in the same VM can read each other's copies, see [The omac VM](../security.md#the-omac-vm). Put projects that must not see each other into different VMs.
 
