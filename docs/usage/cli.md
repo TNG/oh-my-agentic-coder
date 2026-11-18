@@ -249,7 +249,12 @@ omac vm exec -- cat backend/build/reports/tests/test/index.html   # results stay
 
 The command runs in the same place inside the copy as your current directory is in the worktree. `--cwd <dir>` runs it in `<dir>`, relative to the current directory. So `omac vm exec --cwd backend -- …` from the repository root and `omac vm exec -- …` from `backend/` both run in `backend`. Outside a git repository, omac copies the current directory.
 
-`--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables. `--env` is meant for priming, see below. `--verbose` prints which directory omac copies and where it goes in the VM.
+omac refuses to copy in two cases:
+
+- The directory it would copy overlaps a path the sandbox protects. For example, outside a git repository in your home directory, the copy would include `~/.ssh`. Run it from a project that is its own git repository.
+- The current directory is below the top level of a git repository, but git tracks no file in it, for example a new directory you have not committed yet. Run it from the top level with `--cwd <dir>` instead.
+
+`--env NAME` passes the variable `NAME` with the value from your shell. The variable must be set there, possibly to an empty value, otherwise the command fails before anything runs. `--env NAME=VALUE` sets the value explicitly. Repeat `--env` for more variables. `--env` is meant for priming, see below. `--verbose` prints which directory omac copies and where it goes in the VM.
 
 omac returns the command's exit code as is, with two exceptions. ssh exits with 255 when the connection is lost or the command is killed by a signal, and omac reports that as 5. With a terminal, Ctrl-C goes to the command, so a command that dies from it also ends with 5; without a terminal, Ctrl-C stops omac, which exits with 130. The command's code can coincide with omac's own exit codes 2 (wrong usage), 4 (VM not created) and 5 (copy or connection failed). For example, a command that ends with `exit 5` looks like a failed copy, so check the error message on stderr.
 
