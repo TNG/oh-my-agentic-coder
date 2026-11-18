@@ -69,7 +69,9 @@ form `N` or `A-B`, where both endpoints are inclusive decimal port numbers in
 allowed, and whitespace around it is ignored. String entries SHALL be expanded
 to individual ports when the profile is loaded, so the in-memory value holds
 numbers only and the profile file on disk is left unchanged. The expansion of
-one field SHALL NOT exceed 1000 ports. An over-cap expansion, a reversed range,
+one field SHALL NOT exceed 1000 ports. The cap counts entries as written,
+before duplicate removal, whatever their form: a plain integer and a range both
+contribute every port they name. An over-cap expansion, a reversed range,
 an out-of-bounds endpoint, a fractional number, and an entry that is neither an
 integer nor a valid string SHALL be rejected at load time, before any process
 is launched, with an error naming the offending value. Both fields SHALL keep
@@ -105,7 +107,7 @@ accept range strings.
 #### Scenario: Integer-only profile is unchanged
 
 - **WHEN** both fields contain only numbers, as in every profile written before
-  this change
+  this change, and neither field exceeds the 1000-port cap
 - **THEN** loading and validation behave exactly as before
 
 #### Scenario: Reversed range is rejected
@@ -124,7 +126,8 @@ accept range strings.
 
 - **WHEN** the expansion of one field would exceed 1000 ports, for example
   `"listen_port": ["1-65535"]` or several entries summing to more than 1000
-- **THEN** loading fails with an error naming the field and the 1000-port cap
+- **THEN** loading fails with an error naming the field, or the single over-large
+  entry, and the 1000-port cap
 - **AND** no narrowed grant is applied and no child is launched
 
 #### Scenario: Non-integer entry is rejected

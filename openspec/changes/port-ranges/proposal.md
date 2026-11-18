@@ -71,7 +71,7 @@ before this change is archived.
 ## Impact
 
 - **`internal/sandboxprofile/`**: a new `PortList` type defined over `[]int`
-  that decodes the mixed list, plus `ParsePortEntry` for the `"N"`/`"A-B"`
+  that decodes the mixed list, plus `parsePortEntry` for the `"N"`/`"A-B"`
   syntax; the two `Network` fields change type; the two flag cases parse ranges.
   Because `PortList` is a `[]int` type, helpers such as `dedupeInts` and
   `appendIntCopy` keep working unchanged.
