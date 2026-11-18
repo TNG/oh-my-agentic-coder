@@ -268,19 +268,20 @@ func TestIgnoredPathsKeepsBackslashInSubmodulePath(t *testing.T) {
 // calls must not run the command it plants.
 func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
-	plant := func(t *testing.T, repo string) {
+	plant := func(t *testing.T, repo string) string {
 		git(t, repo, "config", "core.fsmonitor", "touch "+ShellQuote(marker)+"; false")
+		return repo
 	}
 	lib := newRepo(t, map[string]string{"lib.go": "package lib"})
 	git(t, lib, "add", ".")
 	git(t, lib, "commit", "-qm", "init")
-	for name, setup := range map[string]func(t *testing.T, top string){
-		"top level": func(t *testing.T, top string) { plant(t, top) },
-		"submodule": func(t *testing.T, top string) {
+	for name, setup := range map[string]func(t *testing.T, top string) (planted string){
+		"top level": func(t *testing.T, top string) string { return plant(t, top) },
+		"submodule": func(t *testing.T, top string) string {
 			git(t, top, "submodule", "add", "-q", lib, "libs/lib")
-			plant(t, filepath.Join(top, "libs/lib"))
+			return plant(t, filepath.Join(top, "libs/lib"))
 		},
-		"clone the agent staged as a submodule": func(t *testing.T, top string) {
+		"clone the agent staged as a submodule": func(t *testing.T, top string) string {
 			clone := filepath.Join(top, "vendor/x")
 			writeFiles(t, clone, map[string]string{"v.c": "x"})
 			git(t, clone, "init", "-q")
@@ -289,13 +290,13 @@ func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 			git(t, top, "add", "vendor/x")
 			git(t, top, "config", "-f", ".gitmodules", "submodule.x.path", "vendor/x")
 			git(t, top, "config", "-f", ".gitmodules", "submodule.x.url", "./vendor/x")
-			plant(t, clone)
+			return plant(t, clone)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_ = os.Remove(marker)
 			top := newRepo(t, map[string]string{"src/a.go": "package a"})
-			setup(t, top)
+			requirePlantFires(t, marker, setup(t, top), "status")
 			if _, _, _, err := RepoRoot(context.Background(), ExecRunner, top); err != nil {
 				t.Fatal(err)
 			}
@@ -320,6 +321,7 @@ func TestGitIgnoresPlantedLazyFetch(t *testing.T) {
 		git(t, repo, "config", "remote.origin.url", "ssh://example.invalid/x")
 		git(t, repo, "config", "remote.origin.promisor", "true")
 		git(t, repo, "config", "core.sshCommand", "touch "+ShellQuote(marker)+"; false")
+		plantProtocols(t, repo)
 		var blob, object bytes.Buffer
 		if err := ExecRunner(context.Background(), "git", []string{"-C", repo, "rev-parse", ":" + file}, nil, &blob, io.Discard); err != nil {
 			t.Fatal(err)
@@ -338,7 +340,7 @@ func TestGitIgnoresPlantedLazyFetch(t *testing.T) {
 	lib := newRepo(t, map[string]string{"lib.go": "package lib", ".gitignore": "out/\n"})
 	git(t, lib, "add", ".")
 	git(t, lib, "commit", "-qm", "init")
-	for name, setup := range map[string]func(t *testing.T, top string){
+	for file, setup := range map[string]func(t *testing.T, top string){
 		".gitignore": func(t *testing.T, top string) { plant(t, top, ".gitignore") },
 		".gitmodules": func(t *testing.T, top string) {
 			git(t, top, "submodule", "add", "-q", lib, "libs/lib")
@@ -346,17 +348,61 @@ func TestGitIgnoresPlantedLazyFetch(t *testing.T) {
 			plant(t, top, ".gitmodules")
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(file, func(t *testing.T) {
 			_ = os.Remove(marker)
 			top := newRepo(t, map[string]string{"src/a.go": "package a", ".gitignore": "build/\n"})
 			git(t, top, "add", ".")
 			git(t, top, "commit", "-qm", "init")
 			setup(t, top)
+			requirePlantFires(t, marker, top, "cat-file", "-p", ":"+file)
 			_, _ = IgnoredPaths(context.Background(), ExecRunner, top)
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatal("git ran the planted core.sshCommand on the host")
 			}
 		})
+	}
+}
+
+// A direct transport call is not a lazy fetch, so GIT_NO_LAZY_FETCH cannot
+// stop it: only the protocol gate does, also against a planted
+// protocol.<name>.allow=always.
+func TestRunGitRefusesPlantedTransports(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	repo := newRepo(t, map[string]string{"a.go": "package a"})
+	git(t, repo, "config", "core.sshCommand", "touch "+ShellQuote(marker)+"; false")
+	plantProtocols(t, repo)
+	for _, url := range []string{"ssh://example.invalid/x", "file://" + repo, "ext::touch " + marker} {
+		var stderr bytes.Buffer
+		err := runGit(context.Background(), ExecRunner, repo, io.Discard, &stderr, "ls-remote", url)
+		if err == nil || !strings.Contains(stderr.String(), "not allowed") {
+			t.Errorf("git ls-remote %s = %v, %q; want the transport refused", url, err, stderr.String())
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("git ls-remote %s ran the planted command on the host", url)
+		}
+	}
+}
+
+// plantProtocols allows every transport that can run a command, as the
+// sandbox can in the worktree's git config.
+func plantProtocols(t *testing.T, repo string) {
+	t.Helper()
+	for _, p := range []string{"ssh", "file", "ext"} {
+		git(t, repo, "config", "protocol."+p+".allow", "always")
+	}
+}
+
+// requirePlantFires runs plain git, without runGit's hardening, and skips
+// the test when the planted command does not run: then the hardened call
+// that follows would pass without proving anything.
+func requirePlantFires(t *testing.T, marker, dir string, args ...string) {
+	t.Helper()
+	_ = ExecRunner(context.Background(), "git", append([]string{"-C", dir}, args...), nil, io.Discard, io.Discard)
+	if _, err := os.Stat(marker); err != nil {
+		t.Skipf("plain git %q did not run the planted command, so this git cannot show the hardening", args)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1022,7 +1068,8 @@ func TestExecHardensEveryGitCall(t *testing.T) {
 			calls++
 			env := commandEnv(ctx)
 			if !slices.Contains(args, "core.fsmonitor=false") || !slices.Contains(args, "protocol.allow=never") ||
-				!slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") || !slices.Contains(env, "GIT_NO_LAZY_FETCH=1") {
+				!slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") || !slices.Contains(env, "GIT_NO_LAZY_FETCH=1") ||
+				!slices.Contains(env, "GIT_ALLOW_PROTOCOL=") {
 				t.Errorf("git %q with env %q lacks the hardening of runGit", args, env)
 			}
 			if slices.Contains(args, "submodule") && args[1] == top {
