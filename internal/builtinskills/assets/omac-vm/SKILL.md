@@ -56,7 +56,9 @@ omac vm exec --cwd <module> -- ./gradlew test --offline > "${TMPDIR:-/tmp}/vm-te
 For a Gradle project in `backend/`, `<module>` is `backend`.
 
 - Each `omac vm exec` first copies the worktree into the VM, so your edits are
-  there. `--cwd` is relative to your current directory.
+  there. `--cwd` is relative to your current directory. In a directory in
+  which git tracks no file yet, such as a new module, omac refuses to copy;
+  run it from the top level with `--cwd <dir>`.
 - The copy has no `.git`, no `.env` files and nothing git ignores, so build
   steps that call git fail in the VM. Files you delete are not deleted in the
   VM; remove a stale one with `omac vm exec -- rm -rf <path>`.
