@@ -167,6 +167,9 @@ func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
 			if strings.Contains(stderr(), "not set") {
 				t.Errorf("stderr asks for the variable although --env is refused:\n%s", stderr())
 			}
+			if strings.Contains(stderr(), "can read") {
+				t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
+			}
 			if len(*calls) != 0 {
 				t.Errorf("runVMExecFn called despite the refusal")
 			}
@@ -272,6 +275,9 @@ func TestVMExecEnvMisuse(t *testing.T) {
 				}
 				if !strings.Contains(stderr(), tc.want) {
 					t.Errorf("stderr lacks %q:\n%s", tc.want, stderr())
+				}
+				if strings.Contains(stderr(), "can read") {
+					t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
 				}
 				if len(*calls) != 0 {
 					t.Fatalf("runVMExecFn called on misuse")

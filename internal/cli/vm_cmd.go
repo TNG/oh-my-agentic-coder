@@ -244,7 +244,7 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 }
 
 // printVMExecTokenNotice names the variables in envs (NAME=VALUE), never
-// their values. It prints nothing when envs is empty.
+// their values.
 func printVMExecTokenNotice(w io.Writer, envs []string) {
 	if len(envs) == 0 {
 		return
