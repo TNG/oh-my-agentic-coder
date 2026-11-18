@@ -1412,23 +1412,19 @@ func TestExecRegistrationFailureStopsBeforeCopy(t *testing.T) {
 func TestExecSSHConnectionFailure(t *testing.T) {
 	f := &execFakes{cmdErr: exitErr(t, 255)}
 	_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
-	if err == nil || !strings.Contains(err.Error(), "connection lost or remote command killed (is the VM running? `omac vm status`)") {
+	if err == nil || !strings.Contains(err.Error(), connectionHint) {
 		t.Fatalf("err = %v, want connection error naming omac vm status", err)
 	}
 }
 
-// In a session `omac vm status` cannot read the VM's state, so the hint
-// must send the reader to the host.
-func TestExecConnectionHintFromSandboxNamesHost(t *testing.T) {
+func TestExecConnectionHintNamesHost(t *testing.T) {
 	cases := map[string]*execFakes{
 		"register": {regErr: exitErr(t, 255)},
 		"rsync":    {rsyncErr: exitErr(t, 255)},
 		"command":  {cmdErr: exitErr(t, 255)},
 	}
 	for name, f := range cases {
-		o := f.opts(testDir(t, "repo"), io.Discard)
-		o.Conn.FromSandbox = true
-		_, err := Exec(context.Background(), o)
+		_, err := Exec(context.Background(), f.opts(testDir(t, "repo"), io.Discard))
 		if err == nil || !strings.Contains(err.Error(), "run `omac vm status` on the host") {
 			t.Errorf("%s: err = %v, want the hint to name the host", name, err)
 		}
