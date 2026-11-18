@@ -701,6 +701,8 @@ func checkVMCommand(t *testing.T, path, cmdline string) bool {
 		return true
 	}
 	useFakeVM(t, &fakeVMManager{})
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // `omac vm list` reads the state directory itself
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	env, _, stderr := vmTestEnv(t)
 	if code := runVM(args, env); code != ExitOK {
 		t.Errorf("%s: omac vm %s exits %d\n%s", path, cmdline, code, stderr())
