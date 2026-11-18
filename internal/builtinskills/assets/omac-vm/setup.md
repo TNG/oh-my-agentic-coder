@@ -107,12 +107,16 @@ omac vm offline
   Spotless only when those tasks run.
 - `--env NAME` passes a token from the host's shell. Leave it out if the
   downloads need none. Use a short-lived, read-only token, because anything
-  a session left behind in the VM runs online with it. `--no-daemon` makes
-  sure no Gradle daemon keeps the token afterwards.
+  a session left behind in the VM runs online with it and can store the
+  token in the VM, where later sessions can read it; revoke it after
+  priming. `--no-daemon` makes sure no Gradle daemon keeps the token
+  afterwards.
 - With `--env`, omac names the variables the build can read and waits: the
   human presses Enter on an empty line to continue, or Ctrl-C to stop.
-  Pasting the three lines at once stops at that prompt, so the human runs
-  them one at a time.
+  In some shells, pasting the three lines at once gives `omac vm offline`
+  to that prompt as its answer: the build stops and the VM stays online.
+  So the human runs the lines one at a time, and runs `omac vm offline` if
+  the build stopped.
 
 ## 7. Sandbox grants
 
