@@ -93,6 +93,8 @@ func TestVMExecEnvFromHost(t *testing.T) {
 	}
 }
 
+const tokenNoticeStart = "omac vm exec: the build in the VM can read "
+
 func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 	const tail = "If a session you do not trust used the VM since your last `omac vm reset`, stop and run it first:\n"
 	for name, tc := range map[string]struct {
@@ -101,17 +103,17 @@ func TestVMExecEnvPrintsTokenNoticeBeforeRunning(t *testing.T) {
 	}{
 		"one name": {
 			[]string{"--env", "MY_REPO_TOKEN"},
-			"omac vm exec: the build in the VM can read MY_REPO_TOKEN.\n" + tail +
+			tokenNoticeStart + "MY_REPO_TOKEN.\n" + tail +
 				"files that session left in the VM run with this token.\n",
 		},
 		"two names": {
 			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=VALUE-MUST-NOT-PRINT-b"},
-			"omac vm exec: the build in the VM can read MY_REPO_TOKEN and B.\n" + tail +
+			tokenNoticeStart + "MY_REPO_TOKEN and B.\n" + tail +
 				"files that session left in the VM run with these tokens.\n",
 		},
 		"three names, one repeated": {
 			[]string{"--env", "MY_REPO_TOKEN", "--env", "B=VALUE-MUST-NOT-PRINT-b", "--env", "C=VALUE-MUST-NOT-PRINT-c", "--env", "B=VALUE-MUST-NOT-PRINT-b2"},
-			"omac vm exec: the build in the VM can read MY_REPO_TOKEN, B and C.\n" + tail +
+			tokenNoticeStart + "MY_REPO_TOKEN, B and C.\n" + tail +
 				"files that session left in the VM run with these tokens.\n",
 		},
 	} {
@@ -167,7 +169,7 @@ func TestVMExecEnvRefusedFromSandbox(t *testing.T) {
 			if strings.Contains(stderr(), "not set") {
 				t.Errorf("stderr asks for the variable although --env is refused:\n%s", stderr())
 			}
-			if strings.Contains(stderr(), "can read") {
+			if strings.Contains(stderr(), tokenNoticeStart) {
 				t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
 			}
 			if len(*calls) != 0 {
@@ -211,7 +213,7 @@ func TestVMExecEnvRefusedUnlessOnline(t *testing.T) {
 			if !strings.Contains(stderr(), "--env is for priming from the host while the VM is online") {
 				t.Errorf("stderr lacks the reason:\n%s", stderr())
 			}
-			if strings.Contains(stderr(), "can read") {
+			if strings.Contains(stderr(), tokenNoticeStart) {
 				t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
 			}
 			if len(*calls) != 0 {
@@ -276,7 +278,7 @@ func TestVMExecEnvMisuse(t *testing.T) {
 				if !strings.Contains(stderr(), tc.want) {
 					t.Errorf("stderr lacks %q:\n%s", tc.want, stderr())
 				}
-				if strings.Contains(stderr(), "can read") {
+				if strings.Contains(stderr(), tokenNoticeStart) {
 					t.Errorf("stderr shows the token notice although nothing runs:\n%s", stderr())
 				}
 				if len(*calls) != 0 {

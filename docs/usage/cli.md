@@ -279,7 +279,7 @@ omac vm offline
 
 After that, `./gradlew test --offline` finds its dependencies in the VM.
 
-The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. Each time you use `--env`, `omac vm exec` names the variables the build in the VM can read, and asks you to run `omac vm reset` first if a session you do not trust used the VM.
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. If a session you do not trust used the VM since your last `omac vm reset`, run `omac vm reset` before priming; `omac vm exec` reminds you of this each time you use `--env`, naming the variables the build can read.
 
 ### omac provenance
 

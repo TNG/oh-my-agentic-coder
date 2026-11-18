@@ -182,7 +182,7 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
-	printVMExecTokenNotice(env.Stderr, envs)
+	printVMExecTokenNotice(env.Stderr, envNames(envs))
 	var logf func(string, ...any)
 	if a.verbose {
 		logf = func(format string, v ...any) { fmt.Fprintf(env.Stderr, format+"\n", v...) }
@@ -243,18 +243,21 @@ func resolveVMExecEnv(env *Env, conn vm.ConnInfo, specs []string) ([]string, int
 	return envs, ExitOK, true
 }
 
-// printVMExecTokenNotice names the variables in envs (NAME=VALUE), never
-// their values.
-func printVMExecTokenNotice(w io.Writer, envs []string) {
-	if len(envs) == 0 {
-		return
-	}
+// envNames returns the distinct names in envs (NAME=VALUE), in order.
+func envNames(envs []string) []string {
 	var names []string
 	for _, kv := range envs {
 		name, _, _ := strings.Cut(kv, "=")
 		if !slices.Contains(names, name) {
 			names = append(names, name)
 		}
+	}
+	return names
+}
+
+func printVMExecTokenNotice(w io.Writer, names []string) {
+	if len(names) == 0 {
+		return
 	}
 	list, tokens := names[0], "this token"
 	if n := len(names); n > 1 {
