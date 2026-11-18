@@ -100,6 +100,24 @@ func TestDockerVersionLoginRejectedOnlyFromSSH(t *testing.T) {
 	}
 }
 
+// Known gap: ssh passes on the remote command's exit status, so a remote
+// command that prints the refusal and exits 255 still matches. The error
+// must then not present `omac vm reset` as the only way out.
+func TestDockerVersionLoginRejectedFakedByRemote255(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, stderr io.Writer, _ string) error {
+		fmt.Fprint(stderr, "Permission denied (publickey).")
+		return exitErr(t, 255)
+	}
+	_, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022})
+	if !errors.Is(err, ErrSSHLoginRejected) {
+		t.Fatalf("dockerVersion = %v; if a remote 255 no longer matches, the gap is closed: drop this test and the caveat in ErrSSHLoginRejected", err)
+	}
+	if !strings.Contains(err.Error(), "a program in the VM printed that refusal") {
+		t.Errorf("err = %v, want the message to name the remote cause", err)
+	}
+}
+
 func TestDockerVersionFailures(t *testing.T) {
 	cases := map[string]struct {
 		out string

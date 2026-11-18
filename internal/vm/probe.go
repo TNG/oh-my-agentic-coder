@@ -31,7 +31,8 @@ const dockerCheckTimeout = 10 * time.Second
 
 // ErrSSHLoginRejected means the VM refused omac's SSH key or presented a host
 // key that differs from the recorded one. Waiting does not change either.
-var ErrSSHLoginRejected = errors.New("the VM rejected omac's SSH login; run `omac vm reset` to recreate the VM")
+var ErrSSHLoginRejected = errors.New("the VM rejected omac's SSH login, or a program in the VM printed that refusal; " +
+	"if it persists, run `omac vm reset`, which recreates the VM and deletes its images")
 
 // dockerVersion asks the VM's Docker for its version over the agent's ssh.
 func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, error) {
@@ -77,8 +78,10 @@ func (m *Manager) waitDocker(ctx context.Context, st *State, timeout time.Durati
 }
 
 // sshLoginRejected matches the messages OpenSSH prints for a refused key and
-// for a changed host key; m.ssh folds them into the error. Only ssh's own
-// exit status 255 counts: a remote command can print the same text.
+// for a changed host key; m.ssh folds them into the error. Only exit status
+// 255 counts, but ssh also passes on a remote command's 255: a command in
+// the VM, for example a docker function in the agent's ~/.bashrc, can print
+// the same text, exit 255 and still match.
 func sshLoginRejected(err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 255 {
