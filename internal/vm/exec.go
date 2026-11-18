@@ -334,7 +334,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 			return 1, fmt.Errorf("omac vm exec: %q contains a single quote, which rsync cannot pass to ssh", p)
 		}
 	}
-	// One slug and one registry line per directory, however it was spelled.
+	// "repo/" and "repo" get the same slug and registry line.
 	root := filepath.Clean(o.Workdir)
 	cwd := o.Cwd
 	top, prefix, isRepo, err := RepoRoot(ctx, o.Run, root)
@@ -360,7 +360,7 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	}
 	defer rootDir.Close()
 	if !isRepo {
-		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git, .envrc and the .env files\n", root)
+		fmt.Fprintf(o.Stderr, "omac vm exec: %s is not a git work tree; copying everything except .git and the files the sandbox hides, such as .env\n", root)
 	}
 	slug := WorktreeSlug(root)
 	remoteDir := RemoteDir(slug)
@@ -468,7 +468,7 @@ func refuseProtectedOverlap(root string, dir *os.File, protected []string) error
 			overlaps = overlaps || hasAncestor(root, pInfo) || hasAncestor(realRoot, pInfo)
 		}
 		if overlaps {
-			return fmt.Errorf("omac vm exec: %s overlaps %s, which the sandbox protects; run it from a project directory", root, p)
+			return fmt.Errorf("omac vm exec: the copy root %s overlaps %s, which the sandbox protects; run it from a project that is its own git repository", root, p)
 		}
 	}
 	return nil
