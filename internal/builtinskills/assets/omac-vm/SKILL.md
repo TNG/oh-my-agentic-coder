@@ -188,10 +188,10 @@ module's directory, for example `api/target/surefire-reports/`.
   `/usr/lib/jvm/temurin-21-jdk-<arch>`. omac does not write this file, and
   `omac vm reset` deletes it; ask the human to add it. For a tool that is no
   package, such as a global Node package, they can add an install script as
-  `setup` in the same file. It runs as root,
-  with network, at provisioning, so it has to be safe to run again. Never
-  write it yourself into that file; you cannot, and it is the human's
-  decision.
+  `setup` in `~/.config/omac/vm.yaml` (`vms/<name>.yaml` for a named VM). It
+  runs as root, with network, at provisioning, so it has to be safe to run
+  again. Never write it into `vm.yaml` yourself; you cannot, and it is the
+  human's decision.
 - **`omac vm exec` fails at `git rev-parse` with an error about
   `~/.gitconfig` or a file it includes.** The session cannot read that
   file, so every git command in it fails. Ask the human to grant it as
