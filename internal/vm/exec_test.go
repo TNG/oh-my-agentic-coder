@@ -328,7 +328,17 @@ func TestIgnoredPathsExcludesFullyIgnoredSubmodule(t *testing.T) {
 func TestIgnoredPathsFailsOnGitErrorInSubmodule(t *testing.T) {
 	run := subRunner(func(io.Writer) error { return exitErr(t, 128) })
 	if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err == nil {
-		t.Fatal("IgnoredPaths with a failing git call in a submodule = nil error")
+		t.Fatal("IgnoredPaths with a failing git ls-files in a submodule = nil error")
+	}
+	listed := subRunner(func(io.Writer) error { return nil })
+	run = func(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if args[1] == "/w/repo/libs/lib" && slices.Contains(args, "submodule") {
+			return exitErr(t, 128)
+		}
+		return listed(ctx, name, args, stdin, stdout, stderr)
+	}
+	if _, err := IgnoredPaths(context.Background(), run, "/w/repo"); err == nil {
+		t.Fatal("IgnoredPaths with a failing git submodule foreach in a submodule = nil error")
 	}
 }
 
@@ -740,9 +750,15 @@ func TestExecRefusesToCopyProtectedPaths(t *testing.T) {
 			if !c.repo {
 				f.notRepo = exitErr(t, 128)
 			}
-			_, err := Exec(context.Background(), f.opts(c.workdir, io.Discard))
+			o := f.opts(c.workdir, io.Discard)
+			var stderr bytes.Buffer
+			o.Stderr = &stderr
+			_, err := Exec(context.Background(), o)
 			if err == nil || !strings.Contains(err.Error(), "protects") {
 				t.Errorf("Exec from %s = %v, want a refusal", c.workdir, err)
+			}
+			if strings.Contains(stderr.String(), "copying everything") {
+				t.Errorf("Exec from %s announced a copy it refused: %q", c.workdir, stderr.String())
 			}
 			if f.rsync != nil || len(f.remotes) != 0 {
 				t.Errorf("Exec from %s copied: rsync=%q ssh=%q", c.workdir, f.rsync, f.remotes)
@@ -958,8 +974,8 @@ func TestExecRsyncConnectionFailure(t *testing.T) {
 func TestExecInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Ctrl-C cancels the context; the stopped ssh then has no exit code.
-	f := &execFakes{onCmd: cancel, cmdErr: errors.New("signal: killed")}
+	// Ctrl-C cancels the context while the command runs.
+	f := &execFakes{onCmd: cancel, cmdErr: exitErr(t, 255)}
 	code, err := Exec(ctx, f.opts(testDir(t, "repo"), io.Discard))
 	if code != 130 || !errors.Is(err, ErrInterrupted) {
 		t.Fatalf("Exec = %d, %v; want 130, ErrInterrupted", code, err)
