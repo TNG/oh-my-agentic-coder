@@ -126,9 +126,11 @@ func checkTopLevel(dir, top string) error {
 // runGit runs every git command of exec, in dir. The sandbox can write git
 // config in the worktree, so settings that make git run a command are off:
 // core.fsmonitor, and every transport, which a planted partial-clone
-// config uses to fetch a missing object through core.sshCommand. The
-// empty GIT_ALLOW_PROTOCOL also overrides a planted protocol.<name>.allow,
-// and stops git older than 2.45, which ignores GIT_NO_LAZY_FETCH.
+// config uses to fetch a missing object through core.sshCommand. An
+// empty GIT_ALLOW_PROTOCOL allows no transport and overrides every
+// protocol.* setting, including a planted protocol.<name>.allow; it also
+// stops git older than 2.45, which ignores GIT_NO_LAZY_FETCH.
+// protocol.allow=never is a second layer in case the variable is lost.
 // Repository-local keys that run a command without a transport need
 // their own entry here. Messages are in English, which RepoRoot matches
 // on, and pathspecs are literal, so a directory named "sv*" matches only
@@ -335,9 +337,6 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 	if err := ValidateCwd(o.Cwd); err != nil {
 		return 1, err
 	}
-	// rsync runs in the copy root, where the agent picks the files, and
-	// would find a bare "ssh" through a relative PATH entry such as
-	// node_modules/.bin.
 	lookPath := o.LookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
@@ -351,7 +350,9 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		if strings.Contains(p, "'") {
 			return 1, fmt.Errorf("omac vm exec: %q contains a single quote, which rsync cannot pass to ssh", p)
 		}
-		// rsync's ssh starts in the copy root, where the agent picks the files.
+		// rsync's ssh starts in the copy root, where the agent picks the
+		// files: a relative PATH entry such as node_modules/.bin could
+		// supply its own ssh.
 		if p != "" && !filepath.IsAbs(p) {
 			return 1, fmt.Errorf("omac vm exec: ssh file %q must be an absolute path", p)
 		}

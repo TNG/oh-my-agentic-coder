@@ -756,7 +756,7 @@ func TestExecReportsAFailedReturnToTheCaller(t *testing.T) {
 	skipIfRoot(t)
 	caller := testDir(t, "caller")
 	t.Chdir(caller)
-	if err := os.Chmod(caller, 0o100); err != nil { // restore by path, not by handle
+	if err := os.Chmod(caller, 0o100); err != nil { // not readable, so inDir cannot keep a handle and must return by path
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(caller, 0o755) })
@@ -982,9 +982,6 @@ func TestExecRefusesProtectedPathLinkedIntoRoot(t *testing.T) {
 // see that the copy root contains it.
 func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
 	skipIfRoot(t)
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores permissions")
-	}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1004,9 +1001,6 @@ func TestExecRefusesUnreadableProtectedPath(t *testing.T) {
 
 func TestExecRefusesUnreadableCopyRoot(t *testing.T) {
 	skipIfRoot(t)
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores permissions")
-	}
 	parent := t.TempDir()
 	root := filepath.Join(parent, "proj")
 	writeFiles(t, root, map[string]string{"a.go": "package a"})
@@ -1274,7 +1268,7 @@ func TestInDirReportsFnAndRestoreErrors(t *testing.T) {
 	skipIfRoot(t)
 	caller := testDir(t, "caller")
 	t.Chdir(caller)
-	if err := os.Chmod(caller, 0o100); err != nil { // restore by path, not by handle
+	if err := os.Chmod(caller, 0o100); err != nil { // not readable, so inDir cannot keep a handle and must return by path
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(caller, 0o755) })
