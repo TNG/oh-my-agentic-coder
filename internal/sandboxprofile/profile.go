@@ -146,11 +146,13 @@ type Network struct {
 	// wildcards (match the suffix itself and any subdomain).
 	AllowDomain []string `json:"allow_domain,omitempty"`
 	DenyDomain  []string `json:"deny_domain,omitempty"`
-	// ListenPort: TCP ports the child may bind/listen on.
-	ListenPort []int `json:"listen_port,omitempty"`
+	// ListenPort: TCP ports the child may bind/listen on; entries are
+	// ints or "A-B" range strings.
+	ListenPort PortList `json:"listen_port,omitempty"`
 	// AllowTCPConnect: direct outbound TCP to ANY host on these ports
 	// (kernel cannot constrain the destination host). E.g. 22 for SSH.
-	AllowTCPConnect []int `json:"allow_tcp_connect,omitempty"`
+	// Entries are ints or "A-B" range strings.
+	AllowTCPConnect PortList `json:"allow_tcp_connect,omitempty"`
 	// OpenPort: localhost TCP, both connect and bind (bridge port).
 	OpenPort []int `json:"open_port,omitempty"`
 	// NetworkPrompt configures the interactive allow/deny dialog.
@@ -391,6 +393,9 @@ func (p *Profile) Validate() error {
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("sandbox profile: network.%s contains invalid port %d", group.name, port)
 			}
+		}
+		if len(group.ports) > maxExpandedPorts {
+			return fmt.Errorf("sandbox profile: network.%s expands to %d ports, above the %d-port limit", group.name, len(group.ports), maxExpandedPorts)
 		}
 	}
 	for _, v := range p.Environment.AllowVars {

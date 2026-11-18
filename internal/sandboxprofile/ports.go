@@ -8,9 +8,10 @@ import (
 	"strings"
 )
 
-// maxExpandedPorts caps how many ports one range entry may expand to.
-// Without it a typo like "1-65535" would silently grant every port,
-// which defeats the purpose of naming ports at all.
+// maxExpandedPorts caps how many ports one range entry may expand to and
+// how many ports one profile field may name. Without it a typo like
+// "1-65535" would silently grant every port, which defeats the purpose
+// of naming ports at all.
 const maxExpandedPorts = 1000
 
 // PortList is a port list that also accepts inclusive range strings,

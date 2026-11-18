@@ -110,6 +110,82 @@ func TestParseValidationErrors(t *testing.T) {
 	}
 }
 
+func TestParseExpandsPortRanges(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {
+	  "listen_port": [4097, "8000-8100"],
+	  "allow_tcp_connect": ["22", "8000-8100"]
+	}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(p.Network.ListenPort); got != 102 {
+		t.Errorf("listen_port has %d ports, want 102", got)
+	}
+	if got := len(p.Network.AllowTCPConnect); got != 102 {
+		t.Errorf("allow_tcp_connect has %d ports, want 102", got)
+	}
+}
+
+func TestParsePortFieldTotalAtCapIsAccepted(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {"allow_tcp_connect": ["1-500", "501-1000"]}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(p.Network.AllowTCPConnect); got != maxExpandedPorts {
+		t.Errorf("allow_tcp_connect has %d ports, want %d", got, maxExpandedPorts)
+	}
+}
+
+func TestParsePortFieldNull(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {"listen_port": null}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Network.ListenPort == nil {
+		t.Error("listen_port null decoded to nil, want an empty non-nil PortList")
+	}
+	if len(p.Network.ListenPort) != 0 {
+		t.Errorf("listen_port = %v, want empty", p.Network.ListenPort)
+	}
+}
+
+func TestParsePortRangeValidationErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		want   []string
+	}{
+		{
+			name:   "range including zero",
+			config: `{"network": {"listen_port": ["0-100"]}}`,
+			want:   []string{"network.listen_port", "invalid port 0"},
+		},
+		{
+			name:   "entries summing above the cap",
+			config: `{"network": {"listen_port": ["1-600", "601-1200"]}}`,
+			want:   []string{"network.listen_port", "expands to 1200 ports", "1000-port limit"},
+		},
+		{
+			name:   "single port above the field maximum",
+			config: `{"network": {"allow_tcp_connect": [70000]}}`,
+			want:   []string{"network.allow_tcp_connect", "invalid port 70000"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.config))
+			if err == nil {
+				t.Fatalf("Parse(%s): want error", tt.config)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestProxyInjection(t *testing.T) {
 	p, err := Parse([]byte(`{"network": {"proxy_injection": ["jvm", "node"]}}`))
 	if err != nil {
