@@ -51,10 +51,10 @@ run `omac vm up` yourself.
 ## Run a build
 
 ```sh
-omac vm exec --cwd <module> -- <build command> > "${TMPDIR:-/tmp}/vm-test.log" 2>&1; echo "exit=$?"
+omac vm exec --cwd <build-root> -- <build command> > "${TMPDIR:-/tmp}/vm-test.log" 2>&1; echo "exit=$?"
 ```
 
-`<module>` is the root of the build, relative to your current directory, for
+`<build-root>` is the root of the build, relative to your current directory, for
 example `backend`: the directory with `gradlew` or `settings.gradle`, or with
 the top-level `pom.xml`, not a submodule. Typical build commands, with the
 tool's offline switch:
@@ -63,7 +63,8 @@ tool's offline switch:
   version ranges such as `[1.4,2.0)` and `-SNAPSHOT` dependencies online
   again after 24 hours and fails in the VM even though the cache is complete.
 - Maven: `./mvnw -o test` (or `mvn -o test`). Select a submodule with
-  `-pl <submodule> -am`.
+  `-pl <submodule> -am`. Gradle: select a subproject with
+  `./gradlew :<subproject>:test --offline`.
 
 The VM has no network access: everything a build downloads must already be
 in its cache. Keep the tool's offline switch if it has one.
@@ -95,8 +96,10 @@ in its cache. Keep the tool's offline switch if it has one.
   where `$PWD` is the directory the command runs in: the place in the copy
   that matches your current directory or `--cwd`.
 - Keep runs short: run focused tests and do not run `clean`. With Gradle,
-  use `--tests 'com.example.FooTest'` and let the Gradle daemon keep running
-  between runs. With Maven, use
+  use `./gradlew :<subproject>:test --tests 'com.example.FooTest' --offline`
+  and let the Gradle daemon keep running between runs; from the build root,
+  a filter without the subproject fails in every subproject without a
+  matching test. With Maven, use
   `-Dtest=FooTest -Dsurefire.failIfNoSpecifiedTests=false`; without the
   second flag, every module without a matching test fails.
 
@@ -146,7 +149,8 @@ Maven writes the same XML files to `target/surefire-reports/` of each module.
   VM as described in [setup.md](setup.md); they end this session first.
 - **A JDK or system package is missing.** The build reports a missing Java
   installation (Gradle: `No matching toolchains found` or `Cannot find a Java
-  installation`), or a command is not found. Name it, for example
+  installation`; Maven: `release version 21 not supported` or `Cannot find
+  matching toolchain definitions`), or a command is not found. Name it, for example
   `temurin-21`, and ask the human to add it to `jdks` or `packages` in
   `~/.config/omac/vm.yaml`, end this session and run
   `omac vm up --reprovision` on the host.
