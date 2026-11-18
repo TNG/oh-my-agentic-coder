@@ -223,7 +223,7 @@ omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
 omac start --vm                # the session runs Docker and builds in the VM with omac vm exec
-omac vm exec -- ./gradlew test # copy the worktree into the VM and run there
+omac vm exec -- ./gradlew test --offline   # copy the worktree into the VM and run there
 omac vm online                 # restart the VM with network access, e.g. to download build dependencies
 omac vm offline                # restart the VM without network access, the mode sessions need
 omac vm down                   # stop the VM
@@ -281,9 +281,11 @@ omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
 omac vm offline
 ```
 
-After that, `./gradlew test --offline` finds its dependencies in the VM. If the build fails, still run `omac vm offline`: omac refuses `--vm` sessions while the VM is online. Prime with the task that runs all the checks you need, not only `test`: Gradle downloads the tools behind tasks such as Checkstyle or Spotless only when those tasks run.
+For Maven, the middle line is `omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./mvnw verify`. Maven reads a token only from a `<server>` entry in a settings file, so use a settings file in the project that git does not ignore, such as `.mvn/settings.xml` with `<password>${env.MY_REPO_TOKEN}</password>`, and add `-s .mvn/settings.xml`.
 
-The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, an edited build file in the copy, or a process still running. Use a short-lived, read-only token, because anything a session left behind runs online with it. That build can also store the token in the VM, where later sessions can read it; revoke the token after priming. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. Each time you use `--env`, `omac vm exec` names the variables the build can read and reminds you of the reset. When stdin and stderr are a terminal, it then waits before it copies anything: Enter on an empty line continues. Anything else, such as typing `n` before Enter, Ctrl-C or Ctrl-D on an empty line, stops it with exit code 130. In some shells, pasting the three lines at once gives `omac vm offline` to that prompt as its answer: the build stops and the VM stays online. So run the lines one at a time, and run `omac vm offline` if the build stopped.
+After that, the build finds its dependencies in the VM when it runs offline, for example `./gradlew test --offline` or `./mvnw -o test`. Keep Gradle's `--offline`: without it, Gradle checks version ranges and `-SNAPSHOT` dependencies online again after 24 hours and fails in the VM. If the build fails, still run `omac vm offline`: omac refuses `--vm` sessions while the VM is online. Prime with the build step that runs all the checks you need (`check` for Gradle, `verify` for Maven), not only the tests: some tools, such as Checkstyle or Spotless, are downloaded only when the step that uses them runs.
+
+The priming run executes as the same VM user that every earlier `--vm` session controlled, and it trusts everything those sessions could leave in that user's home. Examples are a Gradle init script in `~/.gradle/init.d/`, a Maven `~/.m2/settings.xml`, an edited build file in the copy, or a process still running. Use a short-lived, read-only token, because anything a session left behind runs online with it. That build can also store the token in the VM, where later sessions can read it; revoke the token after priming. Use `--no-daemon` for the priming build, so that no Gradle daemon keeps the token after the run. Each time you use `--env`, `omac vm exec` names the variables the build can read and reminds you of the reset. When stdin and stderr are a terminal, it then waits before it copies anything: Enter on an empty line continues. Anything else, such as typing `n` before Enter, Ctrl-C or Ctrl-D on an empty line, stops it with exit code 130. In some shells, pasting the three lines at once gives `omac vm offline` to that prompt as its answer: the build stops and the VM stays online. So run the lines one at a time, and run `omac vm offline` if the build stopped.
 
 ### omac provenance
 
