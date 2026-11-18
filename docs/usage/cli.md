@@ -218,7 +218,7 @@ The omac VM is a long-lived Linux virtual machine, which omac creates and manage
 
 ```bash
 omac vm up                     # create, provision and switch offline (needs network once); later: start the VM in its last mode
-omac vm status                 # show state, mode, SSH port, images, sessions, packages, JDKs, copied worktrees, resources from vm.yaml or defaults
+omac vm status                 # show state, mode, SSH port, images, sessions, packages, JDKs, copied worktrees, resources from vm.yaml (vms/<name>.yaml) or defaults
 omac vm image add postgres:16  # import an image; the VM never pulls itself
 omac vm image list             # list the VM's images
 omac vm image rm postgres:16   # remove an image from the VM
@@ -282,6 +282,7 @@ An entry applies to its directory and everything below it; when several entries 
 - A repository's entry also covers its subdirectories, its submodules and the git worktrees inside it, such as under `.worktrees/`.
 - A git worktree outside the repository's directory uses the repository's entry, unless an entry covers the worktree's own path.
 - Worktrees of a bare repository (one without a working directory of its own) need an entry that covers their own path.
+- Keys are compared case by case, also on macOS, where the file system ignores case: a session started in `~/work/Acme` does not match the key `~/work/acme` and lands in the default VM. Write each key as the directory's real spelling, which `pwd -P` shows.
 
 Keys must be absolute paths. A relative key, an invalid VM name, two keys for the same directory (for example a path and a symlink to it) or a malformed file stops omac, and the message names the entry. If the mapped VM was never created, the session does not start and the message says to run `omac vm up --name <name>`.
 

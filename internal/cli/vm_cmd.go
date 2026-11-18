@@ -559,8 +559,9 @@ Usage:
   omac vm down                 Stop the VM.
   omac vm reset                Delete the VM with all its host-side state and create it anew.
   omac vm status               Show whether the VM runs, its mode, SSH port, images, JDKs, packages,
-                               copied worktrees, attached sessions and the resources from vm.yaml or
-                               their defaults (applied on create or reset).
+                               copied worktrees, attached sessions and the resources from its config
+                               file (vm.yaml, or vms/<name>.yaml) or their defaults (applied on create
+                               or reset).
   omac vm online               Restart the VM with internet access; refused while sessions are attached.
   omac vm offline              Restart the VM without internet access, the mode sessions need.
   omac vm image add <ref>      Pull an image on the host and load it into the VM's Docker.
