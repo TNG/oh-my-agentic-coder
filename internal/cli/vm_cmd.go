@@ -182,13 +182,22 @@ func runVMExec(args []string, env *Env) int {
 	if !ok {
 		return code
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	printVMExecTokenNotice(env.Stderr, envNames(envs))
+	// Nothing is copied or sent before this point, so the human can still
+	// stop and run `omac vm reset` as the notice says.
+	if len(envs) > 0 && isTerminal(env.Stdin) {
+		fmt.Fprintln(env.Stderr, "Press Enter to continue, Ctrl-C to stop.")
+		if !waitForEnter(ctx, env.Stdin) {
+			fmt.Fprintln(env.Stderr, vm.ErrInterrupted)
+			return 130
+		}
+	}
 	var logf func(string, ...any)
 	if a.verbose {
 		logf = func(format string, v ...any) { fmt.Fprintf(env.Stderr, format+"\n", v...) }
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	code, err = runVMExecFn(ctx, vm.ExecOpts{
 		Workdir: env.Workdir,
 		Cwd:     a.cwd,
@@ -267,6 +276,32 @@ func printVMExecTokenNotice(w io.Writer, names []string) {
 	fmt.Fprintf(w, "omac vm exec: the build in the VM can read %s.\n"+
 		"If a session you do not trust used the VM since your last `omac vm reset`, stop and run it first:\n"+
 		"files that session left in the VM run with %s.\n", list, tokens)
+}
+
+// waitForEnter reports whether r delivered a newline before end of input
+// or ctx ended. It reads one byte at a time, so the command run afterwards
+// gets the rest of r.
+func waitForEnter(ctx context.Context, r io.Reader) bool {
+	entered := make(chan bool, 1)
+	go func() {
+		b := make([]byte, 1)
+		for {
+			if _, err := r.Read(b); err != nil {
+				entered <- false
+				return
+			}
+			if b[0] == '\n' {
+				entered <- true
+				return
+			}
+		}
+	}()
+	select {
+	case ok := <-entered:
+		return ok
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func vmExecMisuse(env *Env, msg string) int {
