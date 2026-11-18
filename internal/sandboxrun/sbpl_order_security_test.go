@@ -18,7 +18,7 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 		home      = "/Users/u"
 		protected = home + "/.docker"
 	)
-	ops := []string{"file-read*", "file-write*", "file-ioctl", "file-map-executable", "process-exec*", "network-outbound"}
+	const rootStore = `(allow file-read* (subpath "/System/Library/Keychains"))`
 
 	for _, mode := range []string{sandboxprofile.ModeFiltered, sandboxprofile.ModeBlocked, sandboxprofile.ModeOpen} {
 		for _, enforcement := range []string{sandboxprofile.EnforceKernel, sandboxprofile.EnforceEnvOnly} {
@@ -26,31 +26,37 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 				g := securityTestGrants(home, protected, mode, enforcement)
 				lines := strings.Split(GenerateSBPL(g), "\n")
 
-				lastAllow := -1
+				// The root-store re-allow is the one allow that may follow a
+				// deny, and only the keychain deny.
+				lastAllow, lastOtherAllow := -1, -1
 				for i, l := range lines {
 					if strings.HasPrefix(l, "(allow ") {
 						lastAllow = i
+						if l != rootStore {
+							lastOtherAllow = i
+						}
 					}
-				}
-				var denies []string
-				for _, op := range ops {
-					denies = append(denies, fmt.Sprintf("(deny %s (subpath %q))", op, protected))
 				}
 				res, err := sbplNameRegex(home, g.NameDenyGlobs)
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, op := range ops {
-					denies = append(denies, fmt.Sprintf("(deny %s (regex #\"%s\"))", op, res[0]))
+				filters := map[string]int{
+					fmt.Sprintf("(subpath %q)", protected):                lastAllow,
+					fmt.Sprintf("(regex #\"%s\")", res[0]):                lastAllow,
+					fmt.Sprintf("(regex #\"%s\")", sbplKeychainNameRegex): lastOtherAllow,
 				}
-				for _, deny := range denies {
-					i := indexOfLine(lines, deny)
-					if i < 0 {
-						t.Errorf("profile lacks %s", deny)
-						continue
-					}
-					if i < lastAllow {
-						t.Errorf("%s comes before %s; Seatbelt is last-match-wins, so that allow can reopen the denied path", deny, lines[lastAllow])
+				for filter, last := range filters {
+					for _, op := range sbplDeniedOps {
+						deny := fmt.Sprintf("(deny %s %s)", op, filter)
+						i := indexOfLine(lines, deny)
+						if i < 0 {
+							t.Errorf("profile lacks %s", deny)
+							continue
+						}
+						if i < last {
+							t.Errorf("%s comes before %s; Seatbelt is last-match-wins, so that allow can reopen the denied path", deny, lines[last])
+						}
 					}
 				}
 			})
@@ -64,8 +70,9 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 func TestSecurityDeniedOpsCoverEveryAllowedOp(t *testing.T) {
 	// Operations that take no path filter, so a path deny cannot apply.
 	pathless := []string{"process-fork", "process-info*", "signal", "mach-lookup", "sysctl-read", "ipc-posix-shm", "system-socket", "pseudo-tty"}
-	// Binding a Unix socket creates a file, which file-write* denies; a
-	// connect is network-outbound. TCP has no path.
+	// Binding a Unix socket creates a file, which file-write* denies
+	// (TestIntegrationProtectedFolderRefusesSocketConnect checks this on
+	// macOS); a connect is network-outbound. TCP has no path.
 	coveredBy := map[string]string{
 		"network-bind":    "file-write*",
 		"network-inbound": "file-write*",

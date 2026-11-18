@@ -245,9 +245,9 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 // A protected folder must refuse a Unix-socket connect even where a rule
 // allows the connect: (allow network*) in open mode, or an allow_unix_dir
 // grant for that same folder. The connect through a symlink in the workdir
-// checks that Seatbelt matches the socket's resolved path. Each case first
-// connects without the protection, so a connect that fails for another
-// reason cannot pass the test.
+// checks that Seatbelt matches the socket's resolved path. Binding a new
+// socket there must fail too. Each case first runs without the protection,
+// so a failure for another reason cannot pass the test.
 func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
 	if err != nil {
@@ -300,6 +300,14 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 					if protect && code != 7 {
 						t.Errorf("connect via %s to a socket in a protected folder: want curl exit 7, got exit=%d out=%s", target, code, out)
 					}
+				}
+
+				bound := filepath.Join(sockDir, "bound.sock")
+				out, code := runSandboxed(t, g, "/usr/bin/perl", "-MIO::Socket::UNIX", "-e",
+					`IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or exit 3`, bound)
+				os.Remove(bound)
+				if want := map[bool]int{false: 0, true: 3}[protect]; code != want {
+					t.Errorf("bind in %s (protected=%v): want perl exit %d, got exit=%d out=%s", sockDir, protect, want, code, out)
 				}
 			}
 		})

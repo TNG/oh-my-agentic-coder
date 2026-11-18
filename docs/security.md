@@ -125,11 +125,13 @@ Even when you grant broader access, certain paths are always blocked:
 `.envrc` files anywhere in the project. Blocked also means the agent cannot
 connect to a Unix socket inside such a path, for example Docker Desktop's
 `~/.docker/run/docker.sock` or the GnuPG agent in `~/.gnupg`, whatever the
-network mode. To let the agent reach such a socket, add the folder to
-`filesystem.override_deny` and grant only the socket's folder, for example
-`"allow_unix_dir": ["~/.docker/run"]`. The folder's other files then lose
-their protection, such as the registry credentials in
-`~/.docker/config.json`, if another grant covers them.
+network mode. On macOS this holds even if you grant a folder inside the
+protected path; to let the agent reach such a socket, add the protected
+folder to `filesystem.override_deny` and grant only the socket's folder, for
+example `"allow_unix_dir": ["~/.docker/run"]`. The protected folder's other
+files, such as the registry credentials in `~/.docker/config.json`, then
+lose their protection if another grant covers them. On Linux, a grant for a
+folder inside a protected path makes that folder reachable.
 You can block additional file patterns by adding glob entries to
 `filesystem.deny` in `~/.config/omac/sandbox-profiles/default.json` — for
 example, `"*.key"` blocks all files ending in `.key` inside any directory the
