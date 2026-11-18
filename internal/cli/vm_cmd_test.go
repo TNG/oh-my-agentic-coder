@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -345,5 +346,50 @@ func TestCommandsRegistersVM(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "  vm ") {
 		t.Fatalf("printUsage lacks vm line:\n%s", b)
+	}
+}
+
+// The top-level help names the vm verbs by hand; every verb `omac vm help`
+// shows must be in it.
+func TestTopLevelHelpListsEveryVMVerb(t *testing.T) {
+	useFakeVM(t, &fakeVMManager{})
+	env, _, stderr := vmTestEnv(t)
+	if code := runVM([]string{"help"}, env); code != ExitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	verbs := map[string]bool{}
+	for _, line := range strings.Split(stderr(), "\n") {
+		if rest, ok := strings.CutPrefix(line, "  omac vm "); ok {
+			verbs[strings.Fields(rest)[0]] = true
+		}
+	}
+	if len(verbs) == 0 {
+		t.Fatal("omac vm help lists no verb")
+	}
+	f, err := os.CreateTemp(t.TempDir(), "usage-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	printUsage(f)
+	usage, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	short := commands()["vm"].Short
+	var vmLine string
+	for _, line := range strings.Split(string(usage), "\n") {
+		if strings.HasPrefix(line, "  vm ") {
+			vmLine = line
+		}
+	}
+	for verb := range verbs {
+		listed := regexp.MustCompile(`[ :|]` + regexp.QuoteMeta(verb) + `[|.]`)
+		if !listed.MatchString(short) {
+			t.Errorf("commands()[\"vm\"].Short lacks %q: %s", verb, short)
+		}
+		if !listed.MatchString(vmLine) {
+			t.Errorf("printUsage vm line lacks %q: %s", verb, vmLine)
+		}
 	}
 }
