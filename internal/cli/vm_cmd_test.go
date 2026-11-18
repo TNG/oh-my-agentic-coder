@@ -395,8 +395,7 @@ func TestTopLevelHelpListsEveryVMVerb(t *testing.T) {
 	}
 }
 
-// vmHelpWidth is the widest line `omac vm help` may print, so that an
-// inserted sentence cannot leave one ragged line.
+// vmHelpWidth is the widest line `omac vm help` may print.
 const vmHelpWidth = 115
 
 func TestVMHelpLinesStayNarrow(t *testing.T) {

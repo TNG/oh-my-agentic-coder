@@ -265,7 +265,7 @@ const vmExecEnvReason = "--env is for priming from the host while the VM is onli
 // vmExecEnvPrompt asks for consent before --env sends a token. A shell
 // without bracketed paste hands the next pasted line to this prompt.
 const vmExecEnvPrompt = "Press Enter to continue, Ctrl-C to stop.\n" +
-	"A command pasted after this one is read as the answer: it stops this one and does not run."
+	"A line pasted after this command answers this prompt: omac stops, and the pasted line does not run."
 
 var errVMNotOnline = errors.New("omac vm exec: " + vmExecEnvReason + "; run `omac vm online` first")
 
