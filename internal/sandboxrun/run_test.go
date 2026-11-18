@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -323,4 +324,34 @@ func TestWarnEmptyAllowVars(t *testing.T) {
 			t.Errorf("seeded launch warned: %s", buf.String())
 		}
 	})
+}
+
+// The merged cap is enforced before any sandbox starts: flags alone can
+// push a profile over the limit, and Run must say so on stderr.
+func TestRunRejectsFlagPortsAboveCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "empty.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ports := make([]int, 0, 1001)
+	for port := 1; port <= 1001; port++ {
+		ports = append(ports, port)
+	}
+	var stderr bytes.Buffer
+	code := Run(Options{
+		Flags:   &sandboxprofile.Flags{ProfileRef: "empty", ListenPort: ports},
+		Workdir: t.TempDir(),
+		Stderr:  &stderr,
+	})
+	if code == 0 {
+		t.Fatal("Run accepted a merged port list above the cap")
+	}
+	if !strings.Contains(stderr.String(), "1000-port limit") {
+		t.Errorf("stderr does not name the cap: %q", stderr.String())
+	}
 }

@@ -487,6 +487,85 @@ func TestIntegrationStage2LandlockPorts(t *testing.T) {
 	}
 }
 
+// A range grant reaches Landlock as one rule per port. Sibling of
+// TestIntegrationStage2LandlockPorts, which covers a single open_port.
+func TestIntegrationStage2LandlockPortRange(t *testing.T) {
+	requireBwrap(t)
+	if !LandlockNetSupported() {
+		t.Skipf("Landlock ABI %d < 4", LandlockABI())
+	}
+	allowed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "allowed-ok")
+	}))
+	defer allowed.Close()
+	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer blocked.Close()
+	allowedPort := allowed.Listener.Addr().(*net.TCPAddr).Port
+	blockedPort := blocked.Listener.Addr().(*net.TCPAddr).Port
+
+	rangeEnd := min(allowedPort+2, 65535)
+	if blockedPort >= allowedPort && blockedPort <= rangeEnd {
+		t.Skipf("blocked port %d falls inside the test range %d-%d", blockedPort, allowedPort, rangeEnd)
+	}
+
+	// Build the omac binary: stage2 must be a real `omac sandbox stage2`
+	// invocation (the test binary cannot stand in for it).
+	omac := filepath.Join(t.TempDir(), "omac")
+	build := exec.Command("go", "build", "-o", omac, "github.com/TNG/oh-my-agentic-coder/cmd/omac")
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build omac: %v\n%s", err, out)
+	}
+
+	wd := t.TempDir()
+	p, err := sandboxprofile.Parse([]byte(fmt.Sprintf(
+		`{"workdir": {"access": "readwrite"}, "network": {"mode": "filtered", "allow_tcp_connect": ["%d-%d"]}}`,
+		allowedPort, rangeEnd)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Network.AllowTCPConnect) != rangeEnd-allowedPort+1 {
+		t.Fatalf("range expanded to %d ports, want %d", len(p.Network.AllowTCPConnect), rangeEnd-allowedPort+1)
+	}
+	g, err := ResolveGrants(p, wd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read access to the omac binary dir + curl deps come from baseline.
+	g.ReadPaths = append(g.ReadPaths, filepath.Dir(omac))
+
+	stage2 := []string{omac, "sandbox", "stage2"}
+	stage2 = append(stage2, Stage2Args(g)...)
+
+	curl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Skip("curl not installed")
+	}
+	run := func(port int) int {
+		argvTail := append(append([]string{}, stage2...), "--", curl, "-sS", "--max-time", "3",
+			fmt.Sprintf("http://127.0.0.1:%d/", port))
+		argv, err := BuildBwrapArgv(g, argvTail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(argv[0], argv[1:]...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				return ee.ExitCode()
+			}
+			t.Fatalf("exec: %v (%s)", err, out)
+		}
+		return 0
+	}
+	if code := run(allowedPort); code != 0 {
+		t.Errorf("allowed port %d unreachable, exit %d", allowedPort, code)
+	}
+	if code := run(blockedPort); code == 0 {
+		t.Errorf("blocked port %d reachable", blockedPort)
+	}
+}
+
 // TestIntegrationDeniedFileInGrantedDir is the bubblewrap half of #347: a file
 // denied inside a read+write dir grant (the opencode harness's service.json) is
 // masked by a read-only bind. Its content is hidden, writes fail, and rename,
