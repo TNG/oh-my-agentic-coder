@@ -123,14 +123,19 @@ func checkTopLevel(dir, top string) error {
 	}
 }
 
-// runGit runs every git command of exec, in dir. core.fsmonitor is off
-// because the sandbox can write git config in the worktree and that
-// setting runs a command. Messages are in English, which RepoRoot matches
+// runGit runs every git command of exec, in dir. The sandbox can write git
+// config in the worktree, so settings that make git run a command are off:
+// core.fsmonitor, and every transport, which a planted partial-clone
+// config uses to fetch a missing object through core.sshCommand
+// (GIT_NO_LAZY_FETCH needs git 2.45; protocol.allow=never also stops older
+// git). Repository-local keys that run a command without a transport need
+// their own entry here. Messages are in English, which RepoRoot matches
 // on, and pathspecs are literal, so a directory named "sv*" matches only
 // itself.
 func runGit(ctx context.Context, run CommandRunner, dir string, stdout, stderr io.Writer, args ...string) error {
-	ctx = withCommandEnv(ctx, "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1")
-	return run(ctx, "git", append([]string{"-C", dir, "-c", "core.fsmonitor=false"}, args...), nil, stdout, stderr)
+	ctx = withCommandEnv(ctx, "LC_ALL=C", "GIT_LITERAL_PATHSPECS=1", "GIT_NO_LAZY_FETCH=1")
+	hardening := []string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "protocol.allow=never"}
+	return run(ctx, "git", append(hardening, args...), nil, stdout, stderr)
 }
 
 // IgnoredPaths lists the paths git ignores in the repository at top and in

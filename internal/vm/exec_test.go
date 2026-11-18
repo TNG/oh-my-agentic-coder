@@ -308,6 +308,57 @@ func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 	}
 }
 
+// A planted partial-clone config makes git fetch a missing blob, here the
+// skip-worktree .gitignore or .gitmodules, through a transport that runs
+// core.sshCommand.
+func TestGitIgnoresPlantedLazyFetch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	plant := func(t *testing.T, repo, file string) {
+		git(t, repo, "config", "core.repositoryformatversion", "1")
+		git(t, repo, "config", "extensions.partialClone", "origin")
+		git(t, repo, "config", "remote.origin.url", "ssh://example.invalid/x")
+		git(t, repo, "config", "remote.origin.promisor", "true")
+		git(t, repo, "config", "core.sshCommand", "touch "+ShellQuote(marker)+"; false")
+		var blob, object bytes.Buffer
+		if err := ExecRunner(context.Background(), "git", []string{"-C", repo, "rev-parse", ":" + file}, nil, &blob, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		hash := strings.TrimSpace(blob.String())
+		if err := ExecRunner(context.Background(), "git", []string{"-C", repo, "rev-parse", "--path-format=absolute", "--git-path", "objects/" + hash[:2] + "/" + hash[2:]}, nil, &object, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "update-index", "--skip-worktree", file)
+		for _, p := range []string{filepath.Join(repo, file), strings.TrimSpace(object.String())} {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	lib := newRepo(t, map[string]string{"lib.go": "package lib", ".gitignore": "out/\n"})
+	git(t, lib, "add", ".")
+	git(t, lib, "commit", "-qm", "init")
+	for name, setup := range map[string]func(t *testing.T, top string){
+		".gitignore": func(t *testing.T, top string) { plant(t, top, ".gitignore") },
+		".gitmodules": func(t *testing.T, top string) {
+			git(t, top, "submodule", "add", "-q", lib, "libs/lib")
+			git(t, top, "commit", "-qm", "sub")
+			plant(t, top, ".gitmodules")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_ = os.Remove(marker)
+			top := newRepo(t, map[string]string{"src/a.go": "package a", ".gitignore": "build/\n"})
+			git(t, top, "add", ".")
+			git(t, top, "commit", "-qm", "init")
+			setup(t, top)
+			_, _ = IgnoredPaths(context.Background(), ExecRunner, top)
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("git ran the planted core.sshCommand on the host")
+			}
+		})
+	}
+}
+
 func TestIgnoredPathsFailsOnGitError(t *testing.T) {
 	for _, failing := range []string{"ls-files", "submodule"} {
 		run := func(_ context.Context, _ string, args []string, _ io.Reader, _, _ io.Writer) error {
@@ -927,7 +978,8 @@ func TestExecHardensEveryGitCall(t *testing.T) {
 		if name == "git" {
 			calls++
 			env := commandEnv(ctx)
-			if !slices.Contains(args, "core.fsmonitor=false") || !slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") {
+			if !slices.Contains(args, "core.fsmonitor=false") || !slices.Contains(args, "protocol.allow=never") ||
+				!slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "GIT_LITERAL_PATHSPECS=1") || !slices.Contains(env, "GIT_NO_LAZY_FETCH=1") {
 				t.Errorf("git %q with env %q lacks the hardening of runGit", args, env)
 			}
 		}
