@@ -245,7 +245,9 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 // A protected folder must refuse a Unix-socket connect even where a rule
 // allows the connect: (allow network*) in open mode, or an allow_unix_dir
 // grant for that same folder. The connect through a symlink in the workdir
-// checks that Seatbelt matches the socket's resolved path.
+// checks that Seatbelt matches the socket's resolved path. Each case first
+// connects without the protection, so a connect that fails for another
+// reason cannot pass the test.
 func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
 	if err != nil {
@@ -264,14 +266,6 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 
 	for _, mode := range []string{sandboxprofile.ModeOpen, sandboxprofile.ModeFiltered} {
 		t.Run(mode, func(t *testing.T) {
-			p := &sandboxprofile.Profile{
-				Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-				Filesystem: sandboxprofile.Filesystem{
-					AllowUnixDir: []string{sockDir},
-					Deny:         []string{sockDir},
-				},
-				Network: sandboxprofile.Network{Mode: mode},
-			}
 			// Under /tmp, not t.TempDir: a socket path must fit in 104 bytes.
 			wd, err := os.MkdirTemp("/tmp", "omac-wd-*")
 			if err != nil {
@@ -282,17 +276,30 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 			if err := os.Symlink(sock, link); err != nil {
 				t.Fatal(err)
 			}
-			g, err := ResolveGrants(p, wd, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, target := range []string{sock, link} {
-				out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
-					"--unix-socket", target, "http://x/")
-				// curl exits 7 when the connect fails; any other code means the
-				// sandbox or curl failed for another reason.
-				if code != 7 {
-					t.Errorf("connect via %s to a socket in a protected folder: want curl exit 7, got exit=%d out=%s", target, code, out)
+			for _, protect := range []bool{false, true} {
+				p := &sandboxprofile.Profile{
+					Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+					Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{sockDir}},
+					Network:    sandboxprofile.Network{Mode: mode},
+				}
+				if protect {
+					p.Filesystem.Deny = []string{sockDir}
+				}
+				g, err := ResolveGrants(p, wd, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, target := range []string{sock, link} {
+					out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
+						"--unix-socket", target, "http://x/")
+					reached := code == 0 && strings.Contains(out, "protected-socket-reached")
+					// curl exits 7 when the connect fails.
+					if !protect && !reached {
+						t.Errorf("control: connect via %s without protection must succeed: exit=%d out=%s", target, code, out)
+					}
+					if protect && code != 7 {
+						t.Errorf("connect via %s to a socket in a protected folder: want curl exit 7, got exit=%d out=%s", target, code, out)
+					}
 				}
 			}
 		})
