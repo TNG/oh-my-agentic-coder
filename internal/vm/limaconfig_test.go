@@ -100,8 +100,9 @@ func TestRenderLimaConfigStructure(t *testing.T) {
 			t.Errorf("config lacks %q", want)
 		}
 	}
-	// Docker is reached only over ssh: no TCP listener and no forward for it.
-	for _, bad := range []string{"location: ~", "writable: true", "2375", "guestPort:", "override.conf", "tcp://"} {
+	noDockerTCP := []string{"2375", "guestPort:", "override.conf", "tcp://"}
+	noHostMount := []string{"location: ~", "writable: true"}
+	for _, bad := range append(noDockerTCP, noHostMount...) {
 		if strings.Contains(got, bad) {
 			t.Errorf("config must not contain %q", bad)
 		}
