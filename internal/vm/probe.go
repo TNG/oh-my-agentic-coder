@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -18,6 +19,10 @@ type DockerVersion struct {
 // dockerVersionCmd prints "<api version> <version>" of the VM's dockerd and
 // fails while dockerd does not answer on its socket.
 var dockerVersionCmd = dockerCmd("version --format '{{.Server.APIVersion}} {{.Server.Version}}'")
+
+// versionRE accepts a version word such as "27.3.1" or "1.47", and no
+// control or invalid bytes.
+var versionRE = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+~-]*$`)
 
 // dockerCheckTimeout bounds one Docker check, so that a hanging SSH
 // connection cannot use up a caller's whole wait.
@@ -39,7 +44,7 @@ func (m *Manager) dockerVersion(ctx context.Context, st *State) (DockerVersion, 
 		return DockerVersion{}, err
 	}
 	fields := strings.Fields(out.String())
-	if len(fields) != 2 || printable(fields[0]+fields[1]) != fields[0]+fields[1] {
+	if len(fields) != 2 || !versionRE.MatchString(fields[0]) || !versionRE.MatchString(fields[1]) {
 		return DockerVersion{}, fmt.Errorf("docker version printed %q, want \"<api version> <version>\"", out.String())
 	}
 	return DockerVersion{APIVersion: fields[0], Version: fields[1]}, nil

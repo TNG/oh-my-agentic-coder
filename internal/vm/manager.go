@@ -661,13 +661,14 @@ func (m *Manager) start(ctx context.Context, timeout time.Duration) error {
 	return m.lima(ctx, "start", "--tty=false", "--timeout", timeout.String(), InstanceName)
 }
 
-// ssh runs remote and folds its stderr into the error.
+// ssh runs remote and folds its stderr into the error, escaped with
+// printable: the VM's users can write any text there.
 func (m *Manager) ssh(ctx context.Context, t SSHTarget, stdin io.Reader, stdout io.Writer, remote string) error {
 	m.Log("ssh %s@127.0.0.1 %s", t.User, remote)
 	var stderr bytes.Buffer
 	if err := m.Deps.SSH(ctx, t, stdin, stdout, &stderr, remote); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("%w: %s", err, msg)
+			return fmt.Errorf("%w: %s", err, printable(msg))
 		}
 		return err
 	}

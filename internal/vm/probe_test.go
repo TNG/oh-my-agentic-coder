@@ -40,6 +40,33 @@ func TestDockerVersionParsesOutput(t *testing.T) {
 	}
 }
 
+// The SSH port is now the only way omac reaches Docker in the VM, and a
+// non-interactive ssh command does not read DOCKER_HOST from ~/.bashrc.
+func TestDockerVersionCmdNamesTheSocket(t *testing.T) {
+	want := "docker -H unix:///run/user/$(id -u)/docker.sock version --format '{{.Server.APIVersion}} {{.Server.Version}}'"
+	if dockerVersionCmd != want {
+		t.Errorf("dockerVersionCmd = %q, want %q", dockerVersionCmd, want)
+	}
+}
+
+// Every --vm session controls the VM's agent user, so the stderr of a
+// failed command must not reach the host terminal as escape sequences or
+// as lines that look like omac's own.
+func TestManagerSSHEscapesStderr(t *testing.T) {
+	m, _, _ := newTestManager(t)
+	m.Deps.SSH = func(_ context.Context, _ SSHTarget, _ io.Reader, _, stderr io.Writer, _ string) error {
+		fmt.Fprint(stderr, "error\x1b]0;x\a\nomac vm: forged")
+		return errors.New("exit status 1")
+	}
+	_, err := m.dockerVersion(context.Background(), &State{SSHPort: 42022})
+	if err == nil {
+		t.Fatal("dockerVersion succeeded, want an error")
+	}
+	if i := strings.IndexFunc(err.Error(), func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+		t.Errorf("error holds control character %q: %q", err.Error()[i], err.Error())
+	}
+}
+
 func TestDockerVersionFailures(t *testing.T) {
 	cases := map[string]struct {
 		out string
@@ -49,6 +76,9 @@ func TestDockerVersionFailures(t *testing.T) {
 		"empty output": {out: "\n"},
 		"extra lines":  {out: "1.47 27.3.1\nomac vm: injected\n"},
 		"escape codes": {out: "1.47 27.3.1\x1b[1A\x1b[2K\n"},
+		"one word":     {out: "1.47\n"},
+		"three words":  {out: "1.47 27.3.1 x\n"},
+		"invalid byte": {out: "1.47 27.3.1\x9b2J\n"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
