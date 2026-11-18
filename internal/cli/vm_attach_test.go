@@ -291,8 +291,15 @@ func TestVMProfileMisuseRefusesReachableState(t *testing.T) {
 			t.Errorf("%s: %q, want a refusal containing %q", c.name, msg, c.want)
 		}
 	}
-	if msg := vmProfileMisuse(sandboxPlan{Native: true, PolicyRef: "default", Policy: sandboxprofile.DefaultProfile()}); msg != "" {
-		t.Errorf("default profile refused: %s", msg)
+	for _, cmd := range [][]string{
+		{"{{self}}", "sandbox", "run", "--profile", "default", "--", "{{inner_cmd}}"},
+		{"{{self}}", "sandbox", "run", "--", "{{inner_cmd}}", "--learn"},
+		{"{{self}}", "sandbox", "run", "--allow", "--learn", "--", "{{inner_cmd}}"},
+	} {
+		plan := sandboxPlan{Native: true, PolicyRef: "default", Launcher: config.SandboxProfile{Command: cmd}, Policy: sandboxprofile.DefaultProfile()}
+		if msg := vmProfileMisuse(plan); msg != "" {
+			t.Errorf("launcher %q refused: %s", cmd, msg)
+		}
 	}
 }
 

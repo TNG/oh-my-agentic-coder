@@ -78,6 +78,22 @@ func TestResolveGrantsBaselineIncluded(t *testing.T) {
 	}
 }
 
+// --vm passes the VM state root as --deny-literal precisely so that a
+// profile's override_deny cannot unblock it.
+func TestResolveGrantsOverrideDenyKeepsLiteralDeny(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "omac", "vm")
+	p := &sandboxprofile.Profile{
+		Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{root}, DenyLiteral: []string{root}},
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.ProtectedPaths, root) {
+		t.Errorf("override_deny lifted the literal deny of %s: %v", root, g.ProtectedPaths)
+	}
+}
+
 func TestResolveGrantsOverrideDeny(t *testing.T) {
 	p := &sandboxprofile.Profile{
 		Filesystem: sandboxprofile.Filesystem{

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -257,13 +256,22 @@ func vmProfileMisuse(plan sandboxPlan) string {
 }
 
 // launcherLearns reports whether a `{{self}} sandbox run` launcher command
-// passes --learn, which lifts every filesystem restriction.
+// passes --learn, which lifts every filesystem restriction. A command the
+// sandbox's own parser rejects, e.g. for a templated port, is scanned
+// instead, and a --learn anywhere before "--" counts.
 func launcherLearns(command []string) bool {
-	for _, arg := range command {
+	if len(command) < 3 {
+		return false
+	}
+	args := command[3:]
+	if f, err := sandboxprofile.ParseFlags(args); err == nil {
+		return f.Learn
+	}
+	for _, arg := range args {
 		if arg == "--" {
 			return false
 		}
-		if arg == "--learn" || strings.HasPrefix(arg, "--learn=") {
+		if arg == "--learn" {
 			return true
 		}
 	}
