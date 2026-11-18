@@ -154,12 +154,12 @@ accept range strings.
 `--deny-domain <domain>`, `--block-net`, `--workdir-access <level>`, and
 `--profile <ref>`, each repeatable where list-valued. A `<port|A-B>` value is
 either a single port or an inclusive range using the same syntax as the profile
-fields, and it expands before merging. The merged list of one field, profile
-entries plus flag entries, SHALL NOT exceed 1000 ports, and a merge above that
-cap SHALL be rejected before any process is launched. Flag values SHALL be
-merged additively into the loaded profile, except `--block-net` which sets
-`network.mode` to `blocked` and overrides all other network settings, and
-`--workdir-access` which replaces `workdir.access`. The `--deny` flag merges
+fields, and it expands before merging. The merged list of each range-accepting
+field, profile entries plus flag entries, SHALL NOT exceed 1000 ports, and a
+merge above that cap SHALL be rejected before any process is launched. Flag
+values SHALL be merged additively into the loaded profile, except `--block-net`
+which sets `network.mode` to `blocked` and overrides all other network settings,
+and `--workdir-access` which replaces `workdir.access`. The `--deny` flag merges
 into `filesystem.deny`. The command to run inside the sandbox follows a `--`
 separator.
 
