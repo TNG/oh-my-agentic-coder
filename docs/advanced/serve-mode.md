@@ -31,7 +31,7 @@ omac automatically launches `opencode serve` on port 4096. Add that server in Op
 Whether that server has a password depends on the OpenCode version:
 
 - **OpenCode 2.x** generates a new random password on every start and prints it in the `omac serve` output (`server password …`).
-- **OpenCode 1.x** has no password, so any process on your machine can use the server. omac warns about this when it starts the server.
+- **OpenCode 1.x** has no password, so any process on your machine can use the server.
 
 To protect the server with OpenCode 1.x, or to keep a stable password across restarts with 2.x, set a password used only for this server:
 
