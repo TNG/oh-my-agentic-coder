@@ -18,6 +18,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/toolcache"
+	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
 // uninstallDoc lists every place omac writes to, so users can remove it.
@@ -114,6 +115,16 @@ func TestUninstallDocListsEveryLocation(t *testing.T) {
 	check(general, filepath.Dir(cache.Dir), "toolcache.DescribeShared")
 	check(general, filepath.Dir(must(sandboxrun.DiagLogPath())), "sandboxrun.DiagLogPath")
 	check(general, filepath.Dir(must(sandboxprofile.ProfileDir())), "sandboxprofile.ProfileDir")
+	for _, xdg := range []bool{false, true} {
+		if xdg {
+			redirect("XDG_STATE_HOME")
+		}
+		check(general, must(vm.DefaultRoot()), "vm.DefaultRoot")
+	}
+	unset("XDG_STATE_HOME")
+	if body, _ := markdownSection(doc, general); !strings.Contains(body, `rm -rf "$XDG_STATE_HOME/omac"`) {
+		t.Errorf("%s: section %q does not delete $XDG_STATE_HOME/omac, where the VM state lives on every OS", uninstallDoc, general)
+	}
 	for _, xdg := range []bool{false, true} {
 		if xdg {
 			redirect("XDG_CONFIG_HOME")

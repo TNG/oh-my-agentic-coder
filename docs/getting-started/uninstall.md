@@ -89,6 +89,14 @@ omac's own folders:
 rm -rf ~/.config/omac ~/.cache/omac ~/.local/state/omac
 ```
 
+If `XDG_STATE_HOME` is set, also run:
+
+```bash
+rm -rf "$XDG_STATE_HOME/omac"
+```
+
+Lima keeps downloaded VM images in `~/Library/Caches/lima` (macOS) or `~/.cache/lima` (Linux). Delete that folder if you use Lima only for omac; you can then uninstall Lima and QEMU too.
+
 If you set `XDG_CONFIG_HOME`, the registered skills, their configuration, approvals and preferences are in `$XDG_CONFIG_HOME/omac` instead. Delete that folder too. The sandbox profiles always stay in `~/.config/omac`.
 
 **Keychain:** secrets of skills, stored under names starting with `omac/`. See [step 1](#1-remove-your-skills-secrets).
@@ -108,11 +116,7 @@ The `.opencode` folder can also hold OpenCode's own files, so delete only these 
 | `~/.local/state/omac/audit` | The audit log: what the sandbox allowed and blocked. `omac diagnose` reads it. If `XDG_STATE_HOME` is set, it is in `$XDG_STATE_HOME/omac/audit` instead. |
 | `$XDG_RUNTIME_DIR/omac` | Temporary files of running sessions. The OS clears this folder at logout. If `XDG_RUNTIME_DIR` is not set, omac uses `~/.local/state/omac/run`. |
 
-The general command above already deletes `~/.local/state/omac`. If `XDG_STATE_HOME` is set, also run:
-
-```bash
-rm -rf "$XDG_STATE_HOME/omac"
-```
+The commands in [On every system](#on-every-system) already delete the audit log.
 
 ### macOS
 
