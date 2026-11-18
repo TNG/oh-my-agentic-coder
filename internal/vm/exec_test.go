@@ -256,10 +256,15 @@ func TestGitIgnoresPlantedFSMonitor(t *testing.T) {
 			git(t, top, "submodule", "add", "-q", lib, "libs/lib")
 			plant(t, filepath.Join(top, "libs/lib"))
 		},
-		"untracked clone": func(t *testing.T, top string) {
+		"clone the agent staged as a submodule": func(t *testing.T, top string) {
 			clone := filepath.Join(top, "vendor/x")
 			writeFiles(t, clone, map[string]string{"v.c": "x"})
 			git(t, clone, "init", "-q")
+			git(t, clone, "add", ".")
+			git(t, clone, "commit", "-qm", "init")
+			git(t, top, "add", "vendor/x")
+			git(t, top, "config", "-f", ".gitmodules", "submodule.x.path", "vendor/x")
+			git(t, top, "config", "-f", ".gitmodules", "submodule.x.url", "./vendor/x")
 			plant(t, clone)
 		},
 	} {
