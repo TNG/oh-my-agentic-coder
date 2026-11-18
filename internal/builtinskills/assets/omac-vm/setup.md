@@ -137,11 +137,16 @@ For Maven, the middle line is
   ```
 
 - Maven reads repository credentials only from a `<server>` entry in a
-  settings file, not from the environment. Use a settings file in the
-  project that git does not ignore (the VM copy leaves ignored files out),
-  for example `.mvn/settings.xml`, whose `<password>` is
-  `${env.MY_REPO_TOKEN}`, and add `-s .mvn/settings.xml` to the Maven
-  command. Never write the token itself into a file: the VM keeps it.
+  settings file, not from the environment. The human commits a settings
+  file to the project, for example `.mvn/settings.xml`, whose `<password>`
+  is `${env.MY_REPO_TOKEN}`, together with a `.mvn/maven.config` that holds
+  `-s .mvn/settings.xml`. Priming runs from a fresh clone, so the files must
+  be committed. With `maven.config`, priming and every later offline build
+  read the same settings: Maven records which repository each cached
+  artifact came from, and a build without the settings' mirror fails
+  offline although the cache is complete. Offline, the unset
+  `${env.MY_REPO_TOKEN}` does no harm. Never write the token itself into a
+  file: the VM keeps it.
 - Priming has to end with exit code 0 and `BUILD SUCCESSFUL` (Gradle) or
   `BUILD SUCCESS` (Maven). Gradle, for example, stops at the first failed
   task and skips the downloads of the tasks after it, so offline builds in a

@@ -281,7 +281,7 @@ omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./gradlew check --no-daemon
 omac vm offline
 ```
 
-For Maven, the middle line is `omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./mvnw verify`. Maven reads a token only from a `<server>` entry in a settings file, so use a settings file in the project that git does not ignore, such as `.mvn/settings.xml` with `<password>${env.MY_REPO_TOKEN}</password>`, and add `-s .mvn/settings.xml`.
+For Maven, the middle line is `omac vm exec --env MY_REPO_TOKEN --cwd backend -- ./mvnw verify`. Maven reads a token only from a `<server>` entry in a settings file, so commit a settings file such as `.mvn/settings.xml` with `<password>${env.MY_REPO_TOKEN}</password>`, and a `.mvn/maven.config` with `-s .mvn/settings.xml`. Then priming and later offline builds use the same settings; a build without the settings' mirror fails offline although its cache is complete.
 
 After that, the build finds its dependencies in the VM when it runs offline, for example `./gradlew test --offline` or `./mvnw -o test`. Keep Gradle's `--offline`: without it, Gradle checks version ranges and `-SNAPSHOT` dependencies online again after 24 hours and fails in the VM. If the build fails, still run `omac vm offline`: omac refuses `--vm` sessions while the VM is online. Prime with the build step that runs all the checks you need (`check` for Gradle, `verify` for Maven), not only the tests: some tools, such as Checkstyle or Spotless, are downloaded only when the step that uses them runs.
 
