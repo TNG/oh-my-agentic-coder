@@ -727,10 +727,6 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
-	// Run the inner command (opencode serve) in the sandbox, with the
-	// control plane already serving. ExecWithReadyPID blocks until the child
-	// exits; the deferred facade/supervisor/control teardown then runs
-	// (§5.3).
 	// Wire the strict-mode fatal handler now that sup/facade/control exist.
 	auditFatal = func(ferr error) {
 		fmt.Fprintln(env.Stderr, "omac serve: audit (strict) write failed, aborting:", ferr)
@@ -747,6 +743,9 @@ func runServe(args []string, env *Env) int {
 	auditor.Emit(audit.SessionStart(env.Version, harness.Name, profName, backend))
 	auditor.Emit(audit.InnerExec(argv, profName, sandboxed))
 
+	// Run the inner command (opencode serve) in the sandbox, with the
+	// control plane already serving. ExecWithReadyPID blocks until the child
+	// exits; the deferred facade/supervisor/control teardown then runs.
 	code, err := sandbox.ExecWithReadyPID(argv, extra, vmSess.readyHook(func(int) {
 		if verbose {
 			fmt.Fprintln(env.Stderr, "[verbose] inner command started; control plane live")
