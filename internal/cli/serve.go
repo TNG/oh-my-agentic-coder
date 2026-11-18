@@ -683,18 +683,9 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// Hint when the harness server gets no password through omac (sandboxed
-	// or not; the server listens either way). Project discovery classified
-	// OpenCode only on macOS with the native sandbox, so classify it here
-	// otherwise, and only when the hint is actually printed: the probe runs
-	// `opencode --version`.
-	generatesPassword := func() bool {
-		if ocClass == openCodeOther {
-			ocClass = classifyOpenCode(inner)
-		}
-		return openCodeGeneratesPassword(ocClass)
-	}
+	// or not; the server listens either way).
 	if w := serverExposureWarning(harness, inner, serveAuthGetenv(harness, plan, authExtra, noSandbox),
-		serveAuthAdvice(harness, plan, noSandbox), generatesPassword); w != "" {
+		serveAuthAdvice(harness, plan, noSandbox), serveGeneratesPassword(ocClass, inner)); w != "" {
 		fmt.Fprintln(env.Stderr, w)
 	}
 
@@ -826,6 +817,21 @@ func injectServerPortGrant(argv []string, h config.Harness, innerArgv []string) 
 		return argv
 	}
 	return injectSandboxFlag(argv, "--open-port", strconv.Itoa(port))
+}
+
+// serveGeneratesPassword returns the generatesPassword argument for
+// serverExposureWarning. known is the OpenCode class project discovery found;
+// discovery classifies only on macOS with the native sandbox, so for
+// openCodeOther the function classifies inner itself. That may run
+// `opencode --version`, which is why it happens only when called.
+func serveGeneratesPassword(known openCodeVersionKind, inner []string) func() bool {
+	return func() bool {
+		class := known
+		if class == openCodeOther {
+			class = classifyOpenCode(inner)
+		}
+		return openCodeGeneratesPassword(class)
+	}
 }
 
 // serverExposureWarning returns a one-line hint when a harness's server will

@@ -478,6 +478,31 @@ func TestOpenCodeGeneratesPassword(t *testing.T) {
 	}
 }
 
+// runServe picks the hint through serveGeneratesPassword. Wrapper specs pin
+// the version, so these cases need no opencode binary on the machine.
+func TestServeGeneratesPasswordPicksHint(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	unset := func(string) string { return "" }
+	for _, tc := range []struct {
+		name  string
+		known openCodeVersionKind
+		inner []string
+		want  string
+	}{
+		{"1.x wrapper", openCodeOther, []string{"npx", "opencode-ai@1", "serve"}, "reachable by any local process"},
+		{"2.x wrapper", openCodeOther, []string{"npx", "opencode-ai@2.3.2", "serve"}, "random password"},
+		{"unknown command", openCodeOther, []string{"my-wrapper.sh", "serve"}, "reachable by any local process"},
+		{"class from discovery wins", openCodeV21Plus, []string{"npx", "opencode-ai@1", "serve"}, "random password"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := serverExposureWarning(oc, tc.inner, unset, "set OMAC_SERVE_PASSWORD", serveGeneratesPassword(tc.known, tc.inner))
+			if !strings.Contains(w, tc.want) {
+				t.Errorf("hint = %q, want it to contain %q", w, tc.want)
+			}
+		})
+	}
+}
+
 func TestInjectOpenPort(t *testing.T) {
 	// With a `--` separator, the flag goes right before it.
 	in := []string{"nono", "run", "--open-port", "5000", "--", "opencode", "serve"}
