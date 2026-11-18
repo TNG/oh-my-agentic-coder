@@ -159,7 +159,7 @@ func TestRunLaunchWithoutVMAddsNothing(t *testing.T) {
 		t.Fatalf("runLaunch code = %d\nstderr:\n%s", code, stderr())
 	}
 	raw, _ := os.ReadFile(dump)
-	for _, bad := range []string{"OMAC_VM_", "--vm", filepath.Join("vm", "docker"), filepath.Join("vm", "agent_key")} {
+	for _, bad := range []string{"OMAC_VM_", "--vm", filepath.Join("vm", "agent_key")} {
 		if strings.Contains(string(raw), bad) {
 			t.Errorf("dump contains %q without --vm:\n%s", bad, raw)
 		}

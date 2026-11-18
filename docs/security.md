@@ -328,8 +328,8 @@ Known limits:
 - A kernel exploit inside the VM gives the agent root there. Root can turn the firewall off and then reach the internet and services on your host's loopback interface through Lima's gateway.
 - On Linux, the grant for the VM's SSH port also lets the agent connect to that port number on any host, not only on loopback, because Landlock cannot scope a port to an address.
 - All sessions of one user share the VM, so one session can see and change the containers of another.
-- The grant for the VM's two ports also allows listening on them. While the VM is stopped, a session could listen on one of these ports and answer a session that attaches later.
-- On macOS another running session can also write this session's temp dir, for example a `config.json` in its `DOCKER_CONFIG` that makes this session's `docker` run a program of that session's choice.
+- The grant for the VM's SSH port also allows listening on it. While the VM is stopped, a session could listen on that port and answer a session that attaches later.
+- On macOS another running session can also write this session's temp dir, for example replace the `known_hosts` copy there, so that this session's ssh accepts a server of that session's choice on the VM's SSH port.
 - omac counts a session as attached while omac or the sandboxed command it started runs. A process the agent detached from the session is not counted, so `omac vm online` can restart the VM under it.
 
 What `omac vm exec` shares with the VM:
