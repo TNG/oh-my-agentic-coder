@@ -23,12 +23,12 @@ func TestSecurityVMStateRootIsProtected(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for name, b := range map[string]sandboxprofile.Baseline{
+			for platform, b := range map[string]sandboxprofile.Baseline{
 				"linux":  sandboxprofile.LinuxBaselineForTest(),
 				"darwin": sandboxprofile.DarwinBaselineForTest(),
 			} {
 				if !coveredBy(root, sandboxprofile.EffectiveProtectedPaths(b, nil)) {
-					t.Errorf("%s baseline does not protect the VM state root %s: the sandbox could read admin_key", name, root)
+					t.Errorf("%s baseline does not protect the VM state root %s: the sandbox could read admin_key", platform, root)
 				}
 			}
 		})
