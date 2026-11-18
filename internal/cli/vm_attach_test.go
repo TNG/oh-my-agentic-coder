@@ -15,6 +15,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
@@ -334,12 +335,13 @@ type attachOrderManager struct {
 	sessions  string
 	sawMarker bool
 	attachErr error
+	agentKey  string
 }
 
 func (a *attachOrderManager) PrepareAttach(context.Context) (vm.AttachInfo, error) {
 	_, err := os.Stat(filepath.Join(a.sessions, strconv.Itoa(os.Getpid())))
 	a.sawMarker = err == nil
-	return vm.AttachInfo{DockerPort: 1}, a.attachErr
+	return vm.AttachInfo{DockerPort: 1, AgentKeyPath: a.agentKey}, a.attachErr
 }
 
 func useAttachOrderManager(t *testing.T, attachErr error) (*attachOrderManager, string) {
@@ -384,11 +386,56 @@ func TestPrepareVMAttachFailureLeavesNoMarker(t *testing.T) {
 
 func TestAttachVMKeyFailureLeavesNoMarker(t *testing.T) {
 	_, sessions := useAttachOrderManager(t, nil)
-	if _, err := attachVM(context.Background(), devnullEnv(t), t.TempDir()); err == nil {
-		t.Fatal("attachVM succeeded without an agent key, want an error")
+	_, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), defaultSessionProtection())
+	if err == nil || !strings.Contains(err.Error(), "agent key") {
+		t.Fatalf("attachVM = %v, want the missing agent key error", err)
 	}
 	if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
 		t.Errorf("markers left after a failed key copy: %v", entries)
+	}
+}
+
+func defaultSessionProtection() *sandboxrun.ProtectedPathSet {
+	return sessionProtectedPaths(false, sandboxPlan{Native: true, Policy: sandboxprofile.DefaultProfile()})
+}
+
+func TestAttachVMDefaultProfileAttaches(t *testing.T) {
+	fake, _ := useAttachOrderManager(t, nil)
+	fake.agentKey = testAgentKey(t)
+	s, err := attachVM(context.Background(), devnullEnv(t), t.TempDir(), defaultSessionProtection())
+	if err != nil {
+		t.Fatalf("attachVM with the default profile: %v", err)
+	}
+	s.release()
+}
+
+// The sandbox must never reach the VM state: it holds the admin key and
+// the session markers. start and serve both pass sessionProtectedPaths.
+func TestAttachVMRefusesReachableState(t *testing.T) {
+	fake, sessions := useAttachOrderManager(t, nil)
+	fake.agentKey = testAgentKey(t)
+	root := filepath.Dir(sessions)
+	unprotected := sandboxprofile.DefaultProfile()
+	unprotected.Filesystem.OverrideDeny = []string{root}
+	cases := map[string]*sandboxrun.ProtectedPathSet{
+		"override_deny removes the folder": sessionProtectedPaths(false, sandboxPlan{Native: true, Policy: unprotected}),
+		"serve --learn":                    sessionProtectedPaths(true, sandboxPlan{Native: true, Policy: sandboxprofile.DefaultProfile()}),
+		"policy not resolved":              sessionProtectedPaths(false, sandboxPlan{Native: true}),
+	}
+	for name, protected := range cases {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			_, err := attachVM(context.Background(), devnullEnv(t), tmp, protected)
+			if err == nil || !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "must keep it protected") {
+				t.Fatalf("attachVM = %v, want a refusal naming %s", err, root)
+			}
+			if entries, _ := os.ReadDir(sessions); len(entries) != 0 {
+				t.Errorf("markers left after the refusal: %v", entries)
+			}
+			if _, err := os.Stat(filepath.Join(tmp, "vm")); err == nil {
+				t.Error("agent key copied although the attach was refused")
+			}
+		})
 	}
 }
 
@@ -410,7 +457,7 @@ func TestServeVMWiring(t *testing.T) {
 	if !ok || !p.vm {
 		t.Fatalf("parseServeArgs(--vm): ok=%v vm=%v", ok, p.vm)
 	}
-	for _, other := range []string{"--no-sandbox", "--no-inner"} {
+	for _, other := range []string{"--no-sandbox", "--no-inner", "--learn"} {
 		if _, ok := parseServeArgs([]string{"--vm", other}, devnullEnv(t)); ok {
 			t.Errorf("parseServeArgs(--vm %s) accepted", other)
 		}

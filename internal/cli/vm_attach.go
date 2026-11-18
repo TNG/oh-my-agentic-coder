@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/vm"
 )
 
@@ -27,11 +28,17 @@ type vmSession struct {
 // it, and prepares the agent's files in <tmpDir>/vm. tmpDir must be the
 // session's temp dir, removed when omac exits normally, because it holds a
 // copy of the agent's SSH key. The VM is never booted or stopped here; it
-// outlives every session.
-func attachVM(ctx context.Context, env *Env, tmpDir string) (*vmSession, error) {
+// outlives every session. It refuses when protected, the session sandbox's
+// protected paths, does not cover the VM state with its admin key.
+func attachVM(ctx context.Context, env *Env, tmpDir string, protected *sandboxrun.ProtectedPathSet) (*vmSession, error) {
 	info, markers, err := prepareVMAttach(ctx, env)
 	if err != nil {
 		return nil, err
+	}
+	root := markers.layout.Root
+	if _, ok := protected.IsProtected(root); !ok {
+		markers.release()
+		return nil, fmt.Errorf("the sandbox could reach the VM state in %s; the sandbox profile must keep it protected", root)
 	}
 	vmEnv, err := vmSandboxEnv(info, tmpDir)
 	if err != nil {

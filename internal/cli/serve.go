@@ -127,6 +127,10 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --for-opencode-desktop")
 		return serveParse{}, false
 	}
+	if *vmAttach && *learn {
+		fmt.Fprintln(env.Stderr, "omac serve: --vm cannot be used with --learn, which would let the sandbox reach the VM's admin key")
+		return serveParse{}, false
+	}
 	if *cacheScopeFlag != "" {
 		if _, err := config.ValidateCacheScope(*cacheScopeFlag); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve:", err)
@@ -374,7 +378,7 @@ func runServe(args []string, env *Env) int {
 
 	var vmSess *vmSession
 	if parsed.vm {
-		vmSess, err = attachVM(ctx, env, sandboxTmp)
+		vmSess, err = attachVM(ctx, env, sandboxTmp, sessionProtectedPaths(learn, plan))
 		if err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --vm:", err)
 			return vmAttachExitCode(err)
