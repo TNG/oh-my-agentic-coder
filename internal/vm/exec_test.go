@@ -749,6 +749,27 @@ func TestExecRefusesWithoutHome(t *testing.T) {
 	}
 }
 
+// A linked worktree whose .git file is gone resolves to the enclosing
+// checkout, which ignores the worktree directory.
+func TestExecRefusesDirectoryGitIgnores(t *testing.T) {
+	for _, c := range []struct{ prefix, cwd string }{
+		{"build/w/", ""},
+		{"build/", ""},
+		{"", "build/x"},
+	} {
+		f := &execFakes{top: "/w/repo", prefix: c.prefix}
+		o := f.opts("/w/repo/"+c.prefix, io.Discard)
+		o.Cwd = c.cwd
+		_, err := Exec(context.Background(), o)
+		if err == nil || !strings.Contains(err.Error(), "ignores") {
+			t.Errorf("Exec in %s%s = %v, want a refusal", c.prefix, c.cwd, err)
+		}
+		if f.rsync != nil || len(f.remotes) != 0 {
+			t.Errorf("Exec in %s%s copied: rsync=%q ssh=%q", c.prefix, c.cwd, f.rsync, f.remotes)
+		}
+	}
+}
+
 func TestExecAllowsNilWriters(t *testing.T) {
 	f := &execFakes{notRepo: exitErr(t, 128)}
 	o := f.opts("/w/plain", nil)

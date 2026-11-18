@@ -340,6 +340,9 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		if ignored, err = IgnoredPaths(ctx, o.Run, top); err != nil {
 			return 1, err
 		}
+		if p, ok := ignoredAncestor(cwd, ignored); ok {
+			return 1, fmt.Errorf("omac vm exec: git in %s ignores %s, so it would not be copied; is %s its own repository?", top, p, o.Workdir)
+		}
 	}
 	if strings.ContainsAny(root, "\r\n") {
 		return 1, fmt.Errorf("omac vm exec: copy root %q contains a newline", root)
@@ -383,6 +386,20 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, sshError("run command", err)
 	}
 	return 0, nil
+}
+
+// ignoredAncestor returns the ignored path that holds dir (both relative
+// to the top level), such as "build/" for "build/w". A directory there is
+// not copied; reaching one usually means a linked worktree lost its .git
+// file and git found the enclosing checkout instead.
+func ignoredAncestor(dir string, ignored []string) (string, bool) {
+	dir = strings.Trim(dir, "/") + "/"
+	for _, p := range ignored {
+		if strings.HasSuffix(p, "/") && strings.HasPrefix(dir, p) {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // refuseProtectedOverlap fails when root contains or lies in a path the
