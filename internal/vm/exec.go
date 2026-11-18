@@ -178,11 +178,11 @@ func gitError(step string, err error, stderr *bytes.Buffer) error {
 	return fmt.Errorf("omac vm exec: git %s: %w: %s", step, err, strings.TrimSpace(stderr.String()))
 }
 
-// WriteExcludeFile writes an rsync exclude list into dir: ".git" at any
-// depth (a directory, or the file a `git worktree` checkout has), the files
-// the sandbox hides in every workdir (such as .env) at any depth, then each
-// ignored path anchored at the transfer root.
-func WriteExcludeFile(dir string, ignored []string) (string, error) {
+// ExcludeList is the rsync exclude list, one pattern per line: ".git" at
+// any depth (a directory, or the file a `git worktree` checkout has), the
+// files the sandbox hides in every workdir (such as .env) at any depth,
+// then each ignored path anchored at the transfer root.
+func ExcludeList(ignored []string) string {
 	var b strings.Builder
 	b.WriteString(".git\n")
 	for _, name := range sandboxprofile.PlatformBaseline().WorkdirProtected {
@@ -191,21 +191,19 @@ func WriteExcludeFile(dir string, ignored []string) (string, error) {
 	for _, p := range ignored {
 		b.WriteString("/" + rsyncPattern(p) + "\n")
 	}
-	path := filepath.Join(dir, "exclude")
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-		return "", fmt.Errorf("omac vm exec: write exclude file: %w", err)
-	}
-	return path, nil
+	return b.String()
 }
 
 // RsyncArgs are the rsync arguments that copy workdir's contents into
-// remoteDir in the VM. They never delete on the remote side and work with
-// both Apple's openrsync and rsync 3.x.
-func RsyncArgs(workdir, excludeFile string, t SSHTarget, remoteDir string) []string {
+// remoteDir in the VM, reading the ExcludeList from stdin: a file in the
+// temp directory, which the sandbox can write, could be emptied before
+// rsync reads it. They never delete on the remote side and work with both
+// Apple's openrsync and rsync 3.x.
+func RsyncArgs(workdir string, t SSHTarget, remoteDir string) []string {
 	t.TTY = false // a terminal would garble rsync's protocol stream
 	return []string{
 		"-rlpt", "--no-owner", "--no-group", "-z",
-		"--exclude-from=" + excludeFile,
+		"--exclude-from=-",
 		"-e", "ssh " + ShellJoin(SSHArgs(t)),
 		strings.TrimRight(workdir, "/") + "/",
 		t.User + "@127.0.0.1:" + remoteDir,
@@ -359,23 +357,14 @@ func Exec(ctx context.Context, o ExecOpts) (int, error) {
 		return 1, err
 	}
 
-	tmp, err := os.MkdirTemp("", "omac-vm-exec-")
-	if err != nil {
-		return 1, fmt.Errorf("omac vm exec: temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmp)
-	excludeFile, err := WriteExcludeFile(tmp, ignored)
-	if err != nil {
-		return 1, err
-	}
-
 	target := o.Conn.Target
 	target.TTY = false
 	if err := o.SSH(ctx, target, nil, io.Discard, o.Stderr, registerCmd(slug, root)); err != nil {
 		return failure(ctx, sshError("register worktree", err))
 	}
 	logf("omac vm exec: copying %s to the VM (%s)", root, remoteDir)
-	if err := o.Run(ctx, "rsync", RsyncArgs(root, excludeFile, target, remoteDir), nil, o.Stderr, o.Stderr); err != nil {
+	excludes := strings.NewReader(ExcludeList(ignored))
+	if err := o.Run(ctx, "rsync", RsyncArgs(root, target, remoteDir), excludes, o.Stderr, o.Stderr); err != nil {
 		if exitCode(err) == 255 || exitCode(err) == 12 { // ssh failed, or the stream broke
 			err = fmt.Errorf("%w; %s", err, connectionHint)
 		}

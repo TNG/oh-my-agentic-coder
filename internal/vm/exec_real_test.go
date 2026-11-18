@@ -39,13 +39,10 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	excl, err := WriteExcludeFile(base, []string{"build/", "foo[1]", "secret\nkey", "x[1]\ny"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	excludes := ExcludeList([]string{"build/", "foo[1]", "secret\nkey", "x[1]\ny"})
 
 	// The production arguments, minus the remote shell and with a local target.
-	prod := RsyncArgs(src, excl, testTarget, "omac/slug/")
+	prod := RsyncArgs(src, testTarget, "omac/slug/")
 	var args []string
 	for i := 0; i < len(prod)-1; i++ {
 		if prod[i] == "-e" {
@@ -56,12 +53,12 @@ func TestRsyncFlagsCopyLocally(t *testing.T) {
 	}
 	args = append(args, dst+"/")
 	var stderr bytes.Buffer
-	if err := ExecRunner(context.Background(), "rsync", args, nil, io.Discard, &stderr); err != nil {
+	if err := ExecRunner(context.Background(), "rsync", args, strings.NewReader(excludes), io.Discard, &stderr); err != nil {
 		t.Fatalf("rsync %q: %v: %s", args, err, stderr.String())
 	}
 
 	var got []string
-	err = filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -102,7 +99,7 @@ func TestRsyncRemoteShellKeepsSSHArgs(t *testing.T) {
 	}
 	base := t.TempDir()
 	bin, src, dst := filepath.Join(base, "bin"), filepath.Join(base, "src"), filepath.Join(base, "dst")
-	writeFiles(t, src, map[string]string{"keep.txt": "k"})
+	writeFiles(t, src, map[string]string{"keep.txt": "k", ".env": "SECRET=1"})
 	writeFiles(t, bin, map[string]string{"ssh": stubSSH})
 	if err := os.Chmod(filepath.Join(bin, "ssh"), 0o755); err != nil {
 		t.Fatal(err)
@@ -110,19 +107,18 @@ func TestRsyncRemoteShellKeepsSSHArgs(t *testing.T) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	excl, err := WriteExcludeFile(base, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	argsFile := filepath.Join(base, "ssh-args")
 	ctx := withCommandEnv(context.Background(), "PATH="+bin+":"+os.Getenv("PATH"), "SSH_ARGS_FILE="+argsFile)
-	args := RsyncArgs(src, excl, testTarget, dst+"/")
+	args := RsyncArgs(src, testTarget, dst+"/")
 	var stderr bytes.Buffer
-	if err := ExecRunner(ctx, "rsync", args, nil, io.Discard, &stderr); err != nil {
+	if err := ExecRunner(ctx, "rsync", args, strings.NewReader(ExcludeList(nil)), io.Discard, &stderr); err != nil {
 		t.Fatalf("rsync %q: %v: %s", args, err, stderr.String())
 	}
 	if _, err := os.Stat(filepath.Join(dst, "keep.txt")); err != nil {
 		t.Fatalf("not copied through the stub: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".env")); err == nil {
+		t.Fatal(".env copied: the exclude list on stdin did not reach rsync")
 	}
 	raw, err := os.ReadFile(argsFile)
 	if err != nil {

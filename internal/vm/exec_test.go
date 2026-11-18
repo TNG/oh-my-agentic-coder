@@ -316,31 +316,22 @@ func TestIgnoredPathsDropsBareDot(t *testing.T) {
 	}
 }
 
-func readExcludeFile(t *testing.T, ignored []string) []string {
-	t.Helper()
-	p, err := WriteExcludeFile(t.TempDir(), ignored)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+func excludeLines(ignored []string) []string {
+	return strings.Split(strings.TrimSuffix(ExcludeList(ignored), "\n"), "\n")
 }
 
-func TestWriteExcludeFileAlwaysExcludesProtectedFiles(t *testing.T) {
+func TestExcludeListAlwaysExcludesProtectedFiles(t *testing.T) {
 	protected := sandboxprofile.PlatformBaseline().WorkdirProtected
 	if !slices.Contains(protected, ".env") {
 		t.Fatalf("baseline lacks .env: %q", protected)
 	}
-	lines := readExcludeFile(t, nil)
+	lines := excludeLines(nil)
 	if want := append([]string{".git"}, protected...); !slices.Equal(lines, want) {
 		t.Fatalf("exclude file = %q, want %q", lines, want)
 	}
 }
 
-func TestWriteExcludeFileAnchorsIgnoredPaths(t *testing.T) {
+func TestExcludeListAnchorsIgnoredPaths(t *testing.T) {
 	for _, c := range []struct{ name, ignored, want string }{
 		{"directory", "build/", "/build/"},
 		{"plain file", "x.log", "/x.log"},
@@ -352,13 +343,13 @@ func TestWriteExcludeFileAnchorsIgnoredPaths(t *testing.T) {
 		{"bytes that are not UTF-8", "out\xff[1]", "/out\xff\\[1\\]"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			lines := readExcludeFile(t, []string{c.ignored})
+			lines := excludeLines([]string{c.ignored})
 			if got := lines[len(lines)-1]; got != c.want {
 				t.Fatalf("pattern = %q, want %q", got, c.want)
 			}
 		})
 	}
-	if lines := readExcludeFile(t, []string{"a\nb"}); slices.Contains(lines, "/a") {
+	if lines := excludeLines([]string{"a\nb"}); slices.Contains(lines, "/a") {
 		t.Fatalf("a name with a newline split into patterns: %q", lines)
 	}
 }
@@ -366,10 +357,10 @@ func TestWriteExcludeFileAnchorsIgnoredPaths(t *testing.T) {
 var testTarget = SSHTarget{User: "alice", Port: 31022, KeyPath: "/k/agent key", KnownHosts: "/k/known_hosts"}
 
 func TestRsyncArgs(t *testing.T) {
-	args := RsyncArgs("/w/repo", "/tmp/ex", testTarget, "omac/slug/")
+	args := RsyncArgs("/w/repo", testTarget, "omac/slug/")
 	want := []string{
 		"-rlpt", "--no-owner", "--no-group", "-z",
-		"--exclude-from=/tmp/ex",
+		"--exclude-from=-",
 		"-e", "ssh " + ShellJoin(SSHArgs(testTarget)),
 		"/w/repo/", "alice@127.0.0.1:omac/slug/",
 	}
@@ -385,13 +376,13 @@ func TestRsyncArgs(t *testing.T) {
 		}
 	}
 	// A trailing slash on the workdir is not doubled.
-	if got := RsyncArgs("/w/repo/", "/tmp/ex", testTarget, "omac/slug/"); got[7] != "/w/repo/" {
+	if got := RsyncArgs("/w/repo/", testTarget, "omac/slug/"); got[7] != "/w/repo/" {
 		t.Fatalf("source = %q", got[7])
 	}
 	// rsync's own ssh never gets a terminal.
 	tty := testTarget
 	tty.TTY = true
-	if got := RsyncArgs("/w/repo", "/tmp/ex", tty, "omac/slug/"); !reflect.DeepEqual(got, want) {
+	if got := RsyncArgs("/w/repo", tty, "omac/slug/"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("args with TTY =\n%q\nwant\n%q", got, want)
 	}
 }
@@ -486,7 +477,7 @@ type execFakes struct {
 	onCmd       func() // runs when the command's ssh call starts
 }
 
-func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Reader, stdout, stderr io.Writer) error {
+func (f *execFakes) run(_ context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	f.runCalls = append(f.runCalls, name)
 	switch name {
 	case "git":
@@ -511,11 +502,9 @@ func (f *execFakes) run(_ context.Context, name string, args []string, _ io.Read
 	case "rsync":
 		f.order = append(f.order, "rsync")
 		f.rsync = args
-		for _, a := range args {
-			if p, ok := strings.CutPrefix(a, "--exclude-from="); ok {
-				raw, _ := os.ReadFile(p)
-				f.excludes = string(raw)
-			}
+		if slices.Contains(args, "--exclude-from=-") && stdin != nil {
+			raw, _ := io.ReadAll(stdin)
+			f.excludes = string(raw)
 		}
 		return f.rsyncErr
 	}
