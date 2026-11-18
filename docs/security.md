@@ -263,10 +263,10 @@ primitives built into the OS so confinement is enforced by the kernel.
 
 ## Sandbox access reference
 
-The table below lists which paths and environment variables the sandbox can and
-cannot access.
+The table below lists which paths, ports, and environment variables the sandbox
+can and cannot access.
 
-| Path or variable | Access | Why |
+| Path, variable, or port grant | Access | Why |
 |---|---|---|
 | `<workdir>` | read + write | Your project files |
 | Harness config dirs (e.g. `~/.claude`, `~/.local/share/opencode`, `~/.local/share/opentui`) | read + write | The harness stores its state and credentials here; omac pre-creates declared first-use dirs (e.g. OpenCode's `opentui` tree-sitter grammar cache) before sandbox grant resolution |
@@ -285,6 +285,8 @@ cannot access.
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
+| `network.listen_port` | bind | TCP ports the agent may listen on. Entries are port numbers or inclusive ranges such as `"8000-8100"`, capped at 1000 ports per field; see [Granting port ranges](./configuration.md#granting-port-ranges). On macOS a list does not limit bind access to the named ports: any non-empty list permits binding any port |
+| `network.allow_tcp_connect` | connect | Direct outbound TCP on those ports, to any host. Used for protocols the proxy cannot carry, such as SSH or database clients; the domain allow/deny list does not apply. Same entry syntax and 1000-port cap |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 

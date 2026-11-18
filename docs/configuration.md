@@ -104,6 +104,30 @@ Linux has no equivalent, because Landlock cannot scope a port to localhost.
 
 You can also open a port for a single session with `omac start --open-port 3000`, which is handy for a quick test before changing the grants file.
 
+### Granting port ranges
+
+In the sandbox grants file, `network.listen_port` and `network.allow_tcp_connect` take a list of ports. An entry is a number, a numeric string such as `"8100"`, or an inclusive range such as `"8000-8100"`. A process that reserves a block of ports, such as a dev server scanning 8000 to 8100, needs one entry instead of 101:
+
+```json
+"network": { "listen_port": [4097, "8000-8100"] }
+```
+
+That grants port 4097 and every port from 8000 through 8100. A reversed range, an endpoint below 1 or above 65535, and anything else, such as a fraction or `"abc"`, are rejected when the profile loads, before the session starts. omac expands a range in memory only and never rewrites your file.
+
+`network.listen_port` is for servers inside the sandbox that listen on a port. `network.allow_tcp_connect` allows direct outbound TCP to any host on those ports, for tools whose protocol the proxy cannot carry, such as SSH or a database client. The domain allow/deny list does not apply to those connections.
+
+Each of the two fields is limited to 1000 ports, counting both the profile entries and any flags added for the session. A list above the limit fails with an error naming the field; omac does not narrow the grant to fit.
+
+On Linux, each port in a range becomes its own kernel rule, exactly as if you had listed it separately.
+
+`network.open_port` accepts no ranges and stays a list of single ports. A port there also permits outbound connections to any host on it (see [Opening a port](#opening-a-port)), so omac keeps that grant deliberately narrow.
+
+For a single session, `omac sandbox run` accepts these as flags: `--listen-port` and `--allow-tcp-connect`. Each takes a single port or a range and can be repeated. The flags add to the profile's ports rather than replacing them:
+
+```bash
+omac sandbox run --listen-port 8000-8100 --allow-tcp-connect 22 -- <command>
+```
+
 ### Passing an environment variable into the sandbox
 
 By default, the sandbox strips every variable from your shell except a small set of operational defaults (`PATH`, `HOME`, `LANG`, …). Ambient secrets like cloud tokens never reach the agent.
