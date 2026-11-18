@@ -13,7 +13,7 @@ import (
 )
 
 // TestRsyncFlagsCopyLocally runs the local rsync with the production flags
-// and exclude file, copying src/ to dst/ on this machine instead of the VM.
+// and exclude list, copying src/ to dst/ on this machine instead of the VM.
 func TestRsyncFlagsCopyLocally(t *testing.T) {
 	if _, err := exec.LookPath("rsync"); err != nil {
 		t.Skip("rsync not installed")

@@ -389,7 +389,7 @@ func TestExcludeListAlwaysExcludesProtectedFiles(t *testing.T) {
 	}
 	lines := excludeLines(nil)
 	if want := append([]string{".git"}, protected...); !slices.Equal(lines, want) {
-		t.Fatalf("exclude file = %q, want %q", lines, want)
+		t.Fatalf("exclude list = %q, want %q", lines, want)
 	}
 }
 
@@ -650,7 +650,7 @@ func TestExecRunsRsyncThenSSH(t *testing.T) {
 		t.Fatalf("rsync ran in %s, want %s", f.rsyncWd, workdir)
 	}
 	if !strings.HasPrefix(f.excludes, ".git\n.env\n") || !strings.HasSuffix(f.excludes, "\n/build/\n") {
-		t.Fatalf("exclude file = %q", f.excludes)
+		t.Fatalf("exclude list = %q", f.excludes)
 	}
 	if len(f.remotes) != 2 {
 		t.Fatalf("ssh calls = %q", f.remotes)
@@ -729,7 +729,7 @@ func TestExecFromSubdirOfRealRepo(t *testing.T) {
 			t.Errorf("from %s: command = %s, want %s", c.workdir, f.remotes[1], want)
 		}
 		if !strings.HasSuffix(f.excludes, "\n/build/\n") {
-			t.Errorf("from %s: exclude file = %q", c.workdir, f.excludes)
+			t.Errorf("from %s: exclude list = %q", c.workdir, f.excludes)
 		}
 	}
 }
@@ -968,7 +968,7 @@ func TestExecWarnsOutsideRepo(t *testing.T) {
 		t.Fatalf("stderr = %q, want the non-repo warning", stderr.String())
 	}
 	if !strings.Contains(f.excludes, "\n.env\n") {
-		t.Fatalf("exclude file outside a repo = %q, want the protected files", f.excludes)
+		t.Fatalf("exclude list outside a repo = %q, want the protected files", f.excludes)
 	}
 }
 

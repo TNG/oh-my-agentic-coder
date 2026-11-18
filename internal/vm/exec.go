@@ -41,7 +41,7 @@ func WorktreeSlug(absWorkdir string) string {
 	return base + "-" + hex.EncodeToString(sum[:4])
 }
 
-// rsyncPattern turns name into one line of an rsync exclude file that
+// rsyncPattern turns name into one line of an rsync exclude list that
 // matches name literally. rsync honors backslash escapes only in patterns
 // that contain a wildcard, so a name without one stays as is: "a\b" is
 // literal, "foo[1]" → `foo\[1\]`. A line cannot hold a line break, so
@@ -428,7 +428,7 @@ func refuseUntrackedPrefix(ctx context.Context, run CommandRunner, top, prefix s
 // not change what is copied. Paths are compared by file identity, so a
 // symlink or another spelling of the same directory counts too. A protected
 // path that cannot be stat'ed, as inside the sandbox, is still found
-// through its parents.
+// through its parents, unless it is a symlink.
 func openCopyRoot(root string) (*os.File, error) {
 	protected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
 	for _, p := range protected {
