@@ -199,61 +199,95 @@ func TestProtectDesktopStoresFailsClosedWithoutStorePaths(t *testing.T) {
 // resolveRunGrants is what Run launches with, so these cases fail if Run
 // stops honoring --for-opencode-desktop.
 func TestResolveRunGrantsProtectsDesktopStores(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	setup := func(t *testing.T, home string) (state, runtimeDir string, resolve func(args ...string) (*Grants, error)) {
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_DATA_HOME", "")
+		state = filepath.Join(home, ".config", "ai.opencode.desktop")
+		t.Setenv("XDG_STATE_HOME", state)
+		runtimeDir = filepath.Join(state, "opencode")
+		if err := os.MkdirAll(runtimeDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		workdir := t.TempDir()
+		resolve = func(args ...string) (*Grants, error) {
+			t.Helper()
+			flags, err := sandboxprofile.ParseFlags(append(args, "--", "true"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			merged, _ := sandboxprofile.Merge(&sandboxprofile.Profile{}, flags)
+			return resolveRunGrants(merged, flags, workdir, nil)
+		}
+		return state, runtimeDir, resolve
 	}
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
-	state := filepath.Join(home, ".config", "ai.opencode.desktop")
-	t.Setenv("XDG_STATE_HOME", state)
-	runtimeDir := filepath.Join(state, "opencode")
-	if err := os.MkdirAll(runtimeDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	workdir := t.TempDir()
-	resolve := func(args ...string) (*Grants, error) {
-		t.Helper()
-		flags, err := sandboxprofile.ParseFlags(append(args, "--", "true"))
+
+	t.Run("refusals", func(t *testing.T) {
+		home, err := filepath.EvalSymlinks(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
-		merged, _ := sandboxprofile.Merge(&sandboxprofile.Profile{}, flags)
-		return resolveRunGrants(merged, flags, workdir, nil)
-	}
+		state, runtimeDir, resolve := setup(t, home)
+		if _, err := resolve("--for-opencode-desktop", "--allow", state); err == nil || !strings.Contains(err.Error(), "could change OpenCode Desktop's file") {
+			t.Errorf("write grant on the Desktop dir: error = %v, want a refusal", err)
+		}
+		if _, err := resolve("--for-opencode-desktop", "--learn", "--allow-literal", runtimeDir); err == nil || !strings.Contains(err.Error(), "--learn") {
+			t.Errorf("--learn: error = %v, want a refusal", err)
+		}
+		if _, err := resolve("--allow", state); err != nil {
+			t.Errorf("without --for-opencode-desktop the same grant must pass: %v", err)
+		}
+	})
 
-	if _, err := resolve("--for-opencode-desktop", "--allow", state); err == nil || !strings.Contains(err.Error(), "could change OpenCode Desktop's file") {
-		t.Errorf("write grant on the Desktop dir: error = %v, want a refusal", err)
-	}
-	if _, err := resolve("--for-opencode-desktop", "--learn", "--allow-literal", runtimeDir); err == nil || !strings.Contains(err.Error(), "--learn") {
-		t.Errorf("--learn: error = %v, want a refusal", err)
-	}
-	if _, err := resolve("--allow", state); err != nil {
-		t.Errorf("without --for-opencode-desktop the same grant must pass: %v", err)
-	}
+	t.Run("success", func(t *testing.T) {
+		state, runtimeDir, resolve := setup(t, homeOutsideBaselineGrants(t))
+		g, err := resolve("--for-opencode-desktop", "--allow-literal", runtimeDir)
+		if err != nil {
+			t.Fatalf("grant on only the runtime dir: %v", err)
+		}
+		for _, name := range []string{"opencode.global.dat", "drafts.sqlite", "drafts.sqlite-wal"} {
+			if !slices.Contains(g.ProtectedPaths, filepath.Join(state, name)) {
+				t.Errorf("%s not in ProtectedPaths", name)
+			}
+		}
+	})
+}
 
-	// The success case needs a home outside the platform's own write
-	// grants (on macOS the temp dir is under /var/folders, which the
-	// baseline grants writable).
-	base, err := ResolveGrants(&sandboxprofile.Profile{}, workdir, nil)
+// homeOutsideBaselineGrants returns a new folder that no baseline write
+// grant covers. The temp dir doesn't qualify on macOS, where the baseline
+// grants /var/folders. It tries the user cache dir, then the package dir.
+func homeOutsideBaselineGrants(t *testing.T) string {
+	t.Helper()
+	base, err := ResolveGrants(&sandboxprofile.Profile{}, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range append(base.WritePaths, base.AllowPaths...) {
-		if isUnder(home, canonicalPath(w)) {
-			t.Skipf("temp home %s is under the baseline write grant %s", home, w)
+	var parents []string
+	if dir, err := os.UserCacheDir(); err == nil {
+		parents = append(parents, dir)
+	}
+	if dir, err := os.Getwd(); err == nil {
+		parents = append(parents, dir)
+	}
+	for _, parent := range parents {
+		home, err := os.MkdirTemp(parent, "omac-desktop-home-")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(home) })
+		if home, err = filepath.EvalSymlinks(home); err != nil {
+			t.Fatal(err)
+		}
+		covered := false
+		for _, w := range append(base.WritePaths, base.AllowPaths...) {
+			covered = covered || isUnder(home, canonicalPath(w))
+		}
+		if !covered {
+			return home
 		}
 	}
-	g, err := resolve("--for-opencode-desktop", "--allow-literal", runtimeDir)
-	if err != nil {
-		t.Fatalf("grant on only the runtime dir: %v", err)
-	}
-	for _, name := range []string{"opencode.global.dat", "drafts.sqlite", "drafts.sqlite-wal"} {
-		if !slices.Contains(g.ProtectedPaths, filepath.Join(state, name)) {
-			t.Errorf("%s not in ProtectedPaths", name)
-		}
-	}
+	t.Skipf("no writable folder outside the baseline write grants in %v", parents)
+	return ""
 }
 
 func TestDesktopLiteralGrantStillScansSecrets(t *testing.T) {

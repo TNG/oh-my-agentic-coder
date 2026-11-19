@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -24,6 +25,9 @@ import (
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
 func TestMain(m *testing.M) {
+	if path := os.Getenv(recordArgvEnv); path != "" {
+		recordArgvAndExit(path)
+	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
 	os.Exit(m.Run())
@@ -33,4 +37,16 @@ func clearHarnessHomeEnvs() {
 	for _, name := range config.HomeEnvNames() {
 		os.Unsetenv(name)
 	}
+}
+
+// recordArgvEnv names a file. When it is set, this test binary only writes
+// its arguments there and exits: a runServe test with the built-in sandbox
+// launches {{self}}, which is this binary, and checks the argv it got.
+const recordArgvEnv = "OMAC_TEST_RECORD_ARGV"
+
+func recordArgvAndExit(path string) {
+	if err := os.WriteFile(path, []byte(strings.Join(os.Args[1:], "\n")), 0o600); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -63,6 +65,44 @@ func TestRunServeDesktopRefusals(t *testing.T) {
 				t.Errorf("stderr = %q, want it to contain %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// runServe hands the Desktop grants to the built-in sandbox and creates
+// the OpenCode runtime folder it grants.
+func TestRunServeDesktopGrantsReachTheSandbox(t *testing.T) {
+	isolateHome(t)
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-serve-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("TMPDIR", shortTmp)
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
+	state := filepath.Join(t.TempDir(), "desktop")
+	t.Setenv("XDG_STATE_HOME", state)
+	argvPath := filepath.Join(t.TempDir(), "argv")
+	t.Setenv(recordArgvEnv, argvPath)
+
+	env, stderr := launchTestEnv(t, t.TempDir())
+	if code := runServe([]string{"opencode", "--for-opencode-desktop", "--inner", "/bin/true"}, env); code != ExitOK {
+		t.Fatalf("exit = %d; stderr:\n%s", code, stderr())
+	}
+	raw, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("the sandbox was not launched: %v; stderr:\n%s", err, stderr())
+	}
+	argv := strings.Split(string(raw), "\n")
+	flags := argv[:slices.Index(argv, "--")]
+	runtimeDir := filepath.Join(state, "opencode")
+	if !slices.Contains(flags, "--for-opencode-desktop") {
+		t.Errorf("--for-opencode-desktop missing: %v", argv)
+	}
+	if i := slices.Index(flags, runtimeDir); i < 1 || flags[i-1] != "--allow-literal" {
+		t.Errorf("--allow-literal %s missing: %v", runtimeDir, argv)
+	}
+	if fi, err := os.Stat(runtimeDir); err != nil || !fi.IsDir() {
+		t.Errorf("runtime folder %s not created: %v", runtimeDir, err)
 	}
 }
 
