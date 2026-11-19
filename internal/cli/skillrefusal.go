@@ -237,6 +237,12 @@ func remedy(p skillstate.Problem) string {
 	}
 }
 
+// upgradeDocsURL is the published troubleshooting entry for the one-time
+// snapshot rebuild after an upgrade. The published site is cited rather than
+// a repository path because most users run an installed binary and have no
+// checkout to look in (issue #514, F3).
+const upgradeDocsURL = "https://tng.github.io/oh-my-agentic-coder/troubleshooting#upgrading"
+
 // spawnRefusalClass is one class of spawn-gate refusal, described once for
 // every place that shows it: the launch report's section header, the `omac
 // doctor` warning line and the live-reload line (issue #514, F8). A new
@@ -260,7 +266,7 @@ type spawnRefusalClass struct {
 var spawnRefusalClasses = []spawnRefusalClass{
 	{kind: skillstate.SnapshotStale,
 		cause:     "registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once for the new store format",
-		docs:      "see docs/troubleshooting.md#upgrading",
+		docs:      "see " + upgradeDocsURL,
 		label:     "rebuild with",
 		doctorTag: "skill snapshots"},
 	{kind: skillstate.NotApproved,

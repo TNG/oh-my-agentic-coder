@@ -144,8 +144,8 @@ func (r *spawnRefusal) Error() string {
 	case skillstate.SnapshotStale:
 		// Names both the policy (so a future bump can reuse the text) and
 		// the release that bumped it (so the user can tie it to the upgrade).
-		return fmt.Sprintf("spawn refused: skill %s is approved, but its snapshot was made by an older copy policy (registered before %s) and must be rebuilt once; %s to rebuild it",
-			r.Skill, skilltrust.SnapshotPolicySince, cmd)
+		return fmt.Sprintf("spawn refused: skill %s is approved, but its snapshot was made by an older copy policy (registered before %s) and must be rebuilt once; %s to rebuild it (see %s)",
+			r.Skill, skilltrust.SnapshotPolicySince, cmd, upgradeDocsURL)
 	case skillstate.SnapshotMissing:
 		return fmt.Sprintf("spawn refused: skill %s is approved, but its snapshot is missing from the host store; %s to rebuild it", r.Skill, cmd)
 	default:

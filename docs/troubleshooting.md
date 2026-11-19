@@ -22,7 +22,7 @@ Run `omac doctor` first — it checks all prerequisites and prints the fix for w
 ```
 omac start: 3 skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:
 
-  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):
+  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see https://tng.github.io/oh-my-agentic-coder/troubleshooting#upgrading):
     omac-gh — rebuild with: omac register omac-gh
     skill-marketplace — rebuild with: omac register skill-marketplace --harness opencode --global
 ```
@@ -30,7 +30,7 @@ omac start: 3 skill(s) will not run this session. Run each command from a host t
 Inside the session the agent sees the same skill as broken, with this detail:
 
 ```
-spawn refused: skill "omac-gh" (...) is approved, but its snapshot was made by an older copy policy (registered before v0.13.1) and must be rebuilt once; run `omac register omac-gh` from a host terminal (outside the sandbox) to rebuild it
+spawn refused: skill "omac-gh" (...) is approved, but its snapshot was made by an older copy policy (registered before v0.13.1) and must be rebuilt once; run `omac register omac-gh` from a host terminal (outside the sandbox) to rebuild it (see https://tng.github.io/oh-my-agentic-coder/troubleshooting#upgrading)
 ```
 
 Cause: v0.13.1 changed how omac stores the frozen copy of each approved skill

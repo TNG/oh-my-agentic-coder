@@ -294,7 +294,7 @@ func TestRenderApprovalRefusalsGroupsByClass(t *testing.T) {
 	})
 	want := []string{
 		"omac start: 5 skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:",
-		"\n  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):\n" +
+		"\n  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see https://tng.github.io/oh-my-agentic-coder/troubleshooting#upgrading):\n" +
 			"    omac-gh — rebuild with: omac register omac-gh\n" +
 			"    skill-marketplace — rebuild with: omac register skill-marketplace --harness opencode --global\n",
 		"\n  Current version not approved from a host terminal (new skill, or changed since it was registered):\n" +

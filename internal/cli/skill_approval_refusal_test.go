@@ -104,7 +104,7 @@ func TestApprovedSpawnDirForClassifiesRefusals(t *testing.T) {
 	if !errors.As(err, &r) || r.Kind != skillstate.SnapshotStale {
 		t.Fatalf("stale: err = %v, want a SnapshotStale spawnRefusal", err)
 	}
-	for _, want := range []string{"older copy policy", skilltrust.SnapshotPolicySince, "`omac register stale --harness opencode`"} {
+	for _, want := range []string{"older copy policy", skilltrust.SnapshotPolicySince, "`omac register stale --harness opencode`", upgradeDocsURL} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("stale refusal missing %q: %v", want, err)
 		}
