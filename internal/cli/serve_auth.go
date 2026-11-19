@@ -97,8 +97,8 @@ func serveAuthGetenv(h config.Harness, plan sandboxPlan, extra map[string]string
 	return func(key string) string { return values[key] }
 }
 
-// serveAuthAdvice completes the hint's "To keep the same password, …"
-// sentence. It recommends OMAC_SERVE_PASSWORD only where prepareServeAuthEnv
+// serveAuthAdvice completes the hint's last sentence ("To keep the same
+// password, …" or "to require a password, …"). It recommends OMAC_SERVE_PASSWORD only where prepareServeAuthEnv
 // would accept it, and otherwise names what to do instead, so a user who
 // follows the hint never runs into an error.
 func serveAuthAdvice(h config.Harness, plan sandboxPlan, noSandbox bool) string {
