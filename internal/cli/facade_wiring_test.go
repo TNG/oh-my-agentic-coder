@@ -25,7 +25,7 @@ func wireModeForTest(t *testing.T, launcherProfile string, noSandbox, learnMode 
 	}
 	f := facade.New("", "", nil, 0, 0, "", "test")
 	var warnings []string
-	wireFacadeSandbox(f, noSandbox, learnMode, plan, func(format string, args ...any) {
+	wireFacadeSandbox(f, noSandbox, learnMode, plan, nil, func(format string, args ...any) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
 	return f, warnings
@@ -146,5 +146,24 @@ func TestWireFacadeSandboxLearnModeProtectsNothing(t *testing.T) {
 	creds := filepath.Join(home, ".aws", "credentials")
 	if rule, ok := f.ProtectedPathChecker.IsProtected(creds); ok {
 		t.Errorf("IsProtected(%q) = (%q, true) under --learn; nothing is protected in a learn session", creds, rule)
+	}
+}
+
+// Under --for-opencode-desktop the sandbox denies Desktop's stores, which
+// the policy file does not list; the facade must report them as denied.
+func TestWireFacadeSandboxReportsDesktopStores(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	plan, err := resolveSandboxPlan(config.DefaultLauncherConfig(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(t.TempDir(), "ai.opencode.desktop", "opencode.global.dat")
+	f := facade.New("", "", nil, 0, 0, "", "test")
+	wireFacadeSandbox(f, false, false, plan, []string{store}, func(string, ...any) {})
+	if f.ProtectedPathChecker == nil {
+		t.Fatal("ProtectedPathChecker is nil")
+	}
+	if rule, ok := f.ProtectedPathChecker.IsProtected(store); !ok || rule != "opencode-desktop" {
+		t.Errorf("IsProtected(%q) = %q, %v; want \"opencode-desktop\", true", store, rule, ok)
 	}
 }

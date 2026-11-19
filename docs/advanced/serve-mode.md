@@ -83,6 +83,75 @@ omac reads that `--port` value and opens the same port in the sandbox, so the se
 
 Start `omac serve` **before** opening OpenCode Desktop. If you open Desktop first and then start `omac serve`, Desktop fails to load configured models and must be restarted. This is a known issue ([#252](https://github.com/TNG/oh-my-agentic-coder/issues/252)).
 
+## Granting all Desktop projects (`--for-opencode-desktop`)
+
+```bash
+omac serve opencode --for-opencode-desktop
+```
+
+With `--for-opencode-desktop`, omac reads the list of projects you opened in
+OpenCode Desktop and lets the agent read and write each of these project
+folders. The sandbox cannot add folders later, so restart `omac serve` after
+opening a new project in Desktop.
+
+### What stays protected
+
+Desktop keeps your project list and your saved servers, including their
+passwords, in its own files: `opencode.global.dat` and `drafts.sqlite` (plus
+the `drafts.sqlite-wal`, `-shm` and `-journal` files SQLite creates next to
+it). If the agent could change them, it could make Desktop trust a folder or
+server you never chose. omac therefore hides these files from the agent. In
+Desktop's folder, only the `opencode` subfolder, where the OpenCode server
+keeps its runtime state, is writable.
+
+Desktop's own OpenCode uses the same `opencode` subfolder (on macOS
+`~/Library/Application Support/ai.opencode.desktop/opencode`), so the agent
+can change what Desktop's OpenCode finds there.
+
+Desktop keeps these files in one of the following folders, depending on the
+platform and the install. omac checks and protects all of them on every
+platform, and also the folder `XDG_STATE_HOME` points to:
+
+- `~/Library/Application Support/ai.opencode.desktop` (macOS)
+- `~/.config/ai.opencode.desktop`, or under `$XDG_CONFIG_HOME` (Linux)
+- `~/.local/share/ai.opencode.desktop`, or under `$XDG_DATA_HOME` (older
+  Linux installs)
+
+The beta app uses `ai.opencode.desktop.beta` instead. omac reads your project
+list from `opencode.global.dat` in all of these folders.
+
+The path to these folders may go through a symlink, for example a home folder
+on another disk or a `~/.config` that a dotfiles tool links into a
+repository. omac then checks and protects both the path as written and the
+real path. [ADR 0002](../adr/0002-desktop-store-symlinks.md) explains which
+setups work.
+
+### What omac refuses
+
+Because the protection only works inside omac's own sandbox with its file
+restrictions in force, `omac serve --for-opencode-desktop` stops with an
+error in these cases:
+
+- with `--no-sandbox` or `--learn`;
+- with a sandbox profile other than omac's own (`builtin`), such as
+  [nono](./nono.md);
+- when a write grant covers one of Desktop's folders above, on the path as
+  written or on the real path. This includes the folder you start
+  `omac serve` in: started in your home folder, the agent could write to
+  `~/.config/ai.opencode.desktop`. Start `omac serve` from a project folder,
+  and grant only the folders the agent needs in your sandbox profile, such as
+  `"allow": ["~/work/my-project"]` instead of `"allow": ["~/.config"]`;
+- when a read grant covers one of Desktop's folders, for example
+  `"read": ["~/.config"]`, because Desktop keeps its cookies and browser
+  storage there, next to its project list;
+- when one of Desktop's files is itself a symlink;
+- when `XDG_STATE_HOME` is set to a relative path.
+
+A project in Desktop's list whose folder holds Desktop's own files, directly
+or through a symlink, is not granted. Examples are a dotfiles repository at
+`~/.config`, or a dotfiles repository that `~/.config` links into. omac prints
+`skipping OpenCode worktree` with the reason and grants the other projects.
+
 ## Switching projects
 
 When you switch to a different project in OpenCode Desktop, omac is not notified — Desktop does not yet call omac's activation API. Skills from the new project will not be active. The workaround is to restart `omac serve --workdir` pointing at the new project.

@@ -1,6 +1,7 @@
 package sandboxrun
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
@@ -112,5 +113,16 @@ func TestProtectedPathSetAddMidSession(t *testing.T) {
 	rule, ok = set.IsProtected("/workdir/.env/nested")
 	if !ok || rule != sandboxdeny.RuleMidSession {
 		t.Errorf("IsProtected(subpath) = %q,%v; want %q,true", rule, ok, sandboxdeny.RuleMidSession)
+	}
+}
+
+func TestProtectedPathSetAddLaunchPathsKeepsPathsAsWritten(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store := filepath.Join(home, "a$HOME", "ai.opencode.desktop", "opencode.global.dat")
+	set := NewProtectedPathSet(&sandboxprofile.Profile{})
+	set.AddLaunchPaths([]string{store}, "opencode-desktop")
+	if rule, ok := set.IsProtected(store); !ok || rule != "opencode-desktop" {
+		t.Errorf("IsProtected(%q) = %q,%v; want opencode-desktop,true", store, rule, ok)
 	}
 }

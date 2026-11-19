@@ -171,6 +171,12 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	if err != nil {
 		return nil, err
 	}
+	for _, path := range p.Filesystem.AllowLiteral {
+		if _, err := os.Stat(path); err != nil {
+			return nil, fmt.Errorf("literal grant %q: %w", path, err)
+		}
+		allow = append(allow, filepath.Clean(path))
+	}
 
 	// Expand but don't existence-filter: the daemon may create the dir
 	// after launch. Also appended to allow so the socket files can be opened.
@@ -525,6 +531,10 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 	}
 	if p.Workdir.Access != "" && p.Workdir.Access != sandboxprofile.AccessNone {
 		roots = append(roots, workdir)
+	}
+	// Cleaned like in ResolveGrants, so "/w/a/" and "/w/a" are one root.
+	for _, path := range p.Filesystem.AllowLiteral {
+		roots = append(roots, filepath.Clean(path))
 	}
 	roots = slices.DeleteFunc(roots, inDenyScanSkipPath)
 	return dedupe(roots), nil

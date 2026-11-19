@@ -731,7 +731,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	f.SetAuditor(auditor)
 	// `omac start` has no --learn (serve-only), so the protected set is
 	// always the profile's.
-	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
+	wireFacadeSandbox(f, noSandbox, false, plan, nil, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 	})
 	// Mint and assign the facade token before Start so the TCP auth gate is

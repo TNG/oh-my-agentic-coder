@@ -884,6 +884,56 @@ func TestParseAndMergeDenyLiteralFlag(t *testing.T) {
 	}
 }
 
+// --allow-literal keeps the path as written and lands in AllowLiteral;
+// --for-opencode-desktop is a plain switch.
+func TestParseAndMergeDesktopFlags(t *testing.T) {
+	f, err := ParseFlags([]string{"--allow-literal", "/w/a$HOME", "--allow-literal=/w/b", "--for-opencode-desktop", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.ForOpenCodeDesktop {
+		t.Error("--for-opencode-desktop not set")
+	}
+	merged, _ := Merge(&Profile{}, f)
+	if got := merged.Filesystem.AllowLiteral; len(got) != 2 || got[0] != "/w/a$HOME" || got[1] != "/w/b" {
+		t.Fatalf("merged allow literal = %v", got)
+	}
+	if len(merged.Filesystem.Allow) != 0 {
+		t.Errorf("--allow-literal leaked into allow: %v", merged.Filesystem.Allow)
+	}
+	for _, c := range [][]string{
+		{"--for-opencode-desktop=1", "--", "true"},
+		{"--allow-literal"},
+	} {
+		if _, err := ParseFlags(c); err == nil {
+			t.Errorf("ParseFlags(%v) should fail", c)
+		}
+	}
+}
+
+// --allow-literal is held to the same rule as filesystem.allow: no grant
+// of the whole filesystem, however "/" is spelled, and no relative path.
+func TestValidateAllowLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		path, wantErr string
+	}{
+		{path: "/w/project"},
+		{path: "/", wantErr: "blanket root grant is not permitted"},
+		{path: "//", wantErr: "blanket root grant is not permitted"},
+		{path: "/tmp/..", wantErr: "blanket root grant is not permitted"},
+		{path: "relative/dir", wantErr: "is not an absolute path"},
+	} {
+		p := &Profile{Filesystem: Filesystem{AllowLiteral: []string{tc.path}}}
+		err := p.Validate()
+		if tc.wantErr == "" && err != nil {
+			t.Errorf("Validate(--allow-literal %q) = %v, want nil", tc.path, err)
+		}
+		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("Validate(--allow-literal %q) = %v, want %q", tc.path, err, tc.wantErr)
+		}
+	}
+}
+
 func TestMergeAdditive(t *testing.T) {
 	p := &Profile{
 		Filesystem: Filesystem{Read: []string{"~/.gitconfig"}},

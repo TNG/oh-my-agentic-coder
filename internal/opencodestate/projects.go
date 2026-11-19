@@ -6,8 +6,11 @@
 //   - storage JSON files under ~/.local/share/opencode/storage/project/
 //   - the opencode.db SQLite `project` table
 //   - the Desktop app's own store (opencode.global.dat, key
-//     "globalSync.project") under the ai.opencode.desktop[.beta] data
-//     dir — folders opened in the Desktop UI can exist ONLY here.
+//     "globalSync.project") in the ai.opencode.desktop[.beta] dirs —
+//     folders opened in the Desktop UI can exist ONLY here. Read from
+//     ~/Library/Application Support/<id> (macOS), $XDG_CONFIG_HOME/<id>
+//     and ~/.config/<id> (Linux), and $XDG_DATA_HOME/<id> and
+//     ~/.local/share/<id> (older layouts); see desktopDirs.
 //
 // We read all three (the db via the sqlite3 CLI when available — no
 // driver dependency) and merge. The pseudo-project with worktree "/"
@@ -53,6 +56,10 @@ type SkipReason string
 const (
 	SkipStale     SkipReason = "no longer exists"
 	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+	// SkipDesktopStore: granting the folder read+write would let the agent
+	// change the Desktop's own stores, which the sandbox refuses to start
+	// with (for example a dotfiles project at ~/.config).
+	SkipDesktopStore SkipReason = "holds OpenCode Desktop's own files, so the agent gets no access to it in this session"
 )
 
 // SkippedWorktree pairs a rejected worktree path with its reason.
@@ -94,6 +101,10 @@ func storageProjectDir() (string, error) {
 // records are routed into skipped. Records from the Desktop app's own
 // store (outside the sandbox mount) keep the looser isBroadWorktree
 // rule so the Desktop workflow still resolves in-home projects.
+//
+// A folder that gives access to one of the Desktop's own stores (see
+// StoreRoute.CoveredBy) is skipped too: the sandbox refuses to start with
+// a write grant on it, so granting it would block every start.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	storage, err := storageWorktrees()
 	if err != nil {
@@ -103,6 +114,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	raw = append(raw, desktopWorktrees()...)
 
 	home, _ := os.UserHomeDir()
+	storeRoutes := desktopStoreRoutes()
 	seen := map[string]bool{}
 	for _, e := range raw {
 		wt := e.path
@@ -120,6 +132,10 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 		seen[wt] = true
 		if fi, serr := os.Stat(wt); serr != nil || !fi.IsDir() {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
+			continue
+		}
+		if coversAnyStore(wt, storeRoutes) {
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipDesktopStore})
 			continue
 		}
 		worktrees = append(worktrees, wt)
@@ -141,6 +157,15 @@ func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
 		return isBroadWorktree(wt, home)
 	}
 	return isInHome(wt, home)
+}
+
+func coversAnyStore(dir string, routes []StoreRoute) bool {
+	for _, route := range routes {
+		if route.CoveredBy(dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // isInHome reports whether wt lies anywhere inside home: equal to it,
@@ -224,48 +249,100 @@ func storageWorktrees() ([]worktreeEntry, error) {
 //   - "layout.page" -> lastProjectSession: the directories of currently
 //     open tabs/windows, which are NOT necessarily in globalSync.project.
 //
-// Both the stable and beta app data dirs are consulted. Best-effort:
-// missing files or unexpected shapes yield nil.
+// Every directory from desktopDirs is consulted (stable and beta app).
+// Best-effort: missing files or unexpected shapes yield nil.
 func desktopWorktrees() []worktreeEntry {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
 	var out []worktreeEntry
-	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
-		for _, base := range desktopDataDirs(home, appID) {
-			for _, p := range desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat")) {
-				out = append(out, worktreeEntry{path: p, origin: originDesktop})
-			}
+	for _, base := range desktopDirs(home) {
+		for _, p := range desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat")) {
+			out = append(out, worktreeEntry{path: p, origin: originDesktop})
 		}
 	}
 	return out
 }
 
-// desktopDataDirs returns the platform candidates for a desktop app's
-// data directory.
-func desktopDataDirs(home, appID string) []string {
-	dirs := []string{
-		filepath.Join(home, "Library", "Application Support", appID), // macOS
-		filepath.Join(home, ".local", "share", appID),                // Linux
+// desktopAppIDs are the OpenCode Desktop app IDs, stable first.
+var desktopAppIDs = []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"}
+
+// desktopDirs lists, each once, every directory where OpenCode Desktop
+// may keep its own files: for the stable and the beta app, the Electron
+// userData dirs and the older XDG data dirs (see desktopStateCandidates).
+// Project discovery reads opencode.global.dat from each of them, and
+// DesktopStorePaths protects the stores in each of them, so the two cover
+// the same places.
+func desktopDirs(home string) []string {
+	var dirs []string
+	for _, id := range desktopAppIDs {
+		dirs = append(dirs, desktopStateCandidates(home, id)...)
 	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		dirs = append(dirs, filepath.Join(xdg, appID))
+	return uniquePaths(dirs)
+}
+
+// DesktopStorePaths returns the files where OpenCode Desktop keeps its
+// project list and saved servers, in every directory from desktopDirs and
+// in $XDG_STATE_HOME. Missing stores and SQLite companion files are
+// included: Desktop can create them after the sandbox started.
+// $XDG_STATE_HOME counts even when the home directory is unknown, so the
+// result is empty only when neither is available.
+func DesktopStorePaths() []string {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = desktopDirs(home)
 	}
-	return dirs
+	if state := absEnv("XDG_STATE_HOME"); state != "" {
+		dirs = uniquePaths(append(dirs, state))
+	}
+	var out []string
+	for _, dir := range dirs {
+		for _, name := range []string{"opencode.global.dat", "drafts.sqlite", "drafts.sqlite-wal", "drafts.sqlite-shm", "drafts.sqlite-journal"} {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
+}
+
+// absEnv returns the environment variable's value if it holds an absolute
+// path, else "". The XDG Base Directory spec says to ignore relative
+// values: XDG_STATE_HOME=state counts as unset.
+func absEnv(name string) string {
+	if v := os.Getenv(name); filepath.IsAbs(v) {
+		return v
+	}
+	return ""
+}
+
+// uniquePaths returns paths cleaned, without duplicates, in their order.
+func uniquePaths(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // DesktopStateDir returns the OpenCode Desktop app's data directory —
 // the location the Desktop exposes to its child processes as
-// XDG_STATE_HOME so they share its auth, credentials and config.
+// XDG_STATE_HOME. Its opencode child keeps state in <dir>/opencode; the
+// Desktop's own stores (DesktopStorePaths) sit next to it.
 //
 // `omac serve --for-opencode-desktop` uses this to point the inner
-// opencode at the same state store the Desktop uses when the launching
+// opencode at the same state dir the Desktop uses when the launching
 // shell didn't already set XDG_STATE_HOME (e.g. a manual run from a
 // terminal). Without it the inner reads an empty state dir, provider
 // credentials don't resolve, and opencode's /config/providers 500s —
 // which surfaces to clients like `opencode attach` as an opaque
 // "Unexpected server error".
+// In the sandbox only <dir>/opencode is writable; the Desktop's stores
+// are denied to the agent.
 //
 // It prefers an existing stable-then-beta directory (so a machine with
 // only the beta installed still works, and so the actual on-disk
@@ -277,7 +354,7 @@ func DesktopStateDir() string {
 	if err != nil {
 		return ""
 	}
-	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
+	for _, appID := range desktopAppIDs {
 		for _, dir := range desktopStateCandidates(home, appID) {
 			if fi, statErr := os.Stat(dir); statErr == nil && fi.IsDir() {
 				return dir
@@ -296,15 +373,16 @@ func DesktopStateDir() string {
 // probed for older layouts. Candidates are listed for every platform
 // (not branched on GOOS) so the on-disk Stat check finds the real one on
 // any host and unit tests stay platform-independent. Most likely first.
+// Relative XDG values are skipped, as the XDG Base Directory spec asks.
 func desktopStateCandidates(home, appID string) []string {
 	dirs := []string{
 		filepath.Join(home, "Library", "Application Support", appID), // macOS (Electron userData)
 	}
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" { // Linux (Electron userData)
+	if x := absEnv("XDG_CONFIG_HOME"); x != "" { // Linux (Electron userData)
 		dirs = append(dirs, filepath.Join(x, appID))
 	}
 	dirs = append(dirs, filepath.Join(home, ".config", appID)) // Linux default
-	if x := os.Getenv("XDG_DATA_HOME"); x != "" {              // legacy/data layout
+	if x := absEnv("XDG_DATA_HOME"); x != "" {                 // legacy/data layout
 		dirs = append(dirs, filepath.Join(x, appID))
 	}
 	dirs = append(dirs, filepath.Join(home, ".local", "share", appID))
@@ -321,7 +399,7 @@ func defaultDesktopStateDir(home string) string {
 	if runtime.GOOS == "darwin" {
 		return filepath.Join(home, "Library", "Application Support", appID)
 	}
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	if xdg := absEnv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, appID)
 	}
 	return filepath.Join(home, ".config", appID)

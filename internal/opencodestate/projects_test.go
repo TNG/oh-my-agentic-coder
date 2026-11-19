@@ -273,3 +273,228 @@ func TestWorktreesNoState(t *testing.T) {
 		t.Errorf("expected empty: %v %v", worktrees, skipped)
 	}
 }
+
+// A Desktop project folder that contains one of Desktop's own stores (here
+// a dotfiles project at ~/.config) is skipped with a notice instead of
+// making the sandbox refuse to start; the other projects still work.
+func TestWorktreesSkipsFolderContainingDesktopStore(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	config := filepath.Join(home, ".config")
+	nested := filepath.Join(config, "nvim")
+	project := filepath.Join(home, "work", "p")
+	link := filepath.Join(home, "dots")
+	for _, d := range []string{nested, project} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(config, link); err != nil {
+		t.Fatal(err)
+	}
+	records := `{"value":[{"worktree":"` + config + `"},{"worktree":"` + nested + `"},{"worktree":"` + project + `"},{"worktree":"` + link + `"}]}`
+	data, err := json.Marshal(map[string]any{"globalSync.project": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(config, "ai.opencode.desktop")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{nested, project}; !slices.Equal(worktrees, want) {
+		t.Errorf("worktrees = %v, want %v", worktrees, want)
+	}
+	for _, p := range []string{config, link} {
+		if !slices.Contains(skipped, SkippedWorktree{Path: p, Reason: SkipDesktopStore}) {
+			t.Errorf("%s not skipped as a Desktop store folder: %v", p, skipped)
+		}
+	}
+}
+
+// With ~/.config linked into a dotfiles repository, a project at that
+// repository holds Desktop's stores through the link, so it is skipped too.
+func TestWorktreesSkipsLinkTargetHoldingDesktopStore(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	dotfiles := filepath.Join(home, "dotfiles")
+	store := filepath.Join(dotfiles, "config", "ai.opencode.desktop")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dotfiles, "config"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	records := `{"value":[{"worktree":"` + dotfiles + `"}]}`
+	data, err := json.Marshal(map[string]any{"globalSync.project": records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "opencode.global.dat"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("worktrees = %v, want none", worktrees)
+	}
+	if !slices.Contains(skipped, SkippedWorktree{Path: dotfiles, Reason: SkipDesktopStore}) {
+		t.Errorf("%s not skipped as a Desktop store folder: %v", dotfiles, skipped)
+	}
+}
+
+// A dotfiles repository that a Desktop folder is linked into is skipped
+// even when Desktop keeps no files there yet, as on macOS (Desktop uses
+// ~/Library) or with only ~/.local/share linked on Linux: the sandbox
+// protects the place where Desktop's files would appear.
+func TestWorktreesSkipsDotfilesWithoutDesktopFolder(t *testing.T) {
+	for _, tc := range []struct {
+		name, linked, desktopDir string
+	}{
+		{"macOS, linked ~/.config", ".config", filepath.Join("Library", "Application Support", "ai.opencode.desktop")},
+		{"Linux, linked ~/.local/share", filepath.Join(".local", "share"), filepath.Join(".config", "ai.opencode.desktop")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			dotfiles := filepath.Join(home, "dotfiles")
+			linkTarget := filepath.Join(dotfiles, filepath.Base(tc.linked))
+			project := filepath.Join(home, "work", "app")
+			desktopDir := filepath.Join(home, tc.desktopDir)
+			for _, d := range []string{linkTarget, project, desktopDir, filepath.Dir(filepath.Join(home, tc.linked))} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(linkTarget, filepath.Join(home, tc.linked)); err != nil {
+				t.Fatal(err)
+			}
+			records := `{"value":[{"worktree":"` + dotfiles + `"},{"worktree":"` + project + `"}]}`
+			data, err := json.Marshal(map[string]any{"globalSync.project": records})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(desktopDir, "opencode.global.dat"), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			worktrees, skipped, err := Worktrees()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{project}; !slices.Equal(worktrees, want) {
+				t.Errorf("worktrees = %v, want %v", worktrees, want)
+			}
+			if !slices.Contains(skipped, SkippedWorktree{Path: dotfiles, Reason: SkipDesktopStore}) {
+				t.Errorf("%s not skipped as a Desktop store folder: %v", dotfiles, skipped)
+			}
+		})
+	}
+}
+
+// Discovery and the sandbox protection share one list of Desktop dirs, with
+// no duplicates, covering the stable and beta app in every location.
+func TestDesktopStorePathsListsEachDirOnce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "cfg"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share")) // same as the default
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "cfg", "ai.opencode.desktop"))
+
+	dirs := desktopDirs(home)
+	want := []string{
+		filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop"),
+		filepath.Join(home, ".config", "ai.opencode.desktop"),
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop"),
+		filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop.beta"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop.beta"),
+		filepath.Join(home, ".config", "ai.opencode.desktop.beta"),
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta"),
+	}
+	if !slices.Equal(dirs, want) {
+		t.Errorf("desktopDirs = %v\nwant %v", dirs, want)
+	}
+
+	paths := DesktopStorePaths()
+	if len(paths) != len(want)*5 {
+		t.Errorf("DesktopStorePaths has %d entries, want %d (5 files in each dir, XDG_STATE_HOME already listed): %v", len(paths), len(want)*5, paths)
+	}
+	for _, p := range []string{
+		filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta", "drafts.sqlite-wal"),
+		filepath.Join(home, "cfg", "ai.opencode.desktop", "opencode.global.dat"),
+	} {
+		if !slices.Contains(paths, p) {
+			t.Errorf("DesktopStorePaths misses %s", p)
+		}
+	}
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	if !slices.Contains(DesktopStorePaths(), filepath.Join(home, "state", "drafts.sqlite")) {
+		t.Error("DesktopStorePaths misses the XDG_STATE_HOME store")
+	}
+}
+
+// Without a home directory, the $XDG_STATE_HOME stores are still listed.
+func TestDesktopStorePathsWithoutHome(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", state)
+	paths := DesktopStorePaths()
+	if len(paths) != 5 || !slices.Contains(paths, filepath.Join(state, "opencode.global.dat")) {
+		t.Errorf("DesktopStorePaths = %v, want the 5 stores in %s", paths, state)
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	if paths := DesktopStorePaths(); len(paths) != 0 {
+		t.Errorf("DesktopStorePaths = %v, want none without HOME and XDG_STATE_HOME", paths)
+	}
+}
+
+// The XDG spec says relative XDG_* values count as unset, so they must not
+// turn into relative store paths.
+func TestDesktopDirsIgnoreRelativeXDG(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "cfg")
+	t.Setenv("XDG_DATA_HOME", "data")
+	t.Setenv("XDG_STATE_HOME", "state")
+	paths := DesktopStorePaths()
+	if len(paths) == 0 {
+		t.Fatal("DesktopStorePaths is empty")
+	}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			t.Errorf("DesktopStorePaths has the relative path %q", p)
+		}
+	}
+	if got := defaultDesktopStateDir(home); !filepath.IsAbs(got) {
+		t.Errorf("defaultDesktopStateDir = %q, want an absolute path", got)
+	}
+}

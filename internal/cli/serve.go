@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -78,7 +79,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
 		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox. Desktop's own project list and saved servers stay hidden from the agent. Needs the built-in sandbox (--sandbox builtin); can't be combined with --no-sandbox or --learn.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")
@@ -219,6 +220,12 @@ func runServe(args []string, env *Env) int {
 	}
 	profName := plan.Name
 	prof := plan.Launcher
+	if forDesktop && !noInner {
+		if msg := desktopModeError(noSandbox, learn, plan); msg != "" {
+			fmt.Fprintln(env.Stderr, "omac serve:", msg)
+			return ExitConfigInvalid
+		}
+	}
 	var authExtra map[string]string
 	if !noInner {
 		authExtra, err = prepareServeAuthEnv(password, harness, plan, noSandbox)
@@ -273,9 +280,10 @@ func runServe(args []string, env *Env) int {
 	}
 
 	// --for-opencode-desktop: the OpenCode Desktop app runs opencode with
-	// XDG_STATE_HOME pointing at its own data dir (auth, credentials,
-	// config), and both omac's desktop provisioning AND the inner
-	// opencode must resolve state against that same store. When the
+	// XDG_STATE_HOME pointing at its own data dir (opencode keeps its
+	// state in the opencode subdirectory there), and both omac's desktop
+	// provisioning AND the inner opencode must resolve state against that
+	// same dir. When the
 	// Desktop launches omac it exports XDG_STATE_HOME for us; a manual
 	// `omac serve --for-opencode-desktop` from a shell does not, so the
 	// inner reads an empty state dir, providers resolve without
@@ -283,8 +291,10 @@ func runServe(args []string, env *Env) int {
 	// like `opencode attach` report as an opaque "Unexpected server
 	// error"). Set it in omac's OWN environment when unset so it both
 	// drives our provisioning and is inherited by the sandboxed child;
-	// an explicit value is respected. The dir is granted read+write in
-	// the sandbox in the --for-opencode-desktop block below.
+	// an explicit value is respected. Only its opencode runtime
+	// subdirectory is made writable in the sandbox (injectDesktopGrants);
+	// the Desktop's own stores in this dir stay denied
+	// (sandboxrun.protectDesktopStores).
 	if dir, set := resolveDesktopStateDir(forDesktop); set {
 		if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
 			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
@@ -292,6 +302,21 @@ func runServe(args []string, env *Env) int {
 		}
 		if verbose {
 			fmt.Fprintf(env.Stderr, "[verbose] --for-opencode-desktop: XDG_STATE_HOME=%s\n", dir)
+		}
+	}
+	// The sandbox protects Desktop's stores by path, so the state dir
+	// must be absolute. Store the cleaned form so this process, the
+	// sandbox and the inner opencode all use the same spelling.
+	var stateHome string
+	if forDesktop && !noInner {
+		stateHome, err = desktopStateHome(os.Getenv("XDG_STATE_HOME"))
+		if err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve:", err)
+			return ExitConfigInvalid
+		}
+		if err := os.Setenv("XDG_STATE_HOME", stateHome); err != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: set XDG_STATE_HOME:", err)
+			return ExitIOError
 		}
 	}
 
@@ -366,7 +391,9 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
+	// XDG_STATE_HOME is final here, so the facade and the sandbox compute
+	// the same Desktop store paths.
+	wireFacadeSandbox(f, noSandbox, learn, plan, desktopStoresToReport(forDesktop, noInner), func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	// Mint both per-session tokens before the listener accepts connections so
@@ -579,6 +606,12 @@ func runServe(args []string, env *Env) int {
 			fmt.Fprintln(env.Stderr, "omac serve: harness runtime dirs:", err)
 			return ExitIOError
 		}
+		if forDesktop {
+			if err := os.MkdirAll(filepath.Join(stateHome, "opencode"), 0700); err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve: Desktop runtime directory:", err)
+				return ExitIOError
+			}
+		}
 		argv, err = sandboxServeArgv(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -640,24 +673,7 @@ func runServe(args []string, env *Env) int {
 		// folders opened for the first time during this session still
 		// need a restart (or --learn).
 		if forDesktop {
-			if len(desktopWorktrees) == 0 {
-				fmt.Fprintln(env.Stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
-			} else {
-				fmt.Fprintf(env.Stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(desktopWorktrees))
-				for _, wt := range desktopWorktrees {
-					fmt.Fprintf(env.Stderr, "  r+w %s\n", wt)
-					argv = injectSandboxFlag(argv, "--allow", wt)
-				}
-			}
-			// Grant the Desktop's shared state dir (XDG_STATE_HOME, set
-			// above) read+write so the inner opencode can read the
-			// Desktop's auth/config there. The default profile already
-			// lists it; granting here keeps it working under trimmed
-			// custom profiles too.
-			if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-				fmt.Fprintf(env.Stderr, "  r+w %s (shared Desktop state)\n", dir)
-				argv = injectSandboxFlag(argv, "--allow", dir)
-			}
+			argv = injectDesktopGrants(argv, env.Stderr, desktopWorktrees, stateHome)
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
 		// filesystem restrictions and records folder usage.
@@ -726,9 +742,73 @@ func runServe(args []string, env *Env) int {
 	return code
 }
 
+// desktopModeError returns why --for-opencode-desktop cannot run with this
+// sandbox setup, or "" when it can. The Desktop stores are protected only
+// by omac's built-in sandbox with its file restrictions in force.
+func desktopModeError(noSandbox, learn bool, plan sandboxPlan) string {
+	switch {
+	case noSandbox:
+		return "--for-opencode-desktop cannot be combined with --no-sandbox. Remove --no-sandbox, or drop --for-opencode-desktop."
+	case learn:
+		return "--for-opencode-desktop cannot be combined with --learn, because learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn, or drop --for-opencode-desktop."
+	case !plan.Native:
+		return fmt.Sprintf("--for-opencode-desktop needs omac's built-in sandbox, and the sandbox profile %q uses another one. Select the built-in one (for example --sandbox builtin), or drop --for-opencode-desktop.", plan.Name)
+	case plan.Policy == nil:
+		return fmt.Sprintf("--for-opencode-desktop: cannot load the sandbox policy %q (%v), so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Fix that policy, or drop --for-opencode-desktop.", plan.PolicyRef, plan.PolicyErr)
+	}
+	return ""
+}
+
+// injectDesktopGrants adds the --for-opencode-desktop grants to the
+// `omac sandbox run` argv: every Desktop project folder and the OpenCode
+// runtime dir <stateHome>/opencode, each read+write, plus the flag that
+// makes the sandbox protect Desktop's own stores. Paths are passed with
+// --allow-literal so a folder name containing "$" or "~" is not expanded.
+func injectDesktopGrants(argv []string, stderr io.Writer, worktrees []string, stateHome string) []string {
+	if len(worktrees) == 0 {
+		fmt.Fprintln(stderr, "omac serve: --for-opencode-desktop: no OpenCode projects found")
+	} else {
+		fmt.Fprintf(stderr, "omac serve: granting %d OpenCode project folder(s):\n", len(worktrees))
+		for _, wt := range worktrees {
+			fmt.Fprintf(stderr, "  r+w %s\n", wt)
+			argv = injectSandboxFlag(argv, "--allow-literal", wt)
+		}
+	}
+	argv = injectSandboxFlag(argv, "--for-opencode-desktop", "")
+	// Runtime state is separate from Desktop's trusted project store.
+	runtimeDir := filepath.Join(stateHome, "opencode")
+	fmt.Fprintf(stderr, "  r+w %s (OpenCode runtime state)\n", runtimeDir)
+	return injectSandboxFlag(argv, "--allow-literal", runtimeDir)
+}
+
+// desktopStoresToReport returns the OpenCode Desktop stores the sandbox
+// denies (protectDesktopStores), so the facade can report them as denied
+// too. The sandbox denies them only for --for-opencode-desktop with an
+// inner command.
+func desktopStoresToReport(forDesktop, noInner bool) []string {
+	if forDesktop && !noInner {
+		return opencodestate.DesktopStorePaths()
+	}
+	return nil
+}
+
+// desktopStateHome validates XDG_STATE_HOME for --for-opencode-desktop and
+// returns it cleaned (e.g. without a trailing slash). raw is empty only
+// when resolveDesktopStateDir found no Desktop directory to default it to,
+// which happens when the home directory is unknown.
+func desktopStateHome(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("--for-opencode-desktop: cannot find OpenCode Desktop's data directory because HOME is not set. Set HOME, or export XDG_STATE_HOME as an absolute path (for example /home/you/.local/state)")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("--for-opencode-desktop: XDG_STATE_HOME=%q must be an absolute path (for example /home/you/.local/state)", raw)
+	}
+	return filepath.Clean(raw), nil
+}
+
 // resolveDesktopStateDir decides the XDG_STATE_HOME to use under
-// --for-opencode-desktop, so omac and the inner opencode share the
-// Desktop app's auth/config/state (see the call site). It returns the
+// --for-opencode-desktop, so omac and the inner opencode use the Desktop
+// app's state dir (see the call site). It returns the
 // directory and whether omac should set it in its own environment.
 //
 //   - not desktop mode               -> ("", false)

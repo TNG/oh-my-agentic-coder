@@ -13,6 +13,16 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
+// Profile.Validate refuses a relative --allow-literal path; ResolveGrants
+// refuses one that doesn't exist.
+func TestResolveGrantsAllowLiteralMissingPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{path}}}
+	if _, err := ResolveGrants(p, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("AllowLiteral %q: error = %v, want a refusal", path, err)
+	}
+}
+
 func TestResolveGrantsWorkdirLevels(t *testing.T) {
 	wd := t.TempDir()
 	cases := map[string]func(*Grants) []string{
@@ -1290,6 +1300,20 @@ func TestResolveGrantsDenyScanPrunesProtectedDirs(t *testing.T) {
 	}
 	if slices.Contains(g.ProtectedPaths, sshEnv) {
 		t.Errorf("protected subtree must be pruned, not descended: %s", sshEnv)
+	}
+}
+
+// A literal grant spelled with a trailing slash is the same scan root as
+// without one, as ResolveGrants also cleans it.
+func TestDenyScanRootsCleansLiteralGrants(t *testing.T) {
+	dir := t.TempDir()
+	p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{dir + "/", dir}}}
+	roots, err := denyScanRoots(p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(roots, []string{dir}) {
+		t.Errorf("denyScanRoots = %v, want [%s]", roots, dir)
 	}
 }
 

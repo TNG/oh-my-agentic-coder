@@ -27,7 +27,8 @@ type ProtectedPathSet struct {
 	entries []string
 	// rule tags which layer each entry came from, parallel to entries.
 	// "baseline" for the platform default set, "profile" for user deny
-	// entries. This is a coarse tag — the goal is "tell the agent which
+	// entries, "opencode-desktop" for the Desktop stores (AddLaunchPaths).
+	// This is a coarse tag — the goal is "tell the agent which
 	// knob to turn," not a full audit trail.
 	rules []string
 	// dyn* hold the entries Add appends while the session runs:
@@ -75,6 +76,22 @@ func NewProtectedPathSet(p *sandboxprofile.Profile) *ProtectedPathSet {
 // the agent that a genuinely missing file was blocked by the sandbox, which
 // is the confusion GET /sandbox/denied exists to remove.
 func UnrestrictedProtectedPathSet() *ProtectedPathSet { return &ProtectedPathSet{} }
+
+// AddLaunchPaths records paths the sandbox denies from launch on although
+// the profile does not list them, e.g. OpenCode Desktop's stores under
+// --for-opencode-desktop. The paths must be absolute and are used as
+// written, like --deny-literal: no ~ or $VAR expansion. Call it before
+// the set is shared: unlike Add it changes the launch entries, which are
+// read without a lock. Nil-safe.
+func (s *ProtectedPathSet) AddLaunchPaths(paths []string, rule string) {
+	if s == nil {
+		return
+	}
+	for _, p := range paths {
+		s.entries = append(s.entries, filepath.Clean(p))
+		s.rules = append(s.rules, rule)
+	}
+}
 
 // Add records a protected-pattern path discovered while the session runs
 // (the mid-session watch). The kernel mask was fixed at launch, so the

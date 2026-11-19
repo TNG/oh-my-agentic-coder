@@ -93,8 +93,10 @@ type Workdir struct {
 // support ~ and $VAR expansion (see Expand).
 type Filesystem struct {
 	Allow []string `json:"allow,omitempty"` // read+write
-	Read  []string `json:"read,omitempty"`  // read-only
-	Write []string `json:"write,omitempty"` // write-only
+	// AllowLiteral is populated only by --allow-literal for discovered paths.
+	AllowLiteral []string `json:"-"`
+	Read         []string `json:"read,omitempty"`  // read-only
+	Write        []string `json:"write,omitempty"` // write-only
 	// AllowUnixDir grants AF_UNIX connect to every socket under the given
 	// directory (a subpath rule) plus read+write access to it, for tools
 	// that mint sockets with dynamic names at runtime (e.g. Claude Code's
@@ -435,6 +437,15 @@ func (p *Profile) Validate() error {
 	for _, d := range p.Filesystem.DenyLiteral {
 		if !filepath.IsAbs(d) {
 			return fmt.Errorf("sandbox: --deny-literal %q is not an absolute path", d)
+		}
+	}
+	// Same rule as filesystem.allow below; Clean also catches "//" and "/x/..".
+	for _, a := range p.Filesystem.AllowLiteral {
+		if !filepath.IsAbs(a) {
+			return fmt.Errorf("sandbox: --allow-literal %q is not an absolute path", a)
+		}
+		if filepath.Clean(a) == "/" {
+			return fmt.Errorf("sandbox: --allow-literal %q grants the whole filesystem: blanket root grant is not permitted", a)
 		}
 	}
 	if d := p.Denial; d != nil && d.MarkerDirName != "" {
