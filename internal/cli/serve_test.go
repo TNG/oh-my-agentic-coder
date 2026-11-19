@@ -1454,3 +1454,18 @@ func TestInjectSandboxDenies(t *testing.T) {
 		t.Errorf("no deny paths must be a no-op: %v", got)
 	}
 }
+
+// TestServeBrokenRouteNamesTheRegisteredCopy (F6): serve's spawn gate hands
+// the agent the same copy-selecting command the launch report prints.
+func TestServeBrokenRouteNamesTheRegisteredCopy(t *testing.T) {
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageRefusedSkill(t, wd, "foo", filepath.Join(".opencode", "skills", "foo"))
+	manifest, err := s.activate(wd)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if got := fmt.Sprint(manifest); !strings.Contains(got, "`omac register foo --harness opencode`") {
+		t.Errorf("manifest lacks the harness-aware command:\n%s", got)
+	}
+}

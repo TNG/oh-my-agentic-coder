@@ -103,3 +103,48 @@ func TestDoctorSpawnGateSilentWithoutSkills(t *testing.T) {
 		t.Errorf("doctor claimed an approval check with no skills registered:\n%s", out)
 	}
 }
+
+// TestDoctorReportsMissingSnapshotAndUncheckable (F6): the two remaining
+// classes. A deleted snapshot gets the rebuild command; a skill whose
+// directory cannot be hashed is listed without any `omac register`, because
+// re-registering cannot help there.
+func TestDoctorReportsMissingSnapshotAndUncheckable(t *testing.T) {
+	isolateHome(t)
+	workdir := stageWorkdir(t, "gone")
+	gone := filepath.Join(workdir, ".opencode", "skills", "gone")
+	writeSidecarManifest(t, gone, "gone")
+	h := bundleHashOf(t, gone)
+	if err := skilltrust.Approve("gone", h, gone); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := skilltrust.SnapshotPath("gone", h)
+	if err := os.RemoveAll(snap); err != nil {
+		t.Fatal(err)
+	}
+	reg := &registry.Registry{Version: registry.SchemaVersion, Registered: []registry.Entry{
+		{Name: "gone", Harness: "opencode", SkillDir: filepath.Join(".opencode", "skills", "gone")},
+		{Name: "vanished", Harness: "opencode", SkillDir: filepath.Join(".opencode", "skills", "vanished")},
+	}}
+	if err := registry.Save(workdir, reg); err != nil {
+		t.Fatal(err)
+	}
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	_ = runDoctor([]string{}, env)
+	drain()
+	out := outBuf.String()
+	for _, want := range []string{
+		"[warn] skill snapshots: 1 skill(s) snapshot missing from the host store; run each command from a host terminal:",
+		"  [warn] gone                 omac register gone --harness opencode",
+		"[warn] skill approvals: 1 skill(s) could not be checked (fix the cause, then relaunch):",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "vanished") && strings.Contains(line, "omac register") {
+			t.Errorf("an uncheckable skill must not be told to re-register: %q", line)
+		}
+	}
+}
