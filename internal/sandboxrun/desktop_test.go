@@ -144,6 +144,10 @@ func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
 		if err == nil {
 			t.Errorf("write grant on the %s: accepted", name)
 		}
+		err = protectDesktopStores(&Grants{ReadPaths: []string{grant}}, false)
+		if err == nil || !strings.Contains(err.Error(), "cookies and browser storage") {
+			t.Errorf("read grant on the %s: error = %v, want a refusal", name, err)
+		}
 	}
 
 	store := filepath.Join(realHome, rel, "opencode.global.dat")
@@ -193,6 +197,41 @@ func TestProtectDesktopStoresChecksEveryLinkInAChain(t *testing.T) {
 	err := protectDesktopStores(&Grants{AllowPaths: []string{tmp}}, false)
 	if err == nil || !strings.Contains(err.Error(), "could change") {
 		t.Errorf("write grant on the folder of the middle link: error = %v, want a refusal", err)
+	}
+}
+
+// A relative link target may climb out of the home folder, as in
+// ~/.config -> ../dotfiles/config.
+func TestProtectDesktopStoresRelativeLinkWithParent(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(parent, "home")
+	desktop := filepath.Join(parent, "dotfiles", "config", "ai.opencode.desktop")
+	for _, d := range []string{home, desktop} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("..", "dotfiles", "config"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+
+	g := &Grants{}
+	if err := protectDesktopStores(g, false); err != nil {
+		t.Fatalf("relative link: %v", err)
+	}
+	if p := filepath.Join(desktop, "opencode.global.dat"); !slices.Contains(g.ProtectedPaths, p) {
+		t.Errorf("%s not in ProtectedPaths", p)
+	}
+	grant := &Grants{AllowPaths: []string{filepath.Join(parent, "dotfiles")}}
+	if err := protectDesktopStores(grant, false); err == nil {
+		t.Error("write grant on the link's target: accepted")
 	}
 }
 

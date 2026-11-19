@@ -102,6 +102,26 @@ func TestRunServeDesktopGrantsReachTheSandbox(t *testing.T) {
 	}
 }
 
+// The facade reports Desktop's stores as denied exactly when the sandbox
+// denies them.
+func TestDesktopStoresToReport(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "desktop")
+	t.Setenv("XDG_STATE_HOME", state)
+	store := filepath.Join(state, "opencode.global.dat")
+	for _, tc := range []struct {
+		forDesktop, noInner, want bool
+	}{
+		{forDesktop: true, want: true},
+		{forDesktop: true, noInner: true},
+		{},
+	} {
+		got := slices.Contains(desktopStoresToReport(tc.forDesktop, tc.noInner), store)
+		if got != tc.want {
+			t.Errorf("forDesktop=%v noInner=%v: reports %s = %v, want %v", tc.forDesktop, tc.noInner, store, got, tc.want)
+		}
+	}
+}
+
 // shortSocketDir returns a new folder short enough for serve's sockets
 // below it (<dir>/omac/omac-serve-<n>/bridge.sock), which macOS limits to
 // 104 bytes. It tries /tmp, the temp folder and that folder's parent:

@@ -391,14 +391,9 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	// The sandbox denies OpenCode Desktop's stores (protectDesktopStores);
-	// the facade must report them as denied too. XDG_STATE_HOME is final
-	// here, so both compute the same paths.
-	var desktopStores []string
-	if forDesktop && !noInner {
-		desktopStores = opencodestate.DesktopStorePaths()
-	}
-	wireFacadeSandbox(f, noSandbox, learn, plan, desktopStores, func(format string, args ...any) {
+	// XDG_STATE_HOME is final here, so the facade and the sandbox compute
+	// the same Desktop store paths.
+	wireFacadeSandbox(f, noSandbox, learn, plan, desktopStoresToReport(forDesktop, noInner), func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
 	// Mint both per-session tokens before the listener accepts connections so
@@ -784,6 +779,17 @@ func injectDesktopGrants(argv []string, stderr io.Writer, worktrees []string, st
 	runtimeDir := filepath.Join(stateHome, "opencode")
 	fmt.Fprintf(stderr, "  r+w %s (OpenCode runtime state)\n", runtimeDir)
 	return injectSandboxFlag(argv, "--allow-literal", runtimeDir)
+}
+
+// desktopStoresToReport returns the OpenCode Desktop stores the sandbox
+// denies (protectDesktopStores), so the facade can report them as denied
+// too. The sandbox denies them only for --for-opencode-desktop with an
+// inner command.
+func desktopStoresToReport(forDesktop, noInner bool) []string {
+	if forDesktop && !noInner {
+		return opencodestate.DesktopStorePaths()
+	}
+	return nil
 }
 
 // desktopStateHome validates XDG_STATE_HOME for --for-opencode-desktop and
