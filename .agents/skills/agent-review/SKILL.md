@@ -15,7 +15,7 @@ Review one pull request with the reviewers that fit it, verify what they found, 
 | Requester: the GitHub login the comment names as having requested it | the person you work for |
 | Round: 1 for a first review, higher for a re-review | 1 |
 | Reviewers to add or skip | none: pick them as described in step 3 |
-| Post the comment? | no: show the draft and ask |
+| Post the comment? | yes: post it right away, without asking for confirmation. Show a draft instead only if the requester asked for one |
 
 ## GitHub access
 
@@ -25,7 +25,7 @@ You need to: read a PR (metadata, description, files, commits, comments, reviews
 - a sandbox broker such as the omac `omac-gh` skill (same `gh` arguments via its `/exec` endpoint)
 - a GitHub MCP server
 
-Never approve, merge, close, label or push. The only write is the one comment, and only if posting was requested.
+Never approve, merge, close, label or push. The only write is the one comment.
 
 **One exception for editing:** you may replace your own review comment of the **same round** (for example after the requester asked for changes to it), but only if it is the latest comment of the logged-in account on the PR. Check that first, then use `gh pr comment <N> -R <repo> --edit-last --body <text>`; it replaces exactly that comment. If the account has commented on the PR since the review, don't edit; ask instead. Never edit anyone else's comment, and never delete.
 
@@ -56,7 +56,7 @@ Never approve, merge, close, label or push. The only write is the one comment, a
    - Otherwise do the passes yourself, one after another, keeping each report separate.
 5. **Triage.** Follow `triage.md`. This step stays with you, not a subagent.
 6. **Write the comment** from `templates/pr-comment.md`.
-7. **Post or hand over.** If posting was requested, check first that the PR has no comment of yours for this round yet (search for the marker line and `Round <r>`), then post. Otherwise show the draft.
+7. **Post.** Check that the PR has no comment of yours for this round yet (search for the marker line and `Round <r>`), then post the comment. Don't wait for the requester to confirm: the review is meant to be on the PR. Only if the requester asked to see a draft first, show it instead and post after their OK.
 8. **Fixing** findings is a separate request. Follow `fixing.md`.
 
 ## Common mistakes
