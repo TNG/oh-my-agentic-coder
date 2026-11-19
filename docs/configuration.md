@@ -85,7 +85,7 @@ omac creates this file the first time you run `omac start`. Key fields:
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
 
-omac never rewrites this file once it exists, so upgrading omac does not add newer default grants to a profile you already have. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
+omac does not rewrite this file on its own once it exists, so upgrading omac does not add newer default grants to a profile you already have. The one exception is a learn-mode session (`omac sandbox run --learn`) where you approve adding folders, which rewrites the file. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
 
 The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
 
@@ -103,6 +103,32 @@ On Linux this also permits outbound connections to that port on any host — Lan
 Linux has no equivalent, because Landlock cannot scope a port to localhost.
 
 You can also open a port for a single session with `omac start --open-port 3000`, which is handy for a quick test before changing the grants file.
+
+### Granting port ranges
+
+In the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`), `network.listen_port` and `network.allow_tcp_connect` take a list of ports. An entry is a number, a numeric string such as `"8100"`, or an inclusive range such as `"8000-8100"`. A process that reserves a block of ports, such as a dev server scanning 8000 to 8100, needs one entry instead of 101:
+
+```json
+"network": { "listen_port": [4097, "8000-8100"] }
+```
+
+That grants port 4097 and every port from 8000 through 8100. Invalid entries are rejected when the profile loads, before the session starts, with an error naming the value.
+
+Loading a profile never rewrites it. If you let `omac sandbox run --learn` add folders to this file, omac rewrites it, and a range such as `"8000-8100"` becomes the full list of ports.
+
+`network.listen_port` is for servers inside the sandbox that listen on a port. `network.allow_tcp_connect` allows direct outbound TCP to any host on those ports, for tools whose protocol the proxy cannot carry, such as SSH or a database client. The domain allow/deny list does not apply to those connections.
+
+Each of the two fields is limited to 1000 ports, counting profile entries and flags together. Overlapping ranges count in full. A longer list is rejected, not shortened. The limit applies to integer-only lists too.
+
+On Linux, each port in a range becomes its own kernel rule, exactly as if you had listed it separately.
+
+`network.open_port` accepts no ranges and stays a list of single ports. A port there also permits outbound connections to any host on it (see [Opening a port](#opening-a-port)), so omac keeps that grant deliberately narrow.
+
+For a single session, `omac sandbox run` accepts these as flags: `--listen-port` and `--allow-tcp-connect`. Each takes a single port or a range and can be repeated. The flags add to the profile's ports rather than replacing them:
+
+```bash
+omac sandbox run --listen-port 8000-8100 --allow-tcp-connect 22 -- <command>
+```
 
 ### Passing an environment variable into the sandbox
 

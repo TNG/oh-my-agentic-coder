@@ -19,8 +19,8 @@ type Flags struct {
 	AllowFile     []string // --allow-file <path>   read+write single file
 	AllowUnixDir  []string // --allow-unix-dir <dir> AF_UNIX connect to any socket under dir
 	OpenPort      []int    // --open-port <port>
-	ListenPort    []int    // --listen-port <port>
-	AllowTCP      []int    // --allow-tcp-connect <port>
+	ListenPort    []int    // --listen-port <port|A-B>
+	AllowTCP      []int    // --allow-tcp-connect <port|A-B>
 	AllowDomain   []string // --allow-domain <domain>
 	DenyDomain    []string // --deny-domain <domain>
 	AllowEnv      []string // --allow-env <name>    additive env allow_vars entry
@@ -81,6 +81,23 @@ func ParseFlags(args []string) (*Flags, error) {
 				return port, nil
 			}
 			return nextPort(flag)
+		}
+		portVals := func(flag string) ([]int, error) {
+			v, err := val(flag)
+			if err != nil {
+				return nil, err
+			}
+			ports, err := parsePortEntry(v)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", flag, err)
+			}
+			// parsePortEntry admits port 0; these two fields keep their minimum of 1.
+			for _, port := range ports {
+				if port < 1 {
+					return nil, fmt.Errorf("%s: invalid port or range %q: port 0 is not allowed", flag, v)
+				}
+			}
+			return ports, nil
 		}
 		switch a {
 		case "--":
@@ -147,17 +164,17 @@ func ParseFlags(args []string) (*Flags, error) {
 			}
 			f.OpenPort = append(f.OpenPort, p)
 		case "--listen-port":
-			p, err := portVal(a)
+			ports, err := portVals(a)
 			if err != nil {
 				return nil, err
 			}
-			f.ListenPort = append(f.ListenPort, p)
+			f.ListenPort = append(f.ListenPort, ports...)
 		case "--allow-tcp-connect":
-			p, err := portVal(a)
+			ports, err := portVals(a)
 			if err != nil {
 				return nil, err
 			}
-			f.AllowTCP = append(f.AllowTCP, p)
+			f.AllowTCP = append(f.AllowTCP, ports...)
 		case "--allow-domain":
 			v, err := val(a)
 			if err != nil {

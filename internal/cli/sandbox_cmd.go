@@ -40,7 +40,7 @@ func runSandboxRun(args []string, env *Env) int {
 	flags, err := sandboxprofile.ParseFlags(args)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac sandbox run:", err)
-		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--deny-literal <path>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port>] [--allow-tcp-connect <port>] [--allow-domain <d>] [--deny-domain <d>] [--allow-env <name>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
+		fmt.Fprintln(env.Stderr, "usage: omac sandbox run [--profile <ref>] [--allow <path>] [--read <path>] [--write <path>] [--deny <path|glob>] [--deny-literal <path>] [--allow-file <path>] [--allow-unix-dir <dir>] [--open-port <port>] [--listen-port <port|A-B>] [--allow-tcp-connect <port|A-B>] [--allow-domain <d>] [--deny-domain <d>] [--allow-env <name>] [--block-net] [--workdir-access <level>] -- <cmd> [args...]")
 		return ExitMisuse
 	}
 	return sandboxrun.Run(sandboxrun.Options{
@@ -73,8 +73,10 @@ repeatable and merge additively onto the profile's grants:
                              Playwright/Vite on :3000; also used for the
                              omac bridge). On Linux, outbound to any host
                              on the same port is also allowed
-  --listen-port <port>       allow binding/listening on a TCP port
-  --allow-tcp-connect <port> direct outbound TCP to any host on this port (e.g. 22)
+  --listen-port <port|A-B>   allow binding/listening on a TCP port or range
+  --allow-tcp-connect <port|A-B>
+                             direct outbound TCP to any host on this port
+                             or range (e.g. 22)
   --allow-domain <domain>    add to the proxy allowlist (exact or *.suffix)
   --deny-domain <domain>     add to the proxy blocklist (exact or *.suffix)
   --allow-env <name>         pass an environment variable into the sandbox for
