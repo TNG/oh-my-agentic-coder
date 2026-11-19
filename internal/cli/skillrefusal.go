@@ -264,7 +264,10 @@ var spawnRefusalClasses = []spawnRefusalClass{
 		label:     "rebuild with",
 		doctorTag: "skill snapshots"},
 	{kind: skillstate.NotApproved,
-		cause:     "not registered from a host terminal yet",
+		// NotApproved covers both a never-registered skill and one whose files
+		// changed after registration (live reload and doctor skip the drift
+		// check), so the wording must fit both.
+		cause:     "current version not approved from a host terminal (new skill, or changed since it was registered)",
 		label:     "register with",
 		doctorTag: "skill registrations"},
 	{kind: skillstate.SnapshotMissing,

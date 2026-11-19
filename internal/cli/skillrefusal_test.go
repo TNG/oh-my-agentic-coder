@@ -297,7 +297,7 @@ func TestRenderApprovalRefusalsGroupsByClass(t *testing.T) {
 		"\n  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):\n" +
 			"    omac-gh — rebuild with: omac register omac-gh\n" +
 			"    skill-marketplace — rebuild with: omac register skill-marketplace --harness opencode --global\n",
-		"\n  Not registered from a host terminal yet:\n" +
+		"\n  Current version not approved from a host terminal (new skill, or changed since it was registered):\n" +
 			"    self-audit — register with: omac register self-audit --harness opencode\n",
 		"\n  Snapshot missing from the host store:\n" +
 			"    gone — rebuild with: omac register gone\n",
