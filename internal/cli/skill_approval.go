@@ -77,9 +77,18 @@ type skillCopy struct {
 // skillCopyOf derives the copy a registry entry denotes. absDir is the entry's
 // SkillDir resolved against workdir; workdir may be "" for a user-global
 // layer, whose entries are absolute by construction.
+//
+// The registry file is agent-writable and validates only the skill name, yet
+// the harness ends up in a command the user is told to copy. So only a harness
+// omac knows is kept, spelled by its canonical name; anything else leaves
+// Harness empty and the command falls back to the bare form (issue #514, F4).
 func skillCopyOf(e registry.Entry, absDir, workdir string) skillCopy {
 	global := filepath.IsAbs(e.SkillDir) && (workdir == "" || !isUnderDir(workdir, absDir))
-	return skillCopy{Name: e.Name, Harness: e.Harness, Dir: absDir, Global: global}
+	harness := ""
+	if h, ok := config.LookupHarness(e.Harness); ok {
+		harness = h.Name
+	}
+	return skillCopy{Name: e.Name, Harness: harness, Dir: absDir, Global: global}
 }
 
 // registerCmd is the `omac register` invocation that resolves to exactly this

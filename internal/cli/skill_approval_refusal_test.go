@@ -142,3 +142,24 @@ func TestRefusalProblemWrapsUntypedErrors(t *testing.T) {
 		t.Errorf("typed problem = %+v", got)
 	}
 }
+
+// TestSkillCopyIgnoresUnknownHarness (F4): the registry's harness field is
+// agent-writable and unvalidated, and the command is printed for the user to
+// copy, so only a harness omac knows may be spelled into it.
+func TestSkillCopyIgnoresUnknownHarness(t *testing.T) {
+	workdir := t.TempDir()
+	e := registry.Entry{Name: "foo", Harness: "opencode; touch /tmp/p --force", SkillDir: ".opencode/skills/foo"}
+	c := skillCopyOf(e, filepath.Join(workdir, e.SkillDir), workdir)
+	if got := c.registerCmd(); got != "omac register foo" {
+		t.Errorf("registerCmd = %q, want the bare command for an unknown harness", got)
+	}
+	r := &spawnRefusal{Kind: skillstate.NotApproved, Skill: c}
+	if strings.Contains(r.Error(), "touch") || strings.Contains(r.Problem().Fix, "touch") {
+		t.Errorf("injected harness text reached the refusal: %v", r)
+	}
+	// A known alias is normalized to the canonical name the registry uses.
+	e.Harness = "claude"
+	if got := skillCopyOf(e, filepath.Join(workdir, e.SkillDir), workdir).registerCmd(); got != "omac register foo --harness claude-code" {
+		t.Errorf("registerCmd = %q, want the canonical harness name", got)
+	}
+}
