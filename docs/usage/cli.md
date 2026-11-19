@@ -105,6 +105,8 @@ omac register <skill> --defaults   # use previously stored values, prompt only f
 | `--defaults` | false | Use previously remembered values without prompting. omac saves values from every registration globally, matched by skill and secret name. The first registration still prompts; after that, `--defaults` reuses them silently in any project. |
 | `--no-secrets` | false | Skip secret prompts. Use together with `--secrets-from`, or when you already stored the secrets in a prior step via `omac secrets import` and don't want to be prompted again. |
 | `--secrets-from <file>` | — | Read secrets from a `KEY=VALUE` file instead of prompting. Each line must match a secret name declared in the skill's `omac.yaml`. |
+| `--harness <opencode\|claude-code>` | — | Every harness is searched by default. Use this when the same skill name exists under more than one harness, for example in both `.opencode/skills` and `.claude/skills`; `omac start` prints it for you in that case. |
+| `--global` | false | Register the user-global copy (for example `~/.config/opencode/skills/<skill>`) when the same name also exists in the workdir. |
 
 **Injecting secrets in CI:**
 

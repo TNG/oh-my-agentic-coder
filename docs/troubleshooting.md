@@ -10,6 +10,7 @@ Run `omac doctor` first — it checks all prerequisites and prints the fix for w
 - **OS keychain**: pings the keychain backend (Keychain on macOS, Secret Service on Linux)
 - **Launcher config**: validates the launcher config file if one exists
 - **Skill registry**: loads registered skills with sidecars and checks each one: is a binary/script present, are required secrets present?
+- **Skill approvals**: checks that each registered skill was approved from a host terminal and still has a current frozen copy (snapshot). Warns with the `omac register` command to run for each one that was not, see [Upgrading](#upgrading)
 - **Inner harnesses**: reports which harness CLIs (`opencode`, `claude`, …) are on `PATH`
 - **Built-in skills**: checks whether `omac-write-a-skill` is provisioned for each installed harness
 - **Sandbox backend**: checks the platform sandbox binary (`sandbox-exec` on macOS, `bwrap` on Linux) and warns if the network prompt dialog (osascript / zenity / kdialog) is missing
