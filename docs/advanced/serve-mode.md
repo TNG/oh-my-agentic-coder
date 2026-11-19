@@ -150,8 +150,9 @@ error in these cases:
 - when one of Desktop's files is itself a symlink;
 - when `XDG_STATE_HOME` is set to a relative path.
 
-A project in Desktop's list whose folder contains Desktop's own files, such as
-a dotfiles repository at `~/.config`, is not granted. omac prints
+A project in Desktop's list whose folder holds Desktop's own files, directly
+or through a symlink, is not granted. Examples are a dotfiles repository at
+`~/.config`, or a dotfiles repository that `~/.config` links into. omac prints
 `skipping OpenCode worktree` with the reason and grants the other projects.
 
 ## Switching projects

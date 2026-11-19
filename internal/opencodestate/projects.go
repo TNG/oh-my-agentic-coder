@@ -102,9 +102,9 @@ func storageProjectDir() (string, error) {
 // store (outside the sandbox mount) keep the looser isBroadWorktree
 // rule so the Desktop workflow still resolves in-home projects.
 //
-// A folder that contains one of the Desktop's own stores (see
-// DesktopStorePaths) is skipped too: the sandbox refuses any write grant
-// over those stores, so granting it would block every start.
+// A folder that gives access to one of the Desktop's own stores (see
+// StoreRoute.CoveredBy) is skipped too: the sandbox refuses to start with
+// a write grant on it, so granting it would block every start.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	storage, err := storageWorktrees()
 	if err != nil {
@@ -114,7 +114,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	raw = append(raw, desktopWorktrees()...)
 
 	home, _ := os.UserHomeDir()
-	stores := DesktopStorePaths()
+	storeRoutes := desktopStoreRoutes()
 	seen := map[string]bool{}
 	for _, e := range raw {
 		wt := e.path
@@ -134,7 +134,7 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
 			continue
 		}
-		if containsAny(wt, stores) {
+		if coversAnyStore(wt, storeRoutes) {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipDesktopStore})
 			continue
 		}
@@ -159,36 +159,13 @@ func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
 	return isInHome(wt, home)
 }
 
-// containsAny reports whether dir is one of paths or an ancestor of one.
-// Both sides are checked as written and with symlinks resolved, because
-// the sandbox checks a store's route in both forms.
-func containsAny(dir string, paths []string) bool {
-	for _, d := range pathForms(dir) {
-		for _, path := range paths {
-			for _, p := range pathForms(path) {
-				if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
-					return true
-				}
-			}
+func coversAnyStore(dir string, routes []StoreRoute) bool {
+	for _, route := range routes {
+		if route.CoveredBy(dir) {
+			return true
 		}
 	}
 	return false
-}
-
-// pathForms returns p cleaned and, when it differs, with symlinks
-// resolved. A missing file is resolved through its folder.
-func pathForms(p string) []string {
-	forms := []string{filepath.Clean(p)}
-	real, err := filepath.EvalSymlinks(p)
-	if err != nil {
-		if dir, derr := filepath.EvalSymlinks(filepath.Dir(p)); derr == nil {
-			real, err = filepath.Join(dir, filepath.Base(p)), nil
-		}
-	}
-	if err == nil && real != forms[0] {
-		forms = append(forms, real)
-	}
-	return forms
 }
 
 // isInHome reports whether wt lies anywhere inside home: equal to it,

@@ -1,12 +1,14 @@
 package sandboxrun
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -244,6 +246,134 @@ func TestProtectDesktopStoresAcceptsDanglingLink(t *testing.T) {
 	grant := &Grants{AllowPaths: []string{filepath.Join(home, "unmounted")}}
 	if err := protectDesktopStores(grant, false); err == nil {
 		t.Error("write grant where the link's target would appear: accepted")
+	}
+}
+
+// Project discovery skips a Desktop project exactly when the sandbox
+// would refuse it as a write grant, so a kept project never blocks the
+// start. Each setup lists the folders it builds below a temp root as
+// Desktop projects; links are written "link -> target", relative to the
+// root.
+func TestDesktopProjectSkipsMatchSandboxRefusals(t *testing.T) {
+	const (
+		macDesktop   = "home/Library/Application Support/ai.opencode.desktop"
+		linuxDesktop = "home/.config/ai.opencode.desktop"
+	)
+	for _, tc := range []struct {
+		name        string
+		dirs, links []string
+		desktopDir  string
+		wantSkipped []string
+	}{
+		{
+			name:        "plain home",
+			dirs:        []string{linuxDesktop, "home/.config/nvim", "home/work/app"},
+			desktopDir:  linuxDesktop,
+			wantSkipped: []string{"home/.config"},
+		},
+		{
+			name:        "linked ~/.config without a Desktop folder",
+			dirs:        []string{macDesktop, "home/dotfiles/config", "home/work/app"},
+			links:       []string{"home/.config -> home/dotfiles/config"},
+			desktopDir:  macDesktop,
+			wantSkipped: []string{"home/dotfiles", "home/dotfiles/config"},
+		},
+		{
+			name:        "linked ~/.local/share",
+			dirs:        []string{linuxDesktop, "home/dotfiles/share", "home/.local", "home/work/app"},
+			links:       []string{"home/.local/share -> home/dotfiles/share"},
+			desktopDir:  linuxDesktop,
+			wantSkipped: []string{"home/dotfiles", "home/.local"},
+		},
+		{
+			name:        "link to a missing target",
+			dirs:        []string{macDesktop, "home/unmounted", "home/work/app"},
+			links:       []string{"home/.config -> home/unmounted/config"},
+			desktopDir:  macDesktop,
+			wantSkipped: []string{"home/unmounted"},
+		},
+		{
+			name:        "chain of links",
+			dirs:        []string{"data/config/ai.opencode.desktop", "tmp", "home/work/app"},
+			links:       []string{"tmp/a -> data/config", "home/.config -> tmp/a"},
+			desktopDir:  "data/config/ai.opencode.desktop",
+			wantSkipped: []string{"tmp", "data", "data/config"},
+		},
+		{
+			name:        "project folder that is a link",
+			dirs:        []string{linuxDesktop, "home/work/app"},
+			links:       []string{"home/dots -> home/.config", "home/app -> home/work/app"},
+			desktopDir:  linuxDesktop,
+			wantSkipped: []string{"home/dots"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", filepath.Join(root, "home"))
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			for _, d := range tc.dirs {
+				if err := os.MkdirAll(filepath.Join(root, d), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, l := range tc.links {
+				link, target, _ := strings.Cut(l, " -> ")
+				if err := os.Symlink(filepath.Join(root, target), filepath.Join(root, link)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var projects []map[string]string
+			err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+				if err == nil && (d.IsDir() || d.Type()&os.ModeSymlink != 0) {
+					projects = append(projects, map[string]string{"worktree": path})
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			list, err := json.Marshal(map[string]any{"value": projects})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(map[string]string{"globalSync.project": string(list)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, tc.desktopDir, "opencode.global.dat"), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			kept, skipped, err := opencodestate.Worktrees()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range kept {
+				if err := protectDesktopStores(&Grants{AllowPaths: []string{dir}}, false); err != nil {
+					t.Errorf("kept project %s is refused: %v", dir, err)
+				}
+			}
+			var skippedForStore []string
+			for _, s := range skipped {
+				if s.Reason != opencodestate.SkipDesktopStore {
+					continue
+				}
+				skippedForStore = append(skippedForStore, s.Path)
+				if err := protectDesktopStores(&Grants{AllowPaths: []string{s.Path}}, false); err == nil {
+					t.Errorf("skipped project %s is accepted", s.Path)
+				}
+			}
+			for _, want := range tc.wantSkipped {
+				if !slices.Contains(skippedForStore, filepath.Join(root, want)) {
+					t.Errorf("%s not skipped: %v", want, skippedForStore)
+				}
+			}
+		})
 	}
 }
 

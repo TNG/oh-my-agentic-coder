@@ -365,6 +365,61 @@ func TestWorktreesSkipsLinkTargetHoldingDesktopStore(t *testing.T) {
 	}
 }
 
+// A dotfiles repository that a Desktop folder is linked into is skipped
+// even when Desktop keeps no files there yet, as on macOS (Desktop uses
+// ~/Library) or with only ~/.local/share linked on Linux: the sandbox
+// protects the place where Desktop's files would appear.
+func TestWorktreesSkipsDotfilesWithoutDesktopFolder(t *testing.T) {
+	for _, tc := range []struct {
+		name, linked, desktopDir string
+	}{
+		{"macOS, linked ~/.config", ".config", filepath.Join("Library", "Application Support", "ai.opencode.desktop")},
+		{"Linux, linked ~/.local/share", filepath.Join(".local", "share"), filepath.Join(".config", "ai.opencode.desktop")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			t.Setenv("XDG_DATA_HOME", "")
+			t.Setenv("XDG_STATE_HOME", "")
+			dotfiles := filepath.Join(home, "dotfiles")
+			linkTarget := filepath.Join(dotfiles, filepath.Base(tc.linked))
+			project := filepath.Join(home, "work", "app")
+			desktopDir := filepath.Join(home, tc.desktopDir)
+			for _, d := range []string{linkTarget, project, desktopDir, filepath.Dir(filepath.Join(home, tc.linked))} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(linkTarget, filepath.Join(home, tc.linked)); err != nil {
+				t.Fatal(err)
+			}
+			records := `{"value":[{"worktree":"` + dotfiles + `"},{"worktree":"` + project + `"}]}`
+			data, err := json.Marshal(map[string]any{"globalSync.project": records})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(desktopDir, "opencode.global.dat"), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			worktrees, skipped, err := Worktrees()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{project}; !slices.Equal(worktrees, want) {
+				t.Errorf("worktrees = %v, want %v", worktrees, want)
+			}
+			if !slices.Contains(skipped, SkippedWorktree{Path: dotfiles, Reason: SkipDesktopStore}) {
+				t.Errorf("%s not skipped as a Desktop store folder: %v", dotfiles, skipped)
+			}
+		})
+	}
+}
+
 // Discovery and the sandbox protection share one list of Desktop dirs, with
 // no duplicates, covering the stable and beta app in every location.
 func TestDesktopStorePathsListsEachDirOnce(t *testing.T) {
