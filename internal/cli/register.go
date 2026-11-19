@@ -38,7 +38,7 @@ func runRegister(args []string, env *Env) int {
 		noFields        = fs.Bool("no-fields", false, "Skip all config-field prompts; caller promises to supply them at start time.")
 		fieldsFromPath  = fs.String("fields-from", "", "Read KEY=VALUE config fields from this file instead of prompting.")
 		useDefaults     = fs.Bool("defaults", false, "Non-interactive: use remembered global defaults where available; prompt only for values never set anywhere.")
-		harnessName     = fs.String("harness", "", "Resolve the skill in this harness's scope (opencode|claude). Default: opencode. Use to disambiguate a skill name present under multiple harnesses.")
+		harnessName     = fs.String("harness", "", "Resolve the skill in this harness's scope (opencode|claude). Without it every harness is searched, and a name found under more than one harness is refused until you pick one.")
 		globalOnly      = fs.Bool("global", false, "When a skill name exists both workdir-local and user-global, register the user-global one.")
 	)
 	fs.Usage = func() {

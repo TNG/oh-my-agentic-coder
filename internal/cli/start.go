@@ -639,19 +639,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 	//     internal/skilltrust) may start — and they run from the immutable
 	//     approval snapshot, not the agent-writable workdir. Unapproved
 	//     skills are mounted as broken routes with the remedy, never spawned.
-	var refusedRoutes []facade.Route
-	approved := make([]skillstate.Armed, 0, len(resolved))
-	for _, a := range resolved {
-		snap, refusal := approvedSpawnDir(a.Entry.Name, a.AbsDir, a.Bundle)
-		if refusal != nil {
-			refusedRoutes = append(refusedRoutes, brokenApprovalRoute(
-				a.Mount, a.Entry.Name, a.AbsDir, refusal))
-			fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, refusalNotice(refusal))
-			continue
-		}
-		a.AbsDir = snap // spawn (and serve SKILL.md) from the frozen snapshot
-		approved = append(approved, a)
-	}
+	//     Refusals are reported once, grouped by cause, after the gate has
+	//     seen every skill (issue #514).
+	gate := gateApprovedSkills(resolved, env.Workdir)
+	refusedRoutes := gate.refused
+	approved := gate.approved
+	renderApprovalRefusals(env.Stderr, prefix, gate.problems)
 
 	specs := make([]supervisor.SidecarSpec, 0, len(approved))
 	for _, s := range approved {
@@ -756,6 +749,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
 		skipSecretPattern: skipSecretPattern,
 		mounted:           map[string]string{},
+		// Seed with what the launch report already covered, so the first
+		// reload after launch repeats a refusal only when its reason changed.
+		warned: gate.warned,
 	}
 	for _, a := range approved {
 		reloader.markMounted(a.Entry.Name, a.Mount)
@@ -1347,6 +1343,40 @@ func filterRegistryByHarness(reg *registry.Registry, workdir string, harness con
 		}
 	}
 	return out
+}
+
+// spawnGate is the outcome of the launch's spawn-approval gate over the
+// resolved skills: what may spawn (AbsDir rewritten to the frozen snapshot),
+// the broken routes to mount for the rest, their problems for the grouped
+// stderr report, and the per-skill refusal text to seed the reloader's
+// warned map with.
+type spawnGate struct {
+	approved []skillstate.Armed
+	refused  []facade.Route
+	problems []skillstate.Problem
+	warned   map[string]string
+}
+
+// gateApprovedSkills runs approvedSpawnDirFor over every resolved skill. It
+// never prints: the caller renders problems once, grouped, instead of one
+// sentence per skill as it went past.
+func gateApprovedSkills(resolved []skillstate.Armed, workdir string) spawnGate {
+	g := spawnGate{
+		approved: make([]skillstate.Armed, 0, len(resolved)),
+		warned:   map[string]string{},
+	}
+	for _, a := range resolved {
+		snap, refusal := approvedSpawnDirFor(skillCopyOf(a.Entry, a.AbsDir, workdir), a.Bundle)
+		if refusal != nil {
+			g.refused = append(g.refused, brokenApprovalRoute(a.Mount, a.Entry.Name, a.AbsDir, refusal))
+			g.problems = append(g.problems, refusalProblem(a.Entry.Name, refusal))
+			g.warned[a.Entry.Name] = refusal.Error()
+			continue
+		}
+		a.AbsDir = snap // spawn (and serve SKILL.md) from the frozen snapshot
+		g.approved = append(g.approved, a)
+	}
+	return g
 }
 
 func findUnregisteredSkills(workdir string, harness config.Harness, reg *registry.Registry) ([]string, error) {

@@ -274,3 +274,76 @@ func TestRenderSkillRefusalPrintsKeychainHintOnce(t *testing.T) {
 		t.Errorf("code = %d, want ExitKeychainError", code)
 	}
 }
+
+func renderApproval(problems []skillstate.Problem) string {
+	var buf bytes.Buffer
+	renderApprovalRefusals(&buf, "omac start", problems)
+	return buf.String()
+}
+
+// TestRenderApprovalRefusalsGroupsByClass (issue #514): spawn-gate refusals are
+// one report with the remedy stated once per class and one labelled line per
+// skill, instead of one ~250-character sentence per skill.
+func TestRenderApprovalRefusalsGroupsByClass(t *testing.T) {
+	out := renderApproval([]skillstate.Problem{
+		{Kind: skillstate.SnapshotStale, Skill: "omac-gh", Fix: "omac register omac-gh"},
+		{Kind: skillstate.SnapshotStale, Skill: "skill-marketplace", Fix: "omac register skill-marketplace --harness opencode --global"},
+		{Kind: skillstate.NotApproved, Skill: "self-audit", Fix: "omac register self-audit --harness opencode"},
+		{Kind: skillstate.SnapshotMissing, Skill: "gone", Fix: "omac register gone"},
+		{Kind: skillstate.SpawnRefused, Skill: "odd", Detail: "cannot read the host approval store: boom"},
+	})
+	want := []string{
+		"omac start: 5 skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:",
+		"\n  Registered before v0.13.1, snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):\n" +
+			"    omac-gh — rebuild with: omac register omac-gh\n" +
+			"    skill-marketplace — rebuild with: omac register skill-marketplace --harness opencode --global\n",
+		"\n  Not registered from a host terminal yet:\n" +
+			"    self-audit — register with: omac register self-audit --harness opencode\n",
+		"\n  Snapshot missing from the host store:\n" +
+			"    gone — rebuild with: omac register gone\n",
+		"\n  Could not be checked (fix the cause, then relaunch):\n" +
+			"    odd — cannot read the host approval store: boom\n",
+		"\n  The session starts without them; the agent sees them listed as unavailable.\n",
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("output missing %q:\n%s", w, out)
+		}
+	}
+	if strings.Count(out, "host terminal") != 2 {
+		t.Errorf("the remedy sentence must appear once in the header and once in a section header, not per skill:\n%s", out)
+	}
+	if strings.Contains(out, "refusing to start") {
+		t.Errorf("the launch continues; the report must not claim a refusal to start:\n%s", out)
+	}
+}
+
+func TestRenderApprovalRefusalsOmitsAbsentSectionsAndCountsSkills(t *testing.T) {
+	if out := renderApproval(nil); out != "" {
+		t.Errorf("no refusals must print nothing, got %q", out)
+	}
+	out := renderApproval([]skillstate.Problem{
+		{Kind: skillstate.NotApproved, Skill: "a", Fix: "omac register a"},
+		{Kind: skillstate.NotApproved, Skill: "a", Fix: "omac register a"},
+	})
+	if !strings.HasPrefix(out, "omac start: 1 skill(s) will not run") {
+		t.Errorf("header must count distinct skills:\n%s", out)
+	}
+	for _, banned := range []string{"Registered before", "Snapshot missing", "Could not be checked"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("empty section %q rendered:\n%s", banned, out)
+		}
+	}
+}
+
+// TestRenderApprovalRefusalsStripsControlChars: skill names and details come
+// from agent-writable files, so the report sanitizes them like the start
+// refusal does.
+func TestRenderApprovalRefusalsStripsControlChars(t *testing.T) {
+	out := renderApproval([]skillstate.Problem{
+		{Kind: skillstate.SpawnRefused, Skill: "x\x1b[2J", Detail: "bad\x1b[31m"},
+	})
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("escape sequence leaked into the report: %q", out)
+	}
+}

@@ -31,6 +31,18 @@ import (
 // under this root with the approved hash and staged-copy verification.
 const snapshotRoot = "skills-v2"
 
+// SnapshotPolicySince is the release that introduced the current snapshotRoot.
+// Every snapshot approved before it lives under legacySnapshotRoot and must be
+// rebuilt once by host re-registration; the launch report and `omac doctor`
+// name this release so the user knows the refusal is an upgrade effect, not a
+// broken install. Bump both constants together when the copy policy changes.
+const SnapshotPolicySince = "v0.13.1"
+
+// legacySnapshotRoot is the retired root. Nothing deletes it on upgrade (see
+// issue #215), so its presence for a (name, hash) is the evidence that the
+// skill was approved under the old policy rather than hand-deleted.
+const legacySnapshotRoot = "skills"
+
 // snapshotRel returns the store-relative snapshot path for (name, hash).
 // The bundle hash's "sha256:" prefix is stripped to a bare hex leaf.
 func snapshotRel(name, bundleHash string) string {
@@ -49,6 +61,19 @@ func SnapshotPath(name, bundleHash string) (string, bool) {
 		return p, true
 	}
 	return p, false
+}
+
+// LegacySnapshotPresent reports whether a snapshot for (name, bundleHash) still
+// exists under the retired root. It is never spawned from; it only lets callers
+// tell "registered before SnapshotPolicySince" apart from "snapshot missing".
+func LegacySnapshotPresent(name, bundleHash string) bool {
+	d := dir()
+	if d == "" {
+		return false
+	}
+	p := filepath.Join(d, legacySnapshotRoot, name, strings.TrimPrefix(bundleHash, "sha256:"))
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // IsSnapshotPath reports whether spawnDir is an existing directory under the

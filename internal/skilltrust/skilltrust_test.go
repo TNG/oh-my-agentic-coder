@@ -312,3 +312,26 @@ func TestApprovalsFailClosed(t *testing.T) {
 		t.Errorf("IsApproved = %v, %v; want false and an error", ok, err)
 	}
 }
+
+// TestLegacySnapshotPresent: a snapshot left under the retired "skills" root
+// is what distinguishes "registered before the store format changed" from a
+// hand-deleted store, so the launch report can say which one the user has.
+func TestLegacySnapshotPresent(t *testing.T) {
+	isolate(t)
+	if LegacySnapshotPresent("s", "sha256:abc") {
+		t.Fatal("no legacy snapshot staged, yet reported present")
+	}
+	legacy := filepath.Join(dir(), "skills", "s", "abc")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !LegacySnapshotPresent("s", "sha256:abc") {
+		t.Errorf("legacy snapshot at %s not detected", legacy)
+	}
+	if LegacySnapshotPresent("s", "sha256:other") {
+		t.Error("legacy check must be keyed by hash, not by name alone")
+	}
+	if SnapshotPolicySince == "" {
+		t.Error("SnapshotPolicySince must name the release that retired the old root")
+	}
+}

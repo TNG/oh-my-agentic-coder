@@ -21,6 +21,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
+	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runDoctor(args []string, env *Env) int {
@@ -198,6 +199,10 @@ func runDoctor(args []string, env *Env) int {
 		}
 	}
 
+	// Spawn-gate status: which registered skills `omac start` would mount as
+	// unavailable, with the command that fixes each (issue #514).
+	doctorSpawnGate(env, reg)
+
 	// Inner harness binary status.
 	doctorHarnessBinaries(env)
 
@@ -243,6 +248,60 @@ func runDoctor(args []string, env *Env) int {
 		return ExitConfigInvalid
 	}
 	return ExitOK
+}
+
+// doctorSpawnGate runs the launch's spawn-approval gate over every registered
+// skill and prints the refusals as warnings, grouped the way the launch report
+// groups them, with the harness-aware `omac register` command per skill. It is
+// advisory: a skill the gate refuses is still a supported state (the session
+// launches without it), so it never affects doctor's exit code.
+//
+// It hashes each skill tree once, which the readiness loop above avoids
+// (SkipBundleHash); the gate cannot answer without the hash, and `omac
+// register` walks the same tree anyway.
+func doctorSpawnGate(env *Env, reg *registry.Registry) {
+	var problems []skillstate.Problem
+	for _, e := range reg.Registered {
+		absDir := e.SkillDir
+		if !filepath.IsAbs(absDir) {
+			absDir = filepath.Join(env.Workdir, absDir)
+		}
+		if _, refusal := approvedSpawnDirFor(skillCopyOf(e, absDir, env.Workdir), ""); refusal != nil {
+			problems = append(problems, refusalProblem(e.Name, refusal))
+		}
+	}
+	if len(problems) == 0 {
+		fmt.Fprintf(env.Stdout, "[ok] skill approvals: %d skill(s) approved with a current snapshot\n", len(reg.Registered))
+		return
+	}
+	problems = sanitizeProblems(problems)
+	section := func(kind skillstate.ProblemKind, header string) {
+		var rows []skillstate.Problem
+		for _, p := range problems {
+			if p.Kind == kind {
+				rows = append(rows, p)
+			}
+		}
+		if len(rows) == 0 {
+			return
+		}
+		fmt.Fprintf(env.Stdout, "[warn] %s\n", fmt.Sprintf(header, len(rows)))
+		for _, p := range rows {
+			if p.Fix != "" {
+				fmt.Fprintf(env.Stdout, "  [warn] %-20s %s\n", p.Skill, p.Fix)
+			} else {
+				fmt.Fprintf(env.Stdout, "  [warn] %-20s %s\n", p.Skill, p.Detail)
+			}
+		}
+	}
+	section(skillstate.SnapshotStale,
+		"skill snapshots: %d skill(s) registered before "+skilltrust.SnapshotPolicySince+", snapshot must be rebuilt once from a host terminal")
+	section(skillstate.NotApproved,
+		"skill registrations: %d skill(s) not registered from a host terminal yet")
+	section(skillstate.SnapshotMissing,
+		"skill snapshots: %d skill(s) whose snapshot is missing from the host store; rebuild each from a host terminal")
+	section(skillstate.SpawnRefused,
+		"skill approvals: %d skill(s) could not be checked")
 }
 
 // doctorProfileLint runs the profileaudit static linter over the resolved

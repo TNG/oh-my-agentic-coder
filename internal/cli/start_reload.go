@@ -472,7 +472,7 @@ func (r *startReloader) reload() []string {
 		// internal/skilltrust) and runs from the immutable approval snapshot,
 		// not the workdir. Mount a broken route (no markMounted, so a later
 		// reload after `omac register` can still bring it up).
-		snapDir, refusal := approvedSpawnDir(e.Name, absDir, "")
+		snapDir, refusal := approvedSpawnDirFor(skillCopyOf(e, absDir, r.env.Workdir), "")
 		if refusal != nil {
 			r.facade.AddRoute(brokenApprovalRoute(mount, e.Name, absDir, refusal))
 			r.markNotReady(e.Name, &notReadySkill{
