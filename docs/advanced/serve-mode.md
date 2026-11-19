@@ -106,6 +106,11 @@ server you never chose. omac therefore hides these files from the agent. In
 Desktop's folder, only the `opencode` subfolder, where the OpenCode server
 keeps its runtime state, is writable.
 
+Desktop's own OpenCode uses the same `opencode` subfolder (on macOS
+`~/Library/Application Support/ai.opencode.desktop/opencode`), so the agent
+can change what Desktop's OpenCode finds there. Today it holds only lock
+files.
+
 Desktop keeps these files in one of the following folders, depending on the
 platform and the install. omac checks and protects all of them on every
 platform, and also the folder `XDG_STATE_HOME` points to:
