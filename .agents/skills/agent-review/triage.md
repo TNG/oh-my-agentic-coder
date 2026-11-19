@@ -5,7 +5,7 @@ You have the reports of the reviewers that ran, and the test results (`tests.md`
 1. **Read all reports**, `tests.md` and the PR context. A build, lint or test failure that is new in this PR is a finding of its own (🐛 Bug or 🧪 Tests), even if no reviewer mentioned it.
 2. **Verify each item** against the code. Open the file, run the test or command where it's cheap. An item you can't confirm is either dropped or kept as "Not verified", never presented as fact.
 3. **Merge duplicates.** Two reviewers often find the same thing from different angles; keep one finding and note both sources.
-4. **Rate the severity, and drop what doesn't matter.** Rate each finding by its effect on users and maintainers if the PR is merged as is:
+4. **Rate the severity, and drop what doesn't matter.** Rate each finding by its effect on users and maintainers if the PR is merged as is. For findings that affect users, first work out who hits them and how often (the reach in `templates/pr-comment.md`, "User-Impact"): the same defect weighs more for everyone than in a rare setup.
 
    | Severity | Means |
    |---|---|
@@ -27,7 +27,7 @@ You have the reports of the reviewers that ran, and the test results (`tests.md`
    - **Needs a decision**: a reasonable person could choose differently (a default, the name of a new flag, "in this PR or a follow-up").
    - **Not verified**: plausible and worth checking, but you couldn't confirm it.
 6. **Assign IDs** `F1`, `F2`, … in reading order: "Needs a decision" first, then "Directly addressable findings", then "Not verified"; within each section by severity, then by importance. IDs never repeat on a PR: in round 2 and later, continue after the highest ID of earlier rounds.
-7. **Complete each finding** in the form given by `templates/pr-comment.md`, so it stands alone: the problem in plain words, where, the evidence as a code block, the suggested fix separate from the problem (naming any tests, docs or generated files that must change with it), and how to check it's done. For "Needs a decision", give the options with their trade-off and your suggestion. Give each finding a type from the "Finding types" table in the template, and its severity with a one-sentence reason.
+7. **Complete each finding** in the form given by `templates/pr-comment.md`, so it stands alone: the problem in plain words, where, the evidence as a code block, the suggested fix separate from the problem (naming any tests, docs or generated files that must change with it), and how to check it's done. For "Needs a decision", give the options with their trade-off and your suggestion. Give each finding a type from the "Finding types" table in the template, its severity with a one-sentence reason, and the User-Impact block if it affects users.
 8. **Annotate the reports.** In each reviewer item, put the outcome in front of its confidence line, e.g. `**Triage:** → F3 · **Confidence:** verified`. Outcomes: `→ F3`, `→ merged into F1`, `dropped: <one-line reason>` (for example "dropped: style preference"), or `unverified`. Leave the rest of the report as written, except to escape bare `<…>` text outside code (GitHub hides it).
 9. **Round 2 and later:** for each earlier finding, decide whether it's addressed (name the commit), still open, or obsolete.
 10. **Write the summary:** start with the verdict (✅ Ready to merge, ⚠️ Ready after the 🟠 findings, or ⛔ Not ready: 🔴 findings), then 2–3 sentences on what matters most, plainly, as the requester would say it.

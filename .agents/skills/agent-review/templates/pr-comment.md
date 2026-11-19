@@ -77,11 +77,33 @@ Right below each heading, before the problem text, give the severity and why, in
 
 The summary starts with the verdict: `✅ Ready to merge` (only 🟡 findings or none), `⚠️ Ready after the 🟠 findings`, or `⛔ Not ready: 🔴 findings`.
 
+## User-Impact
+
+Add this block below the severity line, after a blank line, when the finding changes what someone using omac experiences: a command fails or behaves differently, a message misleads, a documented setup stops working, or the agent can do more than the docs promise. Leave it out when only maintainers would notice, as with missing tests, internal docs, code structure or clean-ups.
+
+```markdown
+**User-Impact**
+- **Who:** <which users, described by their setup or what they do>
+- **What happens:** <what they see or lose, and the workaround if there is one>
+- **Reach:** <Everyone | Common setup | Specific setup | Rare>. <why, in one sentence>
+```
+
+| Reach | Means |
+|---|---|
+| Everyone | every user of the feature, in the normal flow |
+| Common setup | a setup or step many users of the feature have, e.g. starting `omac serve` from the home folder |
+| Specific setup | needs two or more conditions that each occur, but rarely together |
+| Rare | needs an unusual environment or timing, e.g. no `HOME` variable, or a race at startup |
+
+Describe users by what they do, not by the code's terms. For example: "people whose `~/.config` is a symlink into a folder they opened as a project in OpenCode Desktop", not "projects that cover a store route".
+
 ## Finding, directly addressable form
 
 ````markdown
 #### F2. <type>: <title> · <new in this PR | already on <base branch>>
 **Severity:** <🔴 Blocker | 🟠 Should fix | 🟡 Minor>. <why, in one sentence>
+
+<User-Impact block, only if users are affected (see "User-Impact")>
 
 <what goes wrong, for whom, in plain words>
 
@@ -112,6 +134,8 @@ Options and suggestion stay visible, since they need the reader's attention.
 #### F1. <type>: <title> · <new in this PR | already on <base branch>>
 **Severity:** <🔴 Blocker | 🟠 Should fix | 🟡 Minor>. <why, in one sentence>
 
+<User-Impact block, only if users are affected (see "User-Impact")>
+
 <what's at stake, in plain words>
 
 **Options:**
@@ -137,6 +161,8 @@ Options and suggestion stay visible, since they need the reader's attention.
 ````markdown
 #### F8. <type>: <title> · <new in this PR | already on <base branch>>
 **Severity:** <🔴 Blocker | 🟠 Should fix | 🟡 Minor>. <why, in one sentence>
+
+<User-Impact block, only if users are affected (see "User-Impact")>
 
 <why it looks like a problem>
 
