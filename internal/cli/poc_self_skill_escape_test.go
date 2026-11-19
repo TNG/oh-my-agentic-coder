@@ -312,11 +312,11 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 	launch() // first upgraded run: grandfathers global skills only.
 
 	// Global skill must be approved.
-	if refusal := approvalRefusal("trusted", globalSkillDir, ""); refusal != nil {
+	if refusal := approvalRefusal(skillCopy{Name: "trusted", Dir: globalSkillDir}, ""); refusal != nil {
 		t.Errorf("user-global skill must be grandfathered/approved on first upgrade: %v", refusal)
 	}
 	// Workdir skill must NOT be approved — it is agent-writable.
-	if refusal := approvalRefusal("pwn", workdirSkillDir, ""); refusal == nil {
+	if refusal := approvalRefusal(skillCopy{Name: "pwn", Dir: workdirSkillDir}, ""); refusal == nil {
 		t.Error("workdir-local skill must NOT be grandfathered (agent-writable)")
 	}
 
@@ -326,11 +326,11 @@ func TestGrandfatherClosesFirstUpgradeWindow(t *testing.T) {
 		t.Fatal("first-upgrade window must be closed after the first launch")
 	}
 	launch() // second run: window closed, must not grandfather anything new.
-	if refusal := approvalRefusal("authored-later", laterDir, ""); refusal == nil {
+	if refusal := approvalRefusal(skillCopy{Name: "authored-later", Dir: laterDir}, ""); refusal == nil {
 		t.Error("a skill registered after the first upgrade must not be grandfathered on a later launch")
 	}
 	// Global skill remains approved across launches.
-	if refusal := approvalRefusal("trusted", globalSkillDir, ""); refusal != nil {
+	if refusal := approvalRefusal(skillCopy{Name: "trusted", Dir: globalSkillDir}, ""); refusal != nil {
 		t.Errorf("grandfathered global skill must remain approved across launches: %v", refusal)
 	}
 }

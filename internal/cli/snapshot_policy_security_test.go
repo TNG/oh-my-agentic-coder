@@ -76,7 +76,7 @@ func TestSecurityLegacySnapshotRequiresHostReRegistration(t *testing.T) {
 	if _, present := skilltrust.SnapshotPath(name, h); present {
 		t.Error("lookup returned a legacy-policy snapshot")
 	}
-	if got, err := approvedSpawnDir(name, src, h); err == nil || got != "" {
+	if got, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, h); err == nil || got != "" {
 		t.Errorf("preflight accepted legacy snapshot: %q, %v", got, err)
 	} else {
 		msg := err.Error()
@@ -110,7 +110,7 @@ func TestSecurityLegacySnapshotRequiresHostReRegistration(t *testing.T) {
 	if err := skilltrust.Approve(name, h, src); err == nil {
 		t.Error("same-hash registration silently accepted mutated source instead of validating the staged copy")
 	}
-	if got, err := approvedSpawnDir(name, src, ""); err == nil || got != "" {
+	if got, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, ""); err == nil || got != "" {
 		t.Errorf("mutated source spawned: %q, %v", got, err)
 	}
 	if _, present := skilltrust.SnapshotPath(name, h); present {
@@ -128,7 +128,7 @@ func TestSecurityLegacySnapshotRequiresHostReRegistration(t *testing.T) {
 		t.Fatalf("excluded-file hash control = %s, want %s", got, h)
 	}
 	register()
-	rebuilt, err := approvedSpawnDir(name, src, h)
+	rebuilt, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, h)
 	if err != nil {
 		t.Fatalf("rebuilt snapshot refused: %v", err)
 	}

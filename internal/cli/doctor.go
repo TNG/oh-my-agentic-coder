@@ -266,7 +266,7 @@ func doctorSpawnGate(env *Env, reg *registry.Registry) {
 		if !filepath.IsAbs(absDir) {
 			absDir = filepath.Join(env.Workdir, absDir)
 		}
-		if _, refusal := approvedSpawnDirFor(skillCopyOf(e, absDir, env.Workdir), ""); refusal != nil {
+		if _, refusal := approvedSpawnDir(skillCopyOf(e, absDir, env.Workdir), ""); refusal != nil {
 			problems = append(problems, refusalProblem(e.Name, refusal))
 		}
 	}

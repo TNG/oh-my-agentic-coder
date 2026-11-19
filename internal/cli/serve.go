@@ -1710,7 +1710,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	// error found on the way. armed.Bundle was hashed once above and is reused
 	// here; it is empty when hashing failed, which leaves approvalRefusal to
 	// re-derive and report.
-	snapDir, refusal := approvedSpawnDirFor(skillCopyOf(e, absDir, workdir), armed.Bundle)
+	snapDir, refusal := approvedSpawnDir(skillCopyOf(e, absDir, workdir), armed.Bundle)
 	if refusal != nil {
 		return broken(refusal.Error())
 	}

@@ -1357,7 +1357,7 @@ type spawnGate struct {
 	warned   map[string]string
 }
 
-// gateApprovedSkills runs approvedSpawnDirFor over every resolved skill. It
+// gateApprovedSkills runs approvedSpawnDir over every resolved skill. It
 // never prints: the caller renders problems once, grouped, instead of one
 // sentence per skill as it went past.
 func gateApprovedSkills(resolved []skillstate.Armed, workdir string) spawnGate {
@@ -1366,7 +1366,7 @@ func gateApprovedSkills(resolved []skillstate.Armed, workdir string) spawnGate {
 		warned:   map[string]string{},
 	}
 	for _, a := range resolved {
-		snap, refusal := approvedSpawnDirFor(skillCopyOf(a.Entry, a.AbsDir, workdir), a.Bundle)
+		snap, refusal := approvedSpawnDir(skillCopyOf(a.Entry, a.AbsDir, workdir), a.Bundle)
 		if refusal != nil {
 			g.refused = append(g.refused, brokenApprovalRoute(a.Mount, a.Entry.Name, a.AbsDir, refusal))
 			g.problems = append(g.problems, refusalProblem(a.Entry.Name, refusal))

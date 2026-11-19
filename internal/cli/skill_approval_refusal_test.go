@@ -82,7 +82,7 @@ func TestApprovedSpawnDirForClassifiesRefusals(t *testing.T) {
 
 	// Never registered from the host: no approval at all.
 	e, abs := entry("fresh")
-	_, err := approvedSpawnDirFor(skillCopyOf(e, abs, workdir), "")
+	_, err := approvedSpawnDir(skillCopyOf(e, abs, workdir), "")
 	var r *spawnRefusal
 	if !errors.As(err, &r) || r.Kind != skillstate.NotApproved {
 		t.Fatalf("fresh: err = %v, want a NotApproved spawnRefusal", err)
@@ -100,7 +100,7 @@ func TestApprovedSpawnDirForClassifiesRefusals(t *testing.T) {
 	// Approved before the store format changed: only the legacy snapshot exists.
 	e, abs = entry("stale")
 	h := stageLegacySnapshot(t, "stale", abs)
-	_, err = approvedSpawnDirFor(skillCopyOf(e, abs, workdir), h)
+	_, err = approvedSpawnDir(skillCopyOf(e, abs, workdir), h)
 	if !errors.As(err, &r) || r.Kind != skillstate.SnapshotStale {
 		t.Fatalf("stale: err = %v, want a SnapshotStale spawnRefusal", err)
 	}
@@ -123,24 +123,12 @@ func TestApprovedSpawnDirForClassifiesRefusals(t *testing.T) {
 	if err := os.RemoveAll(snap); err != nil {
 		t.Fatal(err)
 	}
-	_, err = approvedSpawnDirFor(skillCopyOf(e, abs, workdir), h)
+	_, err = approvedSpawnDir(skillCopyOf(e, abs, workdir), h)
 	if !errors.As(err, &r) || r.Kind != skillstate.SnapshotMissing {
 		t.Fatalf("gone: err = %v, want a SnapshotMissing spawnRefusal", err)
 	}
 	if !strings.Contains(err.Error(), "snapshot is missing") {
 		t.Errorf("gone refusal should say the snapshot is missing: %v", err)
-	}
-}
-
-// TestApprovedSpawnDirNameOnlyKeepsBareRemedy: the name-only wrapper (used by
-// the supervisor backstop, which has no registry entry) still hands out the
-// plain command, so nothing it prints regresses.
-func TestApprovedSpawnDirNameOnlyKeepsBareRemedy(t *testing.T) {
-	isolateHome(t)
-	workdir := stageWorkdir(t, "bare")
-	_, err := approvedSpawnDir("bare", filepath.Join(workdir, ".opencode", "skills", "bare"), "")
-	if err == nil || !strings.Contains(err.Error(), "`omac register bare`") {
-		t.Errorf("err = %v, want the bare register command", err)
 	}
 }
 

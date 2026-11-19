@@ -61,7 +61,7 @@ func TestSecuritySnapshotRegistrationIsOneTime(t *testing.T) {
 	// Repeated launches must keep resolving to the same snapshot without any
 	// further registration.
 	for i := 1; i <= 3; i++ {
-		got, err := approvedSpawnDir(name, src, "")
+		got, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, "")
 		if err != nil {
 			t.Fatalf("launch %d refused an approved skill: %v", i, err)
 		}
@@ -92,7 +92,7 @@ func TestSecuritySnapshotRegistrationIsOneTime(t *testing.T) {
 	if got := bundleHashOf(t, src); got != h {
 		t.Fatalf("excluded workdir file changed the approved hash: %s", got)
 	}
-	got, err := approvedSpawnDir(name, src, "")
+	got, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, "")
 	if err != nil {
 		t.Fatalf("launch after cache churn refused: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestSecuritySnapshotRegistrationIsOneTime(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "sidecar.py"), []byte("import helper\nprint('changed')\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := approvedSpawnDir(name, src, ""); err == nil || got != "" {
+	if got, err := approvedSpawnDir(skillCopy{Name: name, Dir: src}, ""); err == nil || got != "" {
 		t.Fatalf("changed source spawned without re-registration: %q, %v", got, err)
 	}
 }

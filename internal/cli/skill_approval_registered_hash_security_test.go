@@ -109,7 +109,7 @@ func TestSecurityGrandfatherAnchorsRegisteredHash(t *testing.T) {
 	if ok, err := skilltrust.IsApproved("steady", steadyHash); err != nil || !ok {
 		t.Errorf("skill whose content matches its recorded hash must be migrated: approved=%v err=%v", ok, err)
 	}
-	if refusal := approvalRefusal("steady", steadyDir, ""); refusal != nil {
+	if refusal := approvalRefusal(skillCopy{Name: "steady", Dir: steadyDir}, ""); refusal != nil {
 		t.Errorf("unchanged registered skill must remain spawnable after the migration: %v", refusal)
 	}
 
@@ -123,7 +123,7 @@ func TestSecurityGrandfatherAnchorsRegisteredHash(t *testing.T) {
 	}
 
 	// The spawn gate refuses it and names the host-side remedy.
-	if _, refusal := approvedSpawnDir("drifted", driftedDir, ""); refusal == nil {
+	if _, refusal := approvedSpawnDir(skillCopy{Name: "drifted", Dir: driftedDir}, ""); refusal == nil {
 		t.Error("skill whose content changed since registration must be refused by the spawn gate")
 	} else if !strings.Contains(refusal.Error(), "omac register") {
 		t.Errorf("refusal must name the re-register remedy, got: %v", refusal)

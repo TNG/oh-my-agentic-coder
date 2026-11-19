@@ -167,21 +167,15 @@ func refusalProblem(name string, err error) skillstate.Problem {
 	return skillstate.Problem{Kind: skillstate.SpawnRefused, Skill: name, Detail: err.Error(), Cause: err}
 }
 
-// approvalRefusal reports whether skill `name` may spawn given the content
-// currently on disk at skillDir. A nil error means approved.
+// approvalRefusal reports whether the registered copy c may spawn given the
+// content currently on disk at c.Dir. A nil error means approved.
 //
 // A non-nil error is the refusal reason, suitable verbatim as a broken-route
-// Detail — errSkillNotApproved when there is simply no approval, or the
-// underlying cause (unreadable skill dir, corrupt approval store) so the
-// operator is not told to re-register when that cannot help. Any error fails
-// closed: the skill does not spawn.
-func approvalRefusal(name, skillDir, bundleHash string) error {
-	return approvalRefusalFor(skillCopy{Name: name, Dir: skillDir}, bundleHash)
-}
-
-// approvalRefusalFor is approvalRefusal for a known registered copy, so the
-// refusal can name the command that selects it.
-func approvalRefusalFor(c skillCopy, bundleHash string) error {
+// Detail: a *spawnRefusal naming the command that selects this copy when there
+// is simply no approval, or the underlying cause (unreadable skill dir, corrupt
+// approval store) so the operator is not told to re-register when that cannot
+// help. Any error fails closed: the skill does not spawn.
+func approvalRefusal(c skillCopy, bundleHash string) error {
 	h, err := skillBundleHash(c.Name, c.Dir, bundleHash)
 	if err != nil {
 		return err
@@ -198,26 +192,16 @@ func approvalRefusalFor(c skillCopy, bundleHash string) error {
 
 // approvedSpawnDir resolves the directory a skill's sidecar must be spawned
 // FROM: the immutable, host-only snapshot frozen at approval time (see
-// internal/skilltrust snapshot.go). workdirSkillDir is the agent-writable
-// source; its content is matched against the approval, then the corresponding
-// snapshot is returned. Spawning from the snapshot, not the workdir, is what
-// makes the executed bytes exactly the approved bytes.
+// internal/skilltrust snapshot.go). c.Dir is the agent-writable source; its
+// content is matched against the approval, then the corresponding snapshot is
+// returned. Spawning from the snapshot, not the workdir, is what makes the
+// executed bytes exactly the approved bytes.
 //
-// bundleHash may be a hash the caller already computed for workdirSkillDir;
-// pass "" to hash it here. A nil error means approved; a non-nil error is the
-// refusal detail (see approvalRefusal).
-//
-// This name-only form is for callers without a registry entry; its remedy is
-// the bare `omac register <name>`. Launch paths use approvedSpawnDirFor.
-func approvedSpawnDir(name, workdirSkillDir, bundleHash string) (snapshotDir string, refusal error) {
-	return approvedSpawnDirFor(skillCopy{Name: name, Dir: workdirSkillDir}, bundleHash)
-}
-
-// approvedSpawnDirFor is approvedSpawnDir for a registered copy (see
-// skillCopyOf). A refusal that re-registering fixes is a *spawnRefusal whose
-// Kind says which of the three cases applies: no approval, a snapshot from
-// before skilltrust.SnapshotPolicySince, or no snapshot at all.
-func approvedSpawnDirFor(c skillCopy, bundleHash string) (snapshotDir string, refusal error) {
+// bundleHash may be a hash the caller already computed for c.Dir; pass "" to
+// hash it here. A nil error means approved. A refusal that re-registering
+// fixes is a *spawnRefusal whose Kind says which case applies: no approval, a
+// snapshot from before skilltrust.SnapshotPolicySince, or no snapshot at all.
+func approvedSpawnDir(c skillCopy, bundleHash string) (snapshotDir string, refusal error) {
 	if err := config.ValidSkillName(c.Name); err != nil {
 		return "", fmt.Errorf("spawn refused: %w", err)
 	}
@@ -225,7 +209,7 @@ func approvedSpawnDirFor(c skillCopy, bundleHash string) (snapshotDir string, re
 	if err != nil {
 		return "", err
 	}
-	if refusal := approvalRefusalFor(c, h); refusal != nil {
+	if refusal := approvalRefusal(c, h); refusal != nil {
 		return "", refusal
 	}
 	// An approval whose snapshot is unusable is recoverable by re-registering,
