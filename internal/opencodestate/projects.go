@@ -12,8 +12,7 @@
 //     and ~/.config/<id> (Linux), and $XDG_DATA_HOME/<id> and
 //     ~/.local/share/<id> (older layouts); see desktopDirs.
 //
-// We read all three (the db via the sqlite3 CLI when available — no
-// driver dependency) and merge. The pseudo-project with worktree "/"
+// We read all three and merge. The pseudo-project with worktree "/"
 // (OpenCode's "global" record) is always skipped, as are worktrees
 // that no longer exist.
 package opencodestate
@@ -21,7 +20,6 @@ package opencodestate
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -228,7 +226,7 @@ func storageWorktrees() ([]worktreeEntry, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, rerr := readRegular(filepath.Join(dir, e.Name()), metadataMaxBytes)
 		if rerr != nil {
 			continue
 		}
@@ -412,7 +410,7 @@ func defaultDesktopStateDir(home string) string {
 // double-encoded (a JSON string containing JSON); unwrapValue handles
 // both shapes.
 func desktopGlobalWorktrees(path string) []string {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path, metadataMaxBytes)
 	if err != nil {
 		return nil
 	}
@@ -481,10 +479,8 @@ func unwrapValue(raw json.RawMessage) []byte {
 	return raw
 }
 
-// dbWorktrees scrapes the project table from opencode.db via the
-// sqlite3 CLI. Best-effort: a missing db or missing sqlite3 binary
-// yields nil. The db is opened read-only so a live OpenCode instance
-// is not disturbed. The db lives under ~/.local/share/opencode, which
+// dbWorktrees reads a bounded, private snapshot of opencode.db. The db lives
+// under ~/.local/share/opencode, which
 // the harness mounts read+write into the confined agent, so records
 // from here are tagged originAgentWritable.
 func dbWorktrees() []worktreeEntry {
@@ -493,23 +489,14 @@ func dbWorktrees() []worktreeEntry {
 		return nil
 	}
 	db := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-	if _, err := os.Stat(db); err != nil {
-		return nil
-	}
-	sqlite, err := exec.LookPath("sqlite3")
-	if err != nil {
-		return nil
-	}
-	out, err := exec.Command(sqlite,
-		"file:"+db+"?mode=ro", "SELECT worktree FROM project;").Output()
+	rows, err := readSQLite(db, "project", `SELECT id, worktree FROM project
+ WHERE length(CAST(id AS BLOB)) <= 4096 AND length(CAST(worktree AS BLOB)) <= 1048576 LIMIT 10001`)
 	if err != nil {
 		return nil
 	}
 	var entries []worktreeEntry
-	for _, line := range strings.Split(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			entries = append(entries, worktreeEntry{path: line, origin: originAgentWritable})
-		}
+	for _, row := range rows {
+		entries = append(entries, worktreeEntry{path: row[1], origin: originAgentWritable})
 	}
 	return entries
 }
