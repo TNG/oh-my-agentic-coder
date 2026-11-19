@@ -25,21 +25,13 @@ func protectDesktopStores(g *Grants, learn bool) error {
 		return fmt.Errorf("cannot be combined with --learn, because learn mode lifts the file restrictions that keep OpenCode Desktop's project list out of the agent's reach. Remove --learn")
 	}
 	grants := append(append([]string{}, g.AllowPaths...), g.WritePaths...)
-	writes := make([]string, len(grants))
-	for i, w := range grants {
-		writes[i] = canonicalPath(w)
-		if writes[i] == "" {
-			return fmt.Errorf("cannot resolve the write grant %q, so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Remove that grant or fix its path", w)
-		}
+	writes, err := canonicalGrants("write", grants)
+	if err != nil {
+		return err
 	}
-	readGrants := g.ReadPaths
-	var reads []string
-	for _, r := range readGrants {
-		c := canonicalPath(r)
-		if c == "" {
-			return fmt.Errorf("cannot resolve the read grant %q, so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Remove that grant or fix its path", r)
-		}
-		reads = append(reads, c)
+	reads, err := canonicalGrants("read", g.ReadPaths)
+	if err != nil {
+		return err
 	}
 	paths := opencodestate.DesktopStorePaths()
 	if len(paths) == 0 {
@@ -65,7 +57,7 @@ func protectDesktopStores(g *Grants, learn bool) error {
 				}
 				for i, r := range reads {
 					if isUnder(p, r) {
-						return fmt.Errorf("the agent could read OpenCode Desktop's folder %q, which holds Desktop's cookies and browser storage, through the read grant %q%s", filepath.Dir(path), readGrants[i], narrowGrantAdvice(r, workdir))
+						return fmt.Errorf("the agent could read OpenCode Desktop's folder %q, which holds Desktop's cookies and browser storage, through the read grant %q%s", filepath.Dir(path), g.ReadPaths[i], narrowGrantAdvice(r, workdir))
 					}
 				}
 				if p == filepath.Dir(p) {
@@ -76,6 +68,19 @@ func protectDesktopStores(g *Grants, learn bool) error {
 	}
 	g.ProtectedPaths = dedupe(append(g.ProtectedPaths, denied...))
 	return nil
+}
+
+// canonicalGrants resolves the symlinks in each grant of the given kind
+// ("write" or "read"), keeping the order.
+func canonicalGrants(kind string, grants []string) ([]string, error) {
+	out := make([]string, len(grants))
+	for i, grant := range grants {
+		out[i] = canonicalPath(grant)
+		if out[i] == "" {
+			return nil, fmt.Errorf("cannot resolve the %s grant %q, so omac cannot check that it keeps OpenCode Desktop's project list out of the agent's reach. Remove that grant or fix its path", kind, grant)
+		}
+	}
+	return out, nil
 }
 
 // narrowGrantAdvice tells a user of omac serve how to remove a grant that

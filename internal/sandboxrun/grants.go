@@ -172,9 +172,6 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 		return nil, err
 	}
 	for _, path := range p.Filesystem.AllowLiteral {
-		if !filepath.IsAbs(path) {
-			return nil, fmt.Errorf("literal grant must be absolute: %q", path)
-		}
 		if _, err := os.Stat(path); err != nil {
 			return nil, fmt.Errorf("literal grant %q: %w", path, err)
 		}

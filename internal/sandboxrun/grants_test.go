@@ -12,15 +12,13 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-func TestResolveGrantsAllowLiteralErrors(t *testing.T) {
-	for _, tc := range []struct{ path, want string }{
-		{path: "rel/path", want: "must be absolute"},
-		{path: filepath.Join(t.TempDir(), "missing"), want: "no such file"},
-	} {
-		p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{tc.path}}}
-		if _, err := ResolveGrants(p, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("AllowLiteral %q: error = %v, want %q", tc.path, err, tc.want)
-		}
+// Profile.Validate refuses a relative --allow-literal path; ResolveGrants
+// refuses one that doesn't exist.
+func TestResolveGrantsAllowLiteralMissingPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowLiteral: []string{path}}}
+	if _, err := ResolveGrants(p, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("AllowLiteral %q: error = %v, want a refusal", path, err)
 	}
 }
 
