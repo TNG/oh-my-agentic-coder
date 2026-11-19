@@ -79,7 +79,7 @@ func parseServeArgs(args []string, env *Env) (serveParse, bool) {
 		ephemeralCache    = fs.Bool("ephemeral-cache", false, "Use a per-launch cache instead of the persistent cache.")
 		cacheScopeFlag    = fs.String("cache-scope", "", "Persistent cache scope: global, config, or workdir. Overrides config (default: workdir).")
 		verbose           = fs.Bool("verbose", false, "Verbose lifecycle logging.")
-		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox. Desktop's own project store and saved server credentials stay protected. Needs the native sandbox, without --learn.")
+		forDesktop        = fs.Bool("for-opencode-desktop", false, "Grant every project worktree from the local OpenCode state (Desktop projects) read+write in the sandbox. Desktop's own project list and saved servers stay hidden from the agent. Needs the built-in sandbox (--sandbox builtin); can't be combined with --no-sandbox or --learn.")
 		learn             = fs.Bool("learn", false, "Learn mode: do not restrict filesystem access; record folders used and offer to add them to the sandbox profile at session end.")
 		auditLog          = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit           = fs.Bool("no-audit", false, "Disable the security audit trail.")

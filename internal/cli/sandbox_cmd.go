@@ -83,9 +83,9 @@ repeatable and merge additively onto the profile's grants:
   --workdir-access <level>   none|read|write|readwrite (replaces profile value)
 
 Set by omac serve --for-opencode-desktop (not meant for direct use):
-  --allow-literal <path>     grant read+write on an absolute path, used as
-                             written (no ~, $VAR or glob expansion)
+  --allow-literal <path>     grant read+write on an existing absolute path,
+                             used as written (no ~, $VAR or glob expansion)
   --for-opencode-desktop     hide OpenCode Desktop's project list and saved
-                             servers from the agent; refuses write grants
-                             that cover them (no --learn)`)
+                             servers from the agent; refuses write and read
+                             grants that cover them, and --learn`)
 }

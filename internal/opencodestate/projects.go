@@ -59,7 +59,7 @@ const (
 	// SkipDesktopStore: granting the folder read+write would let the agent
 	// change the Desktop's own stores, which the sandbox refuses to start
 	// with (for example a dotfiles project at ~/.config).
-	SkipDesktopStore SkipReason = "contains OpenCode Desktop's own project list, which the agent must not be able to change"
+	SkipDesktopStore SkipReason = "holds OpenCode Desktop's own files, so the agent gets no access to it in this session"
 )
 
 // SkippedWorktree pairs a rejected worktree path with its reason.
