@@ -49,6 +49,12 @@ type Store struct {
 	// store's Approved block is ignored by MergeConfig, because the workdir
 	// layer is agent-writable.
 	Approved map[string]map[string]map[string]string `yaml:"approved,omitempty"`
+	// ApprovedDefaults records, keyed like Approved, the `default:` of every
+	// field register left unstored (--required-only). omac start falls back to
+	// a default only while it still matches this record, so a skill update
+	// cannot change an unstored value unseen. Only meaningful in the global
+	// store, like Approved.
+	ApprovedDefaults map[string]map[string]map[string]string `yaml:"approved_defaults,omitempty"`
 	// FromWorkdir marks (skill, field) pairs whose merged value came from the
 	// agent-writable workdir layer rather than the host-only global layer.
 	// Not serialized; runtime-only provenance.
@@ -84,6 +90,37 @@ func (s *Store) ApprovedFor(workdirID, skill string) (map[string]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+// ApprovedDefaultsFor returns the defaults recorded for (workdirID, skill),
+// falling back to the global record like ApprovedFor. ok is false when the
+// skill was registered before defaults were recorded.
+func (s *Store) ApprovedDefaultsFor(workdirID, skill string) (map[string]string, bool) {
+	if s == nil || s.ApprovedDefaults == nil {
+		return nil, false
+	}
+	if workdirID != "" {
+		if f, ok := s.ApprovedDefaults[workdirID][skill]; ok {
+			return f, true
+		}
+	}
+	f, ok := s.ApprovedDefaults[GlobalApprovedKey][skill]
+	return f, ok
+}
+
+// RecordApprovedDefaults records the defaults in effect for (workdirID,
+// skill). An empty record is kept: it still says "no field used a default".
+func (s *Store) RecordApprovedDefaults(workdirID, skill string, defaults map[string]string) {
+	if defaults == nil {
+		defaults = map[string]string{}
+	}
+	if s.ApprovedDefaults == nil {
+		s.ApprovedDefaults = map[string]map[string]map[string]string{}
+	}
+	if s.ApprovedDefaults[workdirID] == nil {
+		s.ApprovedDefaults[workdirID] = map[string]map[string]string{}
+	}
+	s.ApprovedDefaults[workdirID][skill] = defaults
 }
 
 // RecordApproved anchors values for (workdirID, skill) in the global store.
