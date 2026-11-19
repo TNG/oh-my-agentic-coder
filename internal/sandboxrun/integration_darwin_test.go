@@ -242,6 +242,94 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 	}
 }
 
+// A protected folder must refuse a Unix-socket connect even where a rule
+// allows the connect: (allow network*) in open mode, or an allow_unix_dir
+// grant for that same folder. The connect through a symlink in the workdir
+// checks that Seatbelt matches the socket's resolved path. Binding a new
+// socket there must fail too. Each case first runs without the protection,
+// so a failure for another reason cannot pass the test. The one exception
+// is the bind in the filtered case: with kernel enforcement, filtered mode
+// allows network-bind only with a listen or open port, so there the bind
+// fails either way, and the filtered-listen-port case checks it instead.
+func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "omac-protsock-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
+	sock := filepath.Join(sockDir, "daemon.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "protected-socket-reached")
+	}))
+
+	for _, tc := range []struct {
+		name        string
+		mode        string
+		listenPorts []int
+		bindAllowed bool
+	}{
+		{"open", sandboxprofile.ModeOpen, nil, true},
+		{"filtered", sandboxprofile.ModeFiltered, nil, false},
+		{"filtered-listen-port", sandboxprofile.ModeFiltered, []int{8000}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Under /tmp, not t.TempDir: a socket path must fit in 104 bytes.
+			wd, err := os.MkdirTemp("/tmp", "omac-wd-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(wd)
+			link := filepath.Join(wd, "s.sock")
+			if err := os.Symlink(sock, link); err != nil {
+				t.Fatal(err)
+			}
+			for _, protect := range []bool{false, true} {
+				p := &sandboxprofile.Profile{
+					Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+					Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{sockDir}},
+					Network:    sandboxprofile.Network{Mode: tc.mode, ListenPort: tc.listenPorts},
+				}
+				if protect {
+					p.Filesystem.Deny = []string{sockDir}
+				}
+				g, err := ResolveGrants(p, wd, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, target := range []string{sock, link} {
+					out, code := runSandboxed(t, g, "/usr/bin/curl", "-sS", "--max-time", "3",
+						"--unix-socket", target, "http://x/")
+					reached := code == 0 && strings.Contains(out, "protected-socket-reached")
+					// curl exits 7 when the connect fails.
+					if !protect && !reached {
+						t.Errorf("control: connect via %s without protection must succeed: exit=%d out=%s", target, code, out)
+					}
+					if protect && code != 7 {
+						t.Errorf("connect via %s to a socket in a protected folder: want curl exit 7, got exit=%d out=%s", target, code, out)
+					}
+				}
+
+				bound := filepath.Join(sockDir, "bound.sock")
+				out, code := runSandboxed(t, g, "/usr/bin/perl", "-MIO::Socket::UNIX", "-e",
+					`IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or exit 3`, bound)
+				os.Remove(bound)
+				want := 3
+				if tc.bindAllowed && !protect {
+					want = 0
+				}
+				if code != want {
+					t.Errorf("bind in %s (protected=%v): want perl exit %d, got exit=%d out=%s", sockDir, protect, want, code, out)
+				}
+			}
+		})
+	}
+}
+
 func TestIntegrationKeychainDenied(t *testing.T) {
 	// The hard guarantee is layered: (a) the keychain DB files under
 	// ~/Library/Keychains are protected paths (unreadable even under a
