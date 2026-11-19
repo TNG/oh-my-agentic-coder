@@ -140,19 +140,11 @@ func (r *spawnRefusal) Error() string {
 	}
 }
 
-// Problem is the refusal as a skillstate.Problem: Detail carries the cause in
-// the plain words the grouped report uses as section headers, Fix the command.
+// Problem is the refusal as a skillstate.Problem. The cause is not repeated
+// here: every renderer takes it from spawnRefusalClasses by Kind, so Detail
+// stays empty and Fix carries the command.
 func (r *spawnRefusal) Problem() skillstate.Problem {
-	var detail string
-	switch r.Kind {
-	case skillstate.SnapshotStale:
-		detail = "registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once"
-	case skillstate.SnapshotMissing:
-		detail = "snapshot missing from the host store"
-	default:
-		detail = "not registered from a host terminal yet"
-	}
-	return skillstate.Problem{Kind: r.Kind, Skill: r.Skill.Name, Detail: detail, Fix: r.Skill.registerCmd(), Cause: r}
+	return skillstate.Problem{Kind: r.Kind, Skill: r.Skill.Name, Fix: r.Skill.registerCmd(), Cause: r}
 }
 
 // refusalProblem turns any spawn-gate error for skill name into a Problem: a

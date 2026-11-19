@@ -21,7 +21,6 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
-	"github.com/TNG/oh-my-agentic-coder/internal/skilltrust"
 )
 
 func runDoctor(args []string, env *Env) int {
@@ -275,33 +274,27 @@ func doctorSpawnGate(env *Env, reg *registry.Registry) {
 		return
 	}
 	problems = sanitizeProblems(problems)
-	section := func(kind skillstate.ProblemKind, header string) {
+	for _, c := range spawnRefusalClasses {
 		var rows []skillstate.Problem
 		for _, p := range problems {
-			if p.Kind == kind {
+			if p.Kind == c.kind {
 				rows = append(rows, p)
 			}
 		}
 		if len(rows) == 0 {
-			return
+			continue
 		}
-		fmt.Fprintf(env.Stdout, "[warn] %s\n", fmt.Sprintf(header, len(rows)))
+		fmt.Fprintln(env.Stdout, c.doctorHeader(len(rows)))
 		for _, p := range rows {
-			if p.Fix != "" {
-				fmt.Fprintf(env.Stdout, "  [warn] %-20s %s\n", p.Skill, p.Fix)
-			} else {
-				fmt.Fprintf(env.Stdout, "  [warn] %-20s %s\n", p.Skill, p.Detail)
+			// A class without a command (could not be checked) shows the
+			// cause of that one skill instead of a remedy.
+			what := p.Fix
+			if what == "" {
+				what = p.Detail
 			}
+			fmt.Fprintf(env.Stdout, "  [warn] %-20s %s\n", p.Skill, what)
 		}
 	}
-	section(skillstate.SnapshotStale,
-		"skill snapshots: %d skill(s) registered before "+skilltrust.SnapshotPolicySince+", snapshot must be rebuilt once from a host terminal")
-	section(skillstate.NotApproved,
-		"skill registrations: %d skill(s) not registered from a host terminal yet")
-	section(skillstate.SnapshotMissing,
-		"skill snapshots: %d skill(s) whose snapshot is missing from the host store; rebuild each from a host terminal")
-	section(skillstate.SpawnRefused,
-		"skill approvals: %d skill(s) could not be checked")
 }
 
 // doctorProfileLint runs the profileaudit static linter over the resolved

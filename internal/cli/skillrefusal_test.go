@@ -347,3 +347,23 @@ func TestRenderApprovalRefusalsStripsControlChars(t *testing.T) {
 		t.Errorf("escape sequence leaked into the report: %q", out)
 	}
 }
+
+// TestSpawnRefusalClassesCoverEveryKind (F8): the launch report, doctor and
+// the reload line all take a class's wording from spawnRefusalClasses, so a
+// kind without a class would render as nothing.
+func TestSpawnRefusalClassesCoverEveryKind(t *testing.T) {
+	for _, k := range []skillstate.ProblemKind{skillstate.SnapshotStale, skillstate.NotApproved, skillstate.SnapshotMissing, skillstate.SpawnRefused} {
+		c := spawnRefusalClassOf(k)
+		if c == nil || c.cause == "" {
+			t.Errorf("kind %q has no class with a cause", k)
+		}
+	}
+	if spawnRefusalClassOf(skillstate.MissingSecret) != nil {
+		t.Error("a resolver problem kind must not have a spawn-refusal class")
+	}
+	// The same wording the report prints as a header is what the doctor and
+	// reload lines use, so the stale cause must carry its docs pointer once.
+	if c := spawnRefusalClassOf(skillstate.SnapshotStale); !strings.Contains(c.header(), "troubleshooting") {
+		t.Errorf("stale header lacks the docs pointer: %q", c.header())
+	}
+}

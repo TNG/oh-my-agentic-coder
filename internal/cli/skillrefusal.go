@@ -237,17 +237,87 @@ func remedy(p skillstate.Problem) string {
 	}
 }
 
+// spawnRefusalClass is one class of spawn-gate refusal, described once for
+// every place that shows it: the launch report's section header, the `omac
+// doctor` warning line and the live-reload line (issue #514, F8). A new
+// refusal kind gets a row here and nothing else.
+type spawnRefusalClass struct {
+	kind skillstate.ProblemKind
+	// cause is the plain-words reason, lower-case, without a trailing colon.
+	cause string
+	// docs is an optional pointer appended to the cause in parentheses.
+	docs string
+	// label names what the per-skill command does ("rebuild with"); empty
+	// when the class carries no command and the row shows the cause instead.
+	label string
+	// doctorTag is the `[warn] <tag>:` prefix doctor uses for the class.
+	doctorTag string
+}
+
+// spawnRefusalClasses lists the classes in report order: the stale-snapshot
+// class leads because it is the upgrade case every previously registered
+// skill lands in after a copy-policy bump.
+var spawnRefusalClasses = []spawnRefusalClass{
+	{kind: skillstate.SnapshotStale,
+		cause:     "registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once for the new store format",
+		docs:      "see docs/troubleshooting.md#upgrading",
+		label:     "rebuild with",
+		doctorTag: "skill snapshots"},
+	{kind: skillstate.NotApproved,
+		cause:     "not registered from a host terminal yet",
+		label:     "register with",
+		doctorTag: "skill registrations"},
+	{kind: skillstate.SnapshotMissing,
+		cause:     "snapshot missing from the host store",
+		label:     "rebuild with",
+		doctorTag: "skill snapshots"},
+	{kind: skillstate.SpawnRefused,
+		cause:     "could not be checked (fix the cause, then relaunch)",
+		doctorTag: "skill approvals"},
+}
+
+// spawnRefusalClassOf returns the class for kind, or nil for a kind the spawn
+// gate never produces.
+func spawnRefusalClassOf(kind skillstate.ProblemKind) *spawnRefusalClass {
+	for i := range spawnRefusalClasses {
+		if spawnRefusalClasses[i].kind == kind {
+			return &spawnRefusalClasses[i]
+		}
+	}
+	return nil
+}
+
+// header is the launch report's section header: the cause with a capital
+// first letter, the docs pointer, and a colon.
+func (c spawnRefusalClass) header() string {
+	h := c.cause
+	if h != "" {
+		h = strings.ToUpper(h[:1]) + h[1:]
+	}
+	if c.docs != "" {
+		h += " (" + c.docs + ")"
+	}
+	return h + ":"
+}
+
+// doctorHeader is the `omac doctor` warning line for n skills of this class.
+func (c spawnRefusalClass) doctorHeader(n int) string {
+	h := fmt.Sprintf("[warn] %s: %d skill(s) %s", c.doctorTag, n, c.cause)
+	if c.label != "" {
+		h += "; run each command from a host terminal"
+	}
+	if c.docs != "" {
+		h += " (" + c.docs + ")"
+	}
+	return h + ":"
+}
+
 // renderApprovalRefusals prints one grouped report of the skills the spawn
 // gate refused at launch (issue #514). Unlike renderSkillRefusal the launch
 // goes on: the refused skills are mounted as broken routes the agent can see,
 // so there is no exit code, and the header says so instead of "refusing to
 // start". The remedy sentence appears once in the header and each class
-// states its own cause once, with one skillProblemLine per skill under it.
-//
-// The classes map to the three spawnRefusal kinds plus a catch-all. The
-// stale-snapshot class leads because it is the upgrade case every previously
-// registered skill lands in after a copy-policy bump, and it names the release
-// so the user can tie the refusal to the update they just ran.
+// states its cause once, with one skillProblemLine per skill under it.
 func renderApprovalRefusals(w io.Writer, prefix string, problems []skillstate.Problem) {
 	if len(problems) == 0 {
 		return
@@ -260,17 +330,13 @@ func renderApprovalRefusals(w io.Writer, prefix string, problems []skillstate.Pr
 	}
 	fmt.Fprintf(w, "%s: %d skill(s) will not run this session. Run each command from a host terminal, outside the sandbox:\n", prefix, len(skills))
 
-	labeledSkills(w, s, problems, skillstate.SnapshotStale,
-		"Registered before "+skilltrust.SnapshotPolicySince+", snapshot must be rebuilt once for the new store format (see docs/troubleshooting.md#upgrading):",
-		"rebuild with")
-	labeledSkills(w, s, problems, skillstate.NotApproved,
-		"Not registered from a host terminal yet:",
-		"register with")
-	labeledSkills(w, s, problems, skillstate.SnapshotMissing,
-		"Snapshot missing from the host store:",
-		"rebuild with")
-	perSkill(w, problems, skillstate.SpawnRefused,
-		"Could not be checked (fix the cause, then relaunch):")
+	for _, c := range spawnRefusalClasses {
+		if c.label != "" {
+			labeledSkills(w, s, problems, c.kind, c.header(), c.label)
+		} else {
+			perSkill(w, problems, c.kind, c.header())
+		}
+	}
 
 	fmt.Fprintln(w, "\n  The session starts without them; the agent sees them listed as unavailable.")
 }

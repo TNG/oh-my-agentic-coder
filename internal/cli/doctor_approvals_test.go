@@ -56,9 +56,9 @@ func TestDoctorReportsSpawnGateRefusals(t *testing.T) {
 		t.Errorf("doctor exit = %d, want ExitOK (refusals are warnings)", code)
 	}
 	for _, want := range []string{
-		"[warn] skill snapshots: 1 skill(s) registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once from a host terminal",
+		"[warn] skill snapshots: 1 skill(s) registered before " + skilltrust.SnapshotPolicySince + ", snapshot must be rebuilt once for the new store format; run each command from a host terminal (see docs/troubleshooting.md#upgrading):",
 		"  [warn] stale                omac register stale --harness opencode",
-		"[warn] skill registrations: 1 skill(s) not registered from a host terminal yet",
+		"[warn] skill registrations: 1 skill(s) not registered from a host terminal yet; run each command from a host terminal:",
 		"  [warn] fresh                omac register fresh --harness opencode",
 	} {
 		if !strings.Contains(out, want) {
