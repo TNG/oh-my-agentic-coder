@@ -108,8 +108,7 @@ keeps its runtime state, is writable.
 
 Desktop's own OpenCode uses the same `opencode` subfolder (on macOS
 `~/Library/Application Support/ai.opencode.desktop/opencode`), so the agent
-can change what Desktop's OpenCode finds there. Today it holds only lock
-files.
+can change what Desktop's OpenCode finds there.
 
 Desktop keeps these files in one of the following folders, depending on the
 platform and the install. omac checks and protects all of them on every

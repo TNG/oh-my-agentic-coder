@@ -44,11 +44,12 @@ Option B. A symlink is fine as long as the agent can change neither the link nor
 | the same, but serve started in `~/dotfiles` (writable working directory) | refused: the real path is writable |
 | `/home/anna → /data/home/anna`, profile grants write access to `/home` | refused: the link can be re-pointed |
 | `opencode.global.dat → ~/Dropbox/desktop.dat` | refused: the file is a link |
-| `~/.config → /Volumes/dotfiles/config`, disk not mounted | starts |
+| `~/.local/share → /Volumes/data/share`, disk not mounted | starts |
 
 ## Consequences
 
 - Symlinked home folders and dotfile-managed `~/.config` work with Desktop mode.
 - The check runs once at startup. The agent can't change a link on the path during the session, because no grant covers the folder that holds it. A change made outside the sandbox, by the user or another program, takes effect only after a restart of `omac serve`.
 - **Accepted risk:** a missing link target that appears during the session (a disk mounted later) is not protected until the next start. Mounting a disk is a host action the agent can't take.
-- Tests cover: a symlinked home starts; a write grant on the folder that holds a link is refused; a write grant on a link's target is refused; both forms of each file are denied.
+- Project discovery uses the same check: a Desktop project the check would refuse as a write grant is skipped with a notice, and the other projects are granted.
+- Tests cover: a symlinked home starts; a write grant on the folder that holds a link is refused; a write or read grant on a link's target is refused; chains of links, relative link targets with `..` and links to a missing target are followed; a symlinked file and a loop of links are refused; both forms of each file are denied; for several symlink setups, discovery skips exactly the projects the check refuses.

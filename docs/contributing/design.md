@@ -5,7 +5,7 @@ description: The WHY behind omac's architecture
 
 ## Key decisions
 
-Larger decisions with the options that were considered are recorded as ADRs (architecture decision records) in [`docs/adr/`](../adr/0002-desktop-store-symlinks.md).
+Larger decisions with the options that were considered are recorded as ADRs (architecture decision records) in `docs/adr/`, for example [ADR 0002](../adr/0002-desktop-store-symlinks.md).
 
 ### OS sandbox primitives, not a custom layer
 
