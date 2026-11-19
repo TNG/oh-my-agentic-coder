@@ -10,6 +10,29 @@ are the source of truth for the expected structure, not this file:
 - Issue: [`.github/ISSUE_TEMPLATE/issue.yml`](./.github/ISSUE_TEMPLATE/issue.yml)
 - PR: [`.github/pull_request_template.md`](./.github/pull_request_template.md)
 
+## Fixes
+
+When you fix a bug or correct an agent's mistake, ask how the codebase can
+prevent the same class of mistake. Choose the smallest maintainable guard:
+first consider removing the failure mode through simpler code, shared
+validation or enforced API boundaries; then existing linters, architecture
+checks and tests. Prefer class-wide coverage over a check for one example.
+Verify that the guard rejects the failure independently of the checkout or
+host where practical. State any remaining gap; prose and ADRs document
+decisions but do not enforce them.
+
+Prefer self-explanatory code; comments are the exception. Use clear names
+and structure rather than comments that explain what the code does.
+
+When modifying a class, function or module, review its existing comments
+too. Remove redundant or stale comments, and replace explanations with
+clearer code where practical. Retain only comments that convey necessary
+information the code cannot express, or are required by tooling, public
+API documentation or licensing.
+
+In every fix round, check documentation accuracy and comment placement.
+Put usage guidance in documentation and fix history in the PR.
+
 ## Communication
 
 In communication with the user, as well as when adding comments to the code

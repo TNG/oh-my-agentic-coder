@@ -148,11 +148,13 @@ type Network struct {
 	// wildcards (match the suffix itself and any subdomain).
 	AllowDomain []string `json:"allow_domain,omitempty"`
 	DenyDomain  []string `json:"deny_domain,omitempty"`
-	// ListenPort: TCP ports the child may bind/listen on.
-	ListenPort []int `json:"listen_port,omitempty"`
+	// ListenPort: TCP ports the child may bind/listen on; entries are
+	// ints, numeric strings, or "A-B" range strings.
+	ListenPort ListenPortList `json:"listen_port,omitempty"`
 	// AllowTCPConnect: direct outbound TCP to ANY host on these ports
 	// (kernel cannot constrain the destination host). E.g. 22 for SSH.
-	AllowTCPConnect []int `json:"allow_tcp_connect,omitempty"`
+	// Entries are ints, numeric strings, or "A-B" range strings.
+	AllowTCPConnect AllowTCPConnectList `json:"allow_tcp_connect,omitempty"`
 	// OpenPort: localhost TCP, both connect and bind (bridge port).
 	OpenPort []int `json:"open_port,omitempty"`
 	// NetworkPrompt configures the interactive allow/deny dialog.
@@ -165,12 +167,10 @@ type Network struct {
 	// the sandbox must enforce that every outbound connection goes through
 	// this proxy.
 	UpstreamProxy string `json:"upstream_proxy,omitempty"`
-	// NoProxy is a list of hostnames or parent domains that must bypass the
-	// upstream proxy and be dialed directly. Matching is case-insensitive:
-	// an entry matches that exact host or any subdomain of it (e.g.
-	// "example.com" also matches "api.example.com"). CIDR ranges and
-	// leading-dot forms (".example.com") are not supported. Empty entries
-	// are rejected.
+	// NoProxy is a list of hosts or domains that must bypass the upstream
+	// proxy and be dialed directly (e.g. "example.com" also matches
+	// "api.example.com"). The matching rules are described on
+	// netproxy's hostMatchesNoProxy. Empty entries are rejected.
 	NoProxy []string `json:"no_proxy,omitempty"`
 	// ProxyInjection opts proxy-unaware toolchains into the omac proxy by
 	// injecting their native proxy configuration at launch. Most tools
@@ -380,12 +380,16 @@ func (p *Profile) Validate() error {
 	}
 	for _, group := range []struct {
 		name  string
+		flag  string
 		ports []int
 		// open_port alone accepts the 0 sentinel.
 		allowZero bool
+		// capTotal applies to the range-accepting fields only: open_port
+		// is a plain integer list whose behavior must stay unchanged.
+		capTotal bool
 	}{
-		{name: "listen_port", ports: p.Network.ListenPort},
-		{name: "allow_tcp_connect", ports: p.Network.AllowTCPConnect},
+		{name: "listen_port", flag: "--listen-port", ports: p.Network.ListenPort, capTotal: true},
+		{name: "allow_tcp_connect", flag: "--allow-tcp-connect", ports: p.Network.AllowTCPConnect, capTotal: true},
 		{name: "open_port", ports: p.Network.OpenPort, allowZero: true},
 	} {
 		for _, port := range group.ports {
@@ -395,6 +399,9 @@ func (p *Profile) Validate() error {
 			if port < 1 || port > 65535 {
 				return fmt.Errorf("sandbox profile: network.%s contains invalid port %d", group.name, port)
 			}
+		}
+		if group.capTotal && len(group.ports) > maxExpandedPorts {
+			return fmt.Errorf("sandbox profile: network.%s has %d ports (profile entries plus %s flags), above the %d-port limit", group.name, len(group.ports), group.flag, maxExpandedPorts)
 		}
 	}
 	for _, v := range p.Environment.AllowVars {

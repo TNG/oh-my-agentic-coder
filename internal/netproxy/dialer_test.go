@@ -332,54 +332,66 @@ func TestUpstreamProxyDialerNon200(t *testing.T) {
 	}
 }
 
+// TestUpstreamProxyDialerNoProxyBypass checks that a NO_PROXY match
+// dials the pinned addresses directly and never touches the upstream
+// proxy, for each domain form ("test", ".test", "*.test"), while a
+// non-matching host is still chained.
 func TestUpstreamProxyDialerNoProxyBypass(t *testing.T) {
-	var conns int32
-	ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
-	defer ln.Close()
+	for _, entry := range []string{"test", ".test", "*.test"} {
+		t.Run(entry, func(t *testing.T) {
+			var conns int32
+			ln := startFakeUpstreamProxy(t, "", "", "", nil, &conns)
+			defer ln.Close()
 
-	echoLn := startEchoListener(t)
-	defer echoLn.Close()
-	echoPort := echoLn.Addr().(*net.TCPAddr).Port
+			echoLn := startEchoListener(t)
+			defer echoLn.Close()
+			echoPort := echoLn.Addr().(*net.TCPAddr).Port
 
-	proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
-	d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{"localhost"}, t.Logf)
+			proxyURL := &url.URL{Scheme: "http", Host: ln.Addr().String()}
+			d := newUpstreamProxyDialerAllowLoopback(proxyURL, []string{entry}, t.Logf)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	// NO_PROXY match → dial the server-pinned IPs directly, never the proxy.
-	conn, err := d.DialTunnel(ctx, "localhost", echoPort, pin("127.0.0.1"))
-	if err != nil {
-		t.Fatalf("DialTunnel localhost bypass: %v", err)
-	}
-	defer conn.Close()
+			if planner, ok := d.(TunnelPlanner); !ok || planner.ChainsHost("svc.test") {
+				t.Fatalf("ChainsHost(svc.test) = true for NO_PROXY entry %q, want bypass", entry)
+			}
 
-	payload := []byte("bypass-echo")
-	if _, err := conn.Write(payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	buf := make([]byte, len(payload))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if string(buf) != string(payload) {
-		t.Errorf("echo mismatch: got %q want %q", buf, payload)
-	}
+			// NO_PROXY match → dial the server-pinned IPs directly, never the proxy.
+			conn, err := d.DialTunnel(ctx, "svc.test", echoPort, pin("127.0.0.1"))
+			if err != nil {
+				t.Fatalf("DialTunnel svc.test bypass: %v", err)
+			}
+			defer conn.Close()
 
-	if got := atomic.LoadInt32(&conns); got != 0 {
-		t.Errorf("upstream connections for bypass = %d, want 0", got)
-	}
+			payload := []byte("bypass-echo")
+			if _, err := conn.Write(payload); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			buf := make([]byte, len(payload))
+			if _, err := io.ReadFull(conn, buf); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(buf) != string(payload) {
+				t.Errorf("echo mismatch: got %q want %q", buf, payload)
+			}
 
-	// Non-match → chained through the upstream proxy. The pinned IP is used as
-	// the CONNECT target so the upstream connects to the checked address.
-	conn2, err := d.DialTunnel(ctx, "nonproxy.test", 443, pin("203.0.113.9"))
-	if err != nil {
-		t.Fatalf("DialTunnel nonproxy.test via upstream: %v", err)
-	}
-	conn2.Close()
+			if got := atomic.LoadInt32(&conns); got != 0 {
+				t.Errorf("upstream connections for bypass = %d, want 0", got)
+			}
 
-	if got := atomic.LoadInt32(&conns); got != 1 {
-		t.Errorf("upstream connections for non-bypass = %d, want 1", got)
+			// Non-match → chained through the upstream proxy. The pinned IP is used as
+			// the CONNECT target so the upstream connects to the checked address.
+			conn2, err := d.DialTunnel(ctx, "nonproxy.example", 443, pin("203.0.113.9"))
+			if err != nil {
+				t.Fatalf("DialTunnel nonproxy.example via upstream: %v", err)
+			}
+			conn2.Close()
+
+			if got := atomic.LoadInt32(&conns); got != 1 {
+				t.Errorf("upstream connections for non-bypass = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -431,11 +443,66 @@ func TestHostMatchesNoProxy(t *testing.T) {
 		{"example.com", []string{" EXAMPLE.com "}, true},
 		{"example.com", []string{""}, false},
 		{"a.b.c.test", []string{"c.test"}, true},
+		{"example.com", []string{".example.com"}, true},
+		{"sub.example.com", []string{".example.com"}, true},
+		{"notexample.com", []string{".example.com"}, false},
+		{"example.com", []string{"*.example.com"}, true},
+		{"sub.example.com", []string{"*.example.com"}, true},
+		{"notexample.com", []string{"*.example.com"}, false},
+		{"example.org", []string{"*.example.com"}, false},
+		{"example.com", []string{"*"}, true},
+		{"a.b.example", []string{"*"}, true},
+		{"example.com", []string{"."}, false},
+		{"example.com", []string{"*."}, false},
+		{"10.1.2.3", []string{"10.1.2.3"}, true},
+		{"::1", []string{"::1"}, true},
 	}
 	for _, c := range cases {
 		got := hostMatchesNoProxy(c.host, c.entries)
 		if got != c.want {
 			t.Errorf("hostMatchesNoProxy(%q, %v) = %v, want %v", c.host, c.entries, got, c.want)
+		}
+	}
+}
+
+// TestNoProxyEntryIgnoreReason pins which entries are flagged as never
+// matching, and checks that flagged entries really match none of a set
+// of typical hosts, so a usable entry is never dropped by mistake.
+func TestNoProxyEntryIgnoreReason(t *testing.T) {
+	usable := []string{
+		"", "*", "example.com", ".example.com", "*.example.com", " EXAMPLE.com ",
+		"localhost", "my_host.corp", "10.1.2.3", "::1", "fe80::1", "bücher.de",
+	}
+	for _, e := range usable {
+		if r := NoProxyEntryIgnoreReason(e); r != "" {
+			t.Errorf("NoProxyEntryIgnoreReason(%q) = %q, want \"\" (entry can match)", e, r)
+		}
+	}
+
+	ignored := map[string]string{
+		"10.0.0.0/8":               "IP ranges",
+		"fd00::/8":                 "IP ranges",
+		"https://corp.example.com": "without scheme or path",
+		"example.com/api":          "without scheme or path",
+		"example.com:8443":         "port",
+		"10.1.2.3:80":              "port",
+		"[::1]:443":                "port",
+		"[::1]":                    "without them (::1)",
+		".":                        "no domain",
+		"*.":                       "no domain",
+		"<local>":                  "not a host name",
+		"*example.com":             "not a host name",
+	}
+	hosts := []string{"example.com", "sub.example.com", "localhost", "10.0.0.1", "10.1.2.3", "::1", "local"}
+	for e, want := range ignored {
+		r := NoProxyEntryIgnoreReason(e)
+		if !strings.Contains(r, want) {
+			t.Errorf("NoProxyEntryIgnoreReason(%q) = %q, want it to mention %q", e, r, want)
+		}
+		for _, h := range hosts {
+			if hostMatchesNoProxy(h, []string{e}) {
+				t.Errorf("entry %q is flagged as never matching but matches host %q", e, h)
+			}
 		}
 	}
 }

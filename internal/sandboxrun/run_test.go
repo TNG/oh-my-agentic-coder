@@ -1,8 +1,10 @@
 package sandboxrun
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -121,6 +123,55 @@ func TestInjectedToolCacheEnv(t *testing.T) {
 			if got[key] != value {
 				t.Errorf("%s = %q, want %q", key, got[key], value)
 			}
+		}
+	})
+}
+
+func TestToolBinPathEnv(t *testing.T) {
+	cacheEnv := toolcache.Environment("/cache", toolcache.ModePersistent)
+	bin := cacheEnv["UV_TOOL_BIN_DIR"]
+	sep := string(filepath.ListSeparator)
+	env := func(path string) func(string) string {
+		return func(k string) string {
+			if k == "PATH" {
+				return path
+			}
+			return ""
+		}
+	}
+
+	t.Run("appends UV_TOOL_BIN_DIR and keeps the existing PATH", func(t *testing.T) {
+		host := "/usr/bin" + sep + "/bin"
+		got := toolBinPathEnv(cacheEnv, env(host))
+		if want := host + sep + bin; got["PATH"] != want {
+			t.Errorf("PATH = %q, want %q", got["PATH"], want)
+		}
+	})
+
+	t.Run("no cache leaves PATH alone", func(t *testing.T) {
+		if got := toolBinPathEnv(map[string]string{}, env("/usr/bin")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("unset PATH stays unset", func(t *testing.T) {
+		if got := toolBinPathEnv(cacheEnv, env("")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("does not add the directory twice", func(t *testing.T) {
+		if got := toolBinPathEnv(cacheEnv, env(bin+sep+"/usr/bin")); len(got) != 0 {
+			t.Errorf("injected = %v, want nothing", got)
+		}
+	})
+
+	t.Run("injected PATH reaches the child env", func(t *testing.T) {
+		host := "/usr/bin"
+		injected := toolBinPathEnv(cacheEnv, env(host))
+		out := sandboxprofile.FilterEnv([]string{"PATH=" + host}, sandboxprofile.DefaultAllowVars(), nil, injected)
+		if !slices.Contains(out, "PATH="+host+sep+bin) || slices.Contains(out, "PATH="+host) {
+			t.Errorf("child env = %v, want only PATH=%s%s%s", out, host, sep, bin)
 		}
 	})
 }
@@ -273,4 +324,34 @@ func TestWarnEmptyAllowVars(t *testing.T) {
 			t.Errorf("seeded launch warned: %s", buf.String())
 		}
 	})
+}
+
+// The merged cap is enforced before any sandbox starts: flags alone can
+// push a profile over the limit, and Run must say so on stderr.
+func TestRunRejectsFlagPortsAboveCap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "empty.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ports := make([]int, 0, 1001)
+	for port := 1; port <= 1001; port++ {
+		ports = append(ports, port)
+	}
+	var stderr bytes.Buffer
+	code := Run(Options{
+		Flags:   &sandboxprofile.Flags{ProfileRef: "empty", ListenPort: ports},
+		Workdir: t.TempDir(),
+		Stderr:  &stderr,
+	})
+	if code == 0 {
+		t.Fatal("Run accepted a merged port list above the cap")
+	}
+	if !strings.Contains(stderr.String(), "1000-port limit") {
+		t.Errorf("stderr does not name the cap: %q", stderr.String())
+	}
 }

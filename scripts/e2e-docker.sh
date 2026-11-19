@@ -29,6 +29,7 @@
 #   SKAINET_TOKEN   model API key (required for run/audit/prompt)
 #   SKAINET_INTERNAL  model provider base URL (required for run/audit/prompt)
 #   ANTHROPIC_BASE_URL  Anthropic proxy URL (claude-code only)
+#   ANTHROPIC_AUTH_TOKEN  Anthropic proxy API key (claude-code only)
 #   DOCKER_CMD      docker runtime (default: docker; set to podman, etc.)
 #
 # Exit code 0 = success; non-zero = failure.
@@ -51,6 +52,7 @@ env_flags() {
     [[ -n "${SKAINET_TOKEN:-}" ]]        && flags+=(-e SKAINET_TOKEN)
     [[ -n "${SKAINET_INTERNAL:-}" ]]     && flags+=(-e SKAINET_INTERNAL)
     [[ -n "${ANTHROPIC_BASE_URL:-}" ]]   && flags+=(-e ANTHROPIC_BASE_URL)
+    [[ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]] && flags+=(-e ANTHROPIC_AUTH_TOKEN)
     printf '%s\n' "${flags[@]}"
 }
 

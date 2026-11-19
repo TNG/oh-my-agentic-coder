@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1314,4 +1315,45 @@ func TestDenyScanRootsCleansLiteralGrants(t *testing.T) {
 	if !slices.Equal(roots, []string{dir}) {
 		t.Errorf("denyScanRoots = %v, want [%s]", roots, dir)
 	}
+}
+
+// A range in the profile reaches the kernel-rule layer as the same
+// per-port list the user could have written out by hand.
+func TestResolveGrantsExpandsPortRanges(t *testing.T) {
+	p, err := sandboxprofile.Parse([]byte(`{"network": {
+		"listen_port": ["8000-8100"],
+		"allow_tcp_connect": ["9000-9010"]
+	}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(g.ListenPorts), 101; got != want {
+		t.Errorf("ListenPorts has %d ports, want %d", got, want)
+	}
+	if got, want := len(g.AllowTCPConnect), 11; got != want {
+		t.Errorf("AllowTCPConnect has %d ports, want %d", got, want)
+	}
+	args := Stage2Args(g)
+	if !stage2HasPort(args, "--bind-tcp", 8050) {
+		t.Errorf("Stage2Args lacks --bind-tcp 8050: %v", args)
+	}
+	if !stage2HasPort(args, "--connect-tcp", 9000) {
+		t.Errorf("Stage2Args lacks --connect-tcp 9000: %v", args)
+	}
+	if stage2HasPort(args, "--bind-tcp", 8999) {
+		t.Errorf("Stage2Args grants bind on 8999, outside every range: %v", args)
+	}
+}
+
+func stage2HasPort(args []string, flag string, port int) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == strconv.Itoa(port) {
+			return true
+		}
+	}
+	return false
 }

@@ -14,9 +14,11 @@
 //
 // Required CI secrets / env vars:
 //
-//   SKAINET_TOKEN         — API key for the model provider (all harnesses except claude-code)
-//   SKAINET_INTERNAL      — Model provider base URL (responses API; codex, copilot, opencode)
-//   ANTHROPIC_BASE_URL    — Anthropic-compatible proxy URL (claude-code only)
+//   SKAINET_TOKEN         — API key for the model gateway (all harnesses except claude-code).
+//                           The name is historical: CI fills it with the trustedtokens.eu key.
+//   SKAINET_INTERNAL      — Model gateway base URL (CI: https://api.trustedtokens.eu/v1)
+//   ANTHROPIC_BASE_URL    — Anthropic-compatible proxy URL (claude-code only; SkaiNet)
+//   ANTHROPIC_AUTH_TOKEN  — API key for that proxy (claude-code only; SkaiNet)
 //
 // The sandbox profile is derived at runtime from SKAINET_INTERNAL /
 // ANTHROPIC_BASE_URL so the proxy allows the model API host.
@@ -37,7 +39,7 @@
 // Set E2E_USE_LATEST=1 to test with latest releases (no pinning).
 //
 // claude-code is the only harness billed against a real external
-// Anthropic account (the others run against the internal SKAINET
+// Anthropic account (the others run against the trustedtokens.eu
 // gateway). Set E2E_SKIP_CLAUDE_CODE=1 to exclude it — useful for local
 // iteration without an ANTHROPIC_BASE_URL configured, or to avoid the
 // cost on a given run. Included by default.
@@ -1249,9 +1251,10 @@ func logCrossSkillIsolation(t *testing.T, output string) {
 }
 
 // assertCacheIsolation verifies the cache probe ran and proves omac
-// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the six tool cache
-// mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE, NPM_CONFIG_CACHE,
-// PIP_CACHE_DIR, CARGO_HOME) and that the agent could write a marker
+// injected OMAC_CACHE_DIR / OMAC_CACHE_MODE plus the nine tool cache
+// and tool-state mappings (XDG_CACHE_HOME, GOCACHE, GOMODCACHE,
+// NPM_CONFIG_CACHE, PIP_CACHE_DIR, CARGO_HOME, UV_CACHE_DIR,
+// UV_TOOL_DIR, UV_TOOL_BIN_DIR) and that the agent could write a marker
 // to the selected cache and read it back.
 //
 // The allow_vars fixture (allowance.go) only lists OMAC_* for cache
@@ -1292,6 +1295,7 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 	for _, varName := range []string{
 		"XDG_CACHE_HOME", "GOCACHE", "GOMODCACHE",
 		"NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "CARGO_HOME",
+		"UV_CACHE_DIR", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
 	} {
 		val := extractEnv(output, varName+"=")
 		if val == "" || val == "<unset>" {
@@ -1304,6 +1308,19 @@ func assertCacheIsolation(t *testing.T, output, expectedMode string) {
 				output+": "+varName+"="+val+" does not point under OMAC_CACHE_DIR="+cacheDir)
 			return
 		}
+	}
+	// omac appends UV_TOOL_BIN_DIR to the sandbox PATH exactly once.
+	// Where it ends up is checked by the sandboxrun unit tests: a harness
+	// may re-order or extend PATH in its own shell, so "not-last" is only
+	// logged here.
+	switch onPath := extractEnv(output, "UV_TOOL_BIN_DIR_ON_PATH="); onPath {
+	case "last":
+	case "not-last":
+		t.Logf("note: UV_TOOL_BIN_DIR is on PATH but not the last entry in the harness's shell")
+	default:
+		failWithClassification(t, "cacheIsolation", fmSandboxFail,
+			output+": UV_TOOL_BIN_DIR_ON_PATH="+onPath+" (want it on PATH exactly once)")
+		return
 	}
 	if !strings.Contains(output, "CACHE_MARKER_WROTE:") {
 		failWithClassification(t, "cacheIsolation", fmSandboxFail,

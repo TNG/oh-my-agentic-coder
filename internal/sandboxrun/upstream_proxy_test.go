@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,5 +193,108 @@ func TestResolveUpstreamProxyEmptyDoesNotDialHttpColon(t *testing.T) {
 
 	if bytes.Contains(resp, []byte("http:")) && bytes.Contains(resp, []byte("upstream-error")) {
 		t.Fatalf("response mentions 'http:' as upstream proxy — empty proxy value should not produce a dialer that dials http:\n%s", respStr)
+	}
+}
+
+// TestResolveUpstreamProxyNoProxyForms verifies that every supported
+// NO_PROXY form is honored end to end, from the shell's NO_PROXY (split
+// on commas and trimmed by resolveUpstreamProxy) and from the grants
+// file's network.no_proxy: hosts under the domain must be planned for
+// direct dialing (ChainsHost false), everything else still chained.
+func TestResolveUpstreamProxyNoProxyForms(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		profile []string
+		bypass  []string
+		chain   []string
+	}{
+		{"leading_dot", ".example.com", nil, []string{"example.com", "svc.example.com", "a.b.example.com"}, []string{"other.test", "notexample.com"}},
+		{"wildcard", "*.example.com", nil, []string{"example.com", "svc.example.com"}, []string{"other.test", "notexample.com"}},
+		{"match_all", "*", nil, []string{"example.com", "other.test"}, nil},
+		{"list", "foo.test, .example.com", nil, []string{"foo.test", "svc.example.com"}, []string{"other.test", "notexample.com"}},
+		{"grants_file", "", []string{".example.com"}, []string{"example.com", "svc.example.com"}, []string{"other.test", "notexample.com"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearProxyEnv(t)
+			t.Setenv("HTTPS_PROXY", "http://proxy.test:8080")
+			t.Setenv("NO_PROXY", c.env)
+
+			p := &sandboxprofile.Profile{}
+			p.Network.NoProxy = c.profile
+			d := resolveUpstreamProxy(p, &bytes.Buffer{}, t.Logf)
+
+			planner, ok := d.(netproxy.TunnelPlanner)
+			if !ok {
+				t.Fatalf("got %T, want upstream proxy dialer implementing TunnelPlanner", d)
+			}
+			for _, host := range c.bypass {
+				if planner.ChainsHost(host) {
+					t.Errorf("ChainsHost(%q) = true, want false (host matches NO_PROXY and must bypass)", host)
+				}
+			}
+			for _, host := range c.chain {
+				if !planner.ChainsHost(host) {
+					t.Errorf("ChainsHost(%q) = false, want true (outside NO_PROXY, matching is on dot boundaries)", host)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveUpstreamProxyDropsUnsupportedNoProxy verifies that NO_PROXY
+// entries which can never match are dropped with one warning each, from
+// both sources, without failing startup, while usable entries keep
+// working.
+func TestResolveUpstreamProxyDropsUnsupportedNoProxy(t *testing.T) {
+	cases := []struct {
+		name       string
+		env        string
+		lowerEnv   string
+		profile    []string
+		wantSource string
+	}{
+		{"env", "10.0.0.0/8, .example.com, example.org:8443, <local>", "", nil, "the NO_PROXY environment variable"},
+		{"lowercase env", "", "10.0.0.0/8, .example.com, example.org:8443, <local>", nil, "the no_proxy environment variable"},
+		{"profile", "", "", []string{"10.0.0.0/8", ".example.com", "example.org:8443", "<local>"}, "network.no_proxy"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearProxyEnv(t)
+			t.Setenv("HTTPS_PROXY", "http://proxy.test:8080")
+			t.Setenv("NO_PROXY", c.env)
+			t.Setenv("no_proxy", c.lowerEnv)
+
+			p := &sandboxprofile.Profile{}
+			p.Network.NoProxy = c.profile
+			var stderr bytes.Buffer
+			d := resolveUpstreamProxy(p, &stderr, t.Logf)
+
+			planner, ok := d.(netproxy.TunnelPlanner)
+			if !ok {
+				t.Fatalf("got %T, want upstream proxy dialer implementing TunnelPlanner", d)
+			}
+			if planner.ChainsHost("svc.example.com") {
+				t.Errorf("ChainsHost(svc.example.com) = true, want false (usable entry must survive)")
+			}
+			if !planner.ChainsHost("example.org") {
+				t.Errorf("ChainsHost(example.org) = false, want true (port entry must be dropped)")
+			}
+
+			lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+			if len(lines) != 3 {
+				t.Fatalf("got %d warning lines, want 3:\n%s", len(lines), stderr.String())
+			}
+			for i, entry := range []string{"10.0.0.0/8", "example.org:8443", "<local>"} {
+				want := fmt.Sprintf("omac sandbox: warning: ignoring %q in %s: ", entry, c.wantSource)
+				if !strings.HasPrefix(lines[i], want) {
+					t.Errorf("warning %d = %q, want prefix %q", i, lines[i], want)
+				}
+				if !strings.HasSuffix(lines[i], "still go through the upstream proxy.") {
+					t.Errorf("warning %d = %q, want it to name the effect", i, lines[i])
+				}
+			}
+		})
 	}
 }

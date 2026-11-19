@@ -86,20 +86,20 @@ func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("upstream proxy %s rejected tunnel: %s", e.ProxyHost, e.StatusLine)
 }
 
-// upstreamProxyDialer tunnels connections through an upstream corporate
-// proxy via HTTP CONNECT. It is used when the sandbox itself sits behind
-// a corporate egress proxy and cannot dial the destination directly.
+// upstreamProxyDialer tunnels connections through an upstream proxy via
+// HTTP CONNECT. It is used when the sandbox itself sits behind an egress
+// proxy and cannot dial the destination directly.
 type upstreamProxyDialer struct {
 	proxyURL  *url.URL
 	proxyAuth string   // "Basic <base64>" or ""
-	noProxy   []string // host suffixes that bypass the upstream proxy
+	noProxy   []string // NO_PROXY entries (see hostMatchesNoProxy) that bypass the upstream proxy
 	direct    Dialer   // fallback for NO_PROXY matches (wraps the filter)
 	logf      func(string, ...any)
 }
 
 // NewUpstreamProxyDialer creates a Dialer that tunnels through the
-// corporate proxy at proxyURL. Hosts matching any entry in noProxy
-// (suffix match on the hostname) bypass the upstream proxy and dial the
+// upstream proxy at proxyURL. Hosts matching any entry in noProxy (see
+// hostMatchesNoProxy) bypass the upstream proxy and dial the
 // server-pinned IPs directly instead.
 func NewUpstreamProxyDialer(proxyURL *url.URL, noProxy []string, logf func(string, ...any)) Dialer {
 	return newUpstreamProxyDialerInternal(proxyURL, noProxy, logf, false)
@@ -132,13 +132,24 @@ func newUpstreamProxyDialerInternal(proxyURL *url.URL, noProxy []string, logf fu
 	}
 }
 
-// hostMatchesNoProxy reports whether host matches any entry in noProxy
-// using simple hostname suffix matching: host == entry or host ends in
-// "."+entry. CIDR ranges are not supported in this simple version.
+// hostMatchesNoProxy reports whether host matches any entry in noProxy.
+// All domain forms are equivalent: "example.com", ".example.com", and
+// "*.example.com" each match the domain itself and any subdomain, and
+// "*" matches every host. An IP address entry matches that literal host.
+// IP ranges and ports are not supported: matching happens on the
+// unresolved hostname, so an address-based entry could not be evaluated
+// here. NoProxyEntryIgnoreReason flags such entries.
 func hostMatchesNoProxy(host string, entries []string) bool {
 	h := NormalizeHost(host)
 	for _, e := range entries {
-		entry := NormalizeHost(strings.TrimSpace(e))
+		entry := strings.TrimSpace(e)
+		// Check "*" before normalizing: NormalizeHost trims trailing
+		// dots, which would turn the malformed entry "*." into a
+		// match-all "*".
+		if entry == "*" {
+			return true
+		}
+		entry = normalizeNoProxyEntry(entry)
 		if entry == "" {
 			continue
 		}
@@ -150,6 +161,60 @@ func hostMatchesNoProxy(host string, entries []string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeNoProxyEntry strips the ".domain" / "*.domain" prefix and
+// normalizes the rest like a host, so that all domain forms compare
+// equal. The input must already be trimmed and must not be "*".
+func normalizeNoProxyEntry(entry string) string {
+	entry = strings.TrimPrefix(entry, "*.")
+	entry = strings.TrimPrefix(entry, ".")
+	return NormalizeHost(entry)
+}
+
+// NoProxyEntryIgnoreReason reports why a NO_PROXY entry can never match
+// any host in hostMatchesNoProxy, or "" if the entry is usable (or
+// empty: empty entries are skipped and handled by the callers).
+// Hosts reach the matcher as a bare hostname or IP address, never with
+// a port or brackets. Examples:
+//
+//	"10.0.0.0/8"            -> IP ranges are not supported
+//	"https://example.com"   -> not a host name (scheme or path)
+//	"example.com:8443"      -> ports are not supported
+//	"[::1]"                 -> brackets are not supported
+//	".", "*."               -> no domain left after the prefix
+//	"<local>"               -> not a host name or IP address
+//	"::1", "10.1.2.3"       -> "" (matches that literal address)
+func NoProxyEntryIgnoreReason(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" || entry == "*" {
+		return ""
+	}
+	if _, err := netip.ParsePrefix(entry); err == nil {
+		return `IP ranges are not supported, list the host names instead (for example ".internal.example.com")`
+	}
+	if strings.Contains(entry, "/") {
+		return `it is not a host name, write the bare host name without scheme or path (for example "example.com")`
+	}
+	if _, port, err := net.SplitHostPort(entry); err == nil && port != "" {
+		return "ports are not supported, write the host name without the port"
+	}
+	if strings.HasPrefix(entry, "[") && strings.HasSuffix(entry, "]") {
+		return fmt.Sprintf("brackets are not supported, write the address without them (%s)", entry[1:len(entry)-1])
+	}
+	d := normalizeNoProxyEntry(entry)
+	if d == "" {
+		return `it names no domain, write one such as ".example.com"`
+	}
+	if _, err := netip.ParseAddr(d); err == nil {
+		return ""
+	}
+	for _, c := range d {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c >= 0x80) {
+			return "it is not a host name or IP address"
+		}
+	}
+	return ""
 }
 
 // ProxyAuthHeader returns the upstream proxy's Proxy-Authorization

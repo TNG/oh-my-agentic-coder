@@ -26,7 +26,7 @@
 # SECURITY_SCAN_PAT that security-scan.yml already uses. The repo name comes from
 # the SECURITY_ARCHIVE_REPO secret and is never printed into the public issue.
 # Every run (pass or fail) posts a status message to Slack; on a failure the
-# message carries a short SKAINET-generated summary of exactly what broke.
+# message carries a short AI-generated summary (trustedtokens.eu gateway) of exactly what broke.
 # Nothing is pushed to this repo's main. This is the regular tripwire that
 # catches a harness release breaking omac's assumptions.
 name: "E2E: drift"
@@ -39,7 +39,7 @@ on:
         type: boolean
         default: true
       model:
-        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/codex/copilot/pi/codewhale: zai-org/GLM-5.3, claude-code: claude-sonnet-5-5).'
+        description: 'Model id for EVERY harness, for THIS RUN ONLY. Set empty to use each harness''s pin in internal/e2e/versions.go (opencode/copilot/pi/codewhale: deepseek-ai/DeepSeek-V4.1-Flash-1017, codex: zai-org/GLM-5.3, claude-code: claude-sonnet-5-5). A DeepSeek id here also reaches codex, which cannot use DeepSeek tool calls on trustedtokens.eu, so its legs will fail.'
         type: string
         default: ''
       claude_code_model:
@@ -71,10 +71,11 @@ jobs:
       fallback: ${{ steps.probe.outputs.fallback }}
       candidates: ${{ steps.probe.outputs.candidates }}
       claude_code: ${{ steps.probe.outputs.claude_code }}
-      codex_responses: ${{ steps.probe.outputs.responses_model }}
+      codex_responses: ${{ steps.probe.outputs.codex_model }}
+      codex_fallback: ${{ steps.probe.outputs.codex_fallback }}
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       E2E_MODEL: ${{ github.event.inputs.model }}
       E2E_MODEL_CLAUDE_CODE: ${{ github.event.inputs.claude_code_model }}
     steps:
@@ -84,7 +85,44 @@ jobs:
       - name: Probe the gateway
         id: probe
         run: |
-          scripts/probe-model.sh opencode --github-output
+          # Chat wire only: codex, the one /responses user, is probed below.
+          PROBE_RESPONSES=0 scripts/probe-model.sh opencode --github-output
+          # codex has its own pin in internal/e2e/versions.go: DeepSeek answers
+          # /responses with HTTP 200 on trustedtokens.eu, but its streamed tool
+          # calls arrive without arguments, so codex can't use them. Probe codex
+          # from that pin instead of reusing the opencode probe above.
+          cx_out=$(mktemp)
+          # Reads one value from the file probe-model.sh's emit() writes, where
+          # each output is a `<key><<OMAC_DELIM` heredoc.
+          cx_get() { awk -v k="$1<<OMAC_DELIM" '$0 == k { getline; print; exit }' "$cx_out"; }
+          if GITHUB_OUTPUT="$cx_out" scripts/probe-model.sh codex --github-output >/dev/null; then
+            cx=$(cx_get responses_model)
+            cx_wire=$(cx_get responses_wire)
+            # A fallback on either track means codex is not running its pin.
+            cx_fallback=$(cx_get fallback)
+            if [ -n "$cx" ] && [ "$cx" != "$(cx_get model)" ]; then
+              # A backup answered on /responses: codex runs, just not its pin.
+              cx_fallback=true
+              cx_wire=ok
+            fi
+          else
+            # codex's chain failing must not take the other harnesses down
+            # with it: run codex on its unprobed pin and say so.
+            cx=$(scripts/resolve-model.sh codex)
+            cx_wire=unverified
+            cx_fallback=false
+            echo "::warning title=codex model unverified::no model on codex's chain answered the gateway, so codex runs its unprobed pin '$cx' and will likely fail. The other harnesses are unaffected."
+          fi
+          rm -f "$cx_out"
+          if [ -z "$cx" ]; then
+            echo "::error title=codex model missing::could not read responses_model from probe-model.sh's output. Has the format of its emit() changed?"
+            exit 1
+          fi
+          {
+            echo "codex_model=$cx"
+            echo "codex_fallback=$cx_fallback"
+            echo "codex_responses_wire=$cx_wire"
+          } >> "$GITHUB_OUTPUT"
           cc=$(E2E_MODEL='' scripts/probe-model.sh claude-code)
           echo "claude_code=$cc" >> "$GITHUB_OUTPUT"
 
@@ -94,25 +132,27 @@ jobs:
           PROBE_CLAUDE_CODE: ${{ steps.probe.outputs.claude_code }}
           PROBE_CANDIDATES: ${{ steps.probe.outputs.candidates }}
           PROBE_FALLBACK: ${{ steps.probe.outputs.fallback }}
-          PROBE_RESPONSES_WIRE: ${{ steps.probe.outputs.responses_wire }}
-          PROBE_CODEX_MODEL: ${{ steps.probe.outputs.responses_model }}
+          PROBE_CODEX_MODEL: ${{ steps.probe.outputs.codex_model }}
+          PROBE_CODEX_FALLBACK: ${{ steps.probe.outputs.codex_fallback }}
+          PROBE_CODEX_WIRE: ${{ steps.probe.outputs.codex_responses_wire }}
         run: |
           {
             echo "## Model selection"
             echo ""
             echo "| Harness | Model |"
             echo "|---|---|"
-            echo "| opencode, codex, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| opencode, copilot, pi, codewhale | \`$PROBE_MODEL\` |"
+            echo "| codex (\`/responses\` route) | \`$PROBE_CODEX_MODEL\` |"
             echo "| claude-code | \`$PROBE_CLAUDE_CODE\` |"
             echo ""
             echo "Probed: \`$PROBE_CANDIDATES\`"
-            if [ "$PROBE_RESPONSES_WIRE" = "unhealthy" ]; then
+            if [ "$PROBE_CODEX_WIRE" = "unhealthy" ] || [ "$PROBE_CODEX_WIRE" = "unverified" ]; then
               echo ""
-              echo "> ⚠️ **Responses wire ${PROBE_RESPONSES_WIRE}:** the gateway's \`/responses\` route could not be verified. the chat-wire harnesses are unaffected; codex runs the split model noted below unless no responses-healthy candidate exists." >> "$GITHUB_STEP_SUMMARY"
+              echo "> ⚠️ **codex: \`/responses\` ${PROBE_CODEX_WIRE}.** No model on codex's chain was verified on the route codex uses, so its legs are expected to fail. The other harnesses are unaffected."
             fi
-            if [ -n "$PROBE_CODEX_MODEL" ] && [ "$PROBE_CODEX_MODEL" != "$PROBE_MODEL" ]; then
+            if [ "$PROBE_CODEX_FALLBACK" = "true" ]; then
               echo ""
-              echo "> ℹ️ **codex split model:** codex runs \`$PROBE_CODEX_MODEL\` on the responses wire while the other gateway harnesses run \`$PROBE_MODEL\` on the chat wire." >> "$GITHUB_STEP_SUMMARY"
+              echo "> ⚠️ **codex fallback model:** codex runs \`$PROBE_CODEX_MODEL\`, not its pin, so its results do NOT certify the pinned model."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$PROBE_FALLBACK" = 'true' ]; then
@@ -149,9 +189,12 @@ jobs:
       group: e2e-smoke-${{ matrix.os }}-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # claude-code stays on SkaiNet; the other harnesses use trustedtokens.eu.
+      # Only the claude-code leg gets the SkaiNet key.
+      ANTHROPIC_AUTH_TOKEN: ${{ matrix.harness == 'claude-code' && secrets.SKAINET_TOKEN || '' }}
       E2E_HARNESS: ${{ matrix.harness }}
       # Schedule runs always test latest (drift); dispatch honors the input.
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
@@ -320,7 +363,7 @@ jobs:
           echo "$row"
           { echo "row<<EOF"; echo "$row"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           # On any failure, emit a self-contained context file for the report
-          # job's SKAINET summariser — built here, where the logs live, so the
+          # job's AI summariser — built here, where the logs live, so the
           # report job never has to reconstruct per-leg log paths.
           if printf '%s' "$row" | grep -q '❌'; then
             stages=""
@@ -408,9 +451,12 @@ jobs:
       group: e2e-smoke-wsl2-${{ matrix.harness }}-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      # claude-code stays on SkaiNet; the other harnesses use trustedtokens.eu.
+      # Only the claude-code leg gets the SkaiNet key.
+      ANTHROPIC_AUTH_TOKEN: ${{ matrix.harness == 'claude-code' && secrets.SKAINET_TOKEN || '' }}
       E2E_HARNESS: ${{ matrix.harness }}
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
       E2E_MODEL_OPENCODE: ${{ needs.model.outputs.gateway }}
@@ -426,7 +472,7 @@ jobs:
       # set via GITHUB_ENV by the "Set log dir" step (runner.temp is not
       # available in job-level env — only github/needs/strategy/matrix/
       # vars/secrets/inputs are).
-      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR:OMAC_VERSION
+      WSLENV: GITHUB_ENV:GITHUB_OUTPUT:GITHUB_STEP_SUMMARY:OMAC_BIN:OMAC_RELEASE_TAG:SKAINET_TOKEN:SKAINET_INTERNAL:ANTHROPIC_BASE_URL:ANTHROPIC_AUTH_TOKEN:E2E_HARNESS:E2E_USE_LATEST:E2E_MODEL_OPENCODE:E2E_MODEL_CODEX:E2E_MODEL_COPILOT:E2E_MODEL_PI:E2E_MODEL_CLAUDE_CODE:E2E_CONTEXT_LIMIT:E2E_CACHE_DIR:SMOKE_LOG_DIR:OMAC_VERSION
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -711,8 +757,8 @@ jobs:
       group: e2e-smoke-codewhale-${{ matrix.omac }}
       cancel-in-progress: false
     env:
-      SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-      SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+      SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+      SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       E2E_HARNESS: codewhale
       E2E_USE_LATEST: ${{ (github.event_name == 'schedule' || github.event.inputs.use_latest != 'false') && '1' || '' }}
@@ -987,7 +1033,7 @@ jobs:
         if: always() && steps.rows.outputs.has_failures == 'true'
         run: |
           # Deterministic, backend-independent failure classification from the
-          # per-leg .ctx logs. Runs regardless of the SKAINET summariser below,
+          # per-leg .ctx logs. Runs regardless of the AI summariser below,
           # which calls the same model backend that is down in the commonest
           # infra failure — so Slack and the issue always carry a concrete
           # reason, and infra_only lets them flag "not a harness regression".
@@ -995,7 +1041,7 @@ jobs:
           echo "$out"; echo "$out" >> "$GITHUB_OUTPUT"
           echo "---- failure reasons ----"; cat failure-reason.txt || true
 
-      - name: Summarize failures (SKAINET)
+      - name: Summarize failures (AI, trustedtokens.eu)
         id: summary
         # Skipped when every failure is infra (infra_only): the summariser
         # calls the same backend that is unavailable, so it would only add a
@@ -1003,8 +1049,8 @@ jobs:
         if: always() && steps.rows.outputs.has_failures == 'true' && steps.reason.outputs.infra_only != 'true'
         continue-on-error: true # a summariser hiccup must never mask the failure
         env:
-          SKAINET_TOKEN: ${{ secrets.SKAINET_TOKEN }}
-          SKAINET_INTERNAL: ${{ secrets.SKAINET_INTERNAL }}
+          SKAINET_TOKEN: ${{ secrets.TRUSTEDTOKENS_TOKEN }}
+          SKAINET_INTERNAL: https://api.trustedtokens.eu/v1
           # The summariser is an LLM call too, so it uses the model the preflight
           # proved is served — re-resolving the pin here would 422 in exactly
           # the situation the summary is most needed.
@@ -1020,7 +1066,7 @@ jobs:
           fi
 
           if [ -z "$SKAINET_TOKEN" ] || [ -z "$SKAINET_INTERNAL" ]; then
-            echo "SKAINET creds missing — skipping AI summary (Slack will fall back to the failing-row list)"
+            echo "Gateway creds (TRUSTEDTOKENS_TOKEN) missing — skipping AI summary (Slack will fall back to the failing-row list)"
             exit 0
           fi
           # Single source of truth for the model id, override included.
@@ -1113,7 +1159,7 @@ jobs:
                 echo ""
               fi
               # Deterministic, log-based reasons — always present on a failure,
-              # unlike the SKAINET summary, which is empty when the backend is down.
+              # unlike the AI summary, which is empty when the backend is down.
               if [ -s failure-reason.txt ]; then
                 echo "**Failure reasons** (from logs):"
                 echo ""
@@ -1121,7 +1167,7 @@ jobs:
                 echo ""
               fi
               if [ -s failure-summary.txt ]; then
-                echo "**What went wrong** (SKAINET summary, model \`$SUMMARY_MODEL\`):"
+                echo "**What went wrong** (AI summary, model \`$SUMMARY_MODEL\`):"
                 echo ""
                 sed 's/^/> /' failure-summary.txt
                 echo ""
@@ -1254,7 +1300,7 @@ jobs:
               hdr=$(printf '%s\n⚠️ Likely infrastructure (model backend unavailable / auth / timeout) — not a harness-contract regression.' "$hdr")
             fi
             # Prefer the deterministic, log-based reasons: they are always
-            # present on a failure and, unlike the SKAINET summary, survive the
+            # present on a failure and, unlike the AI summary, survive the
             # backend being down (the exact case this detail matters most). Fall
             # back to the summary, then to a terse per-leg stage list.
             if [ -s failure-reason.txt ]; then
@@ -1272,7 +1318,7 @@ jobs:
                 printf "- %s/%s:%s\n", $5, $4, s
               }' failing.rows)
             fi
-            # Append the SKAINET summary as extra colour when it produced one.
+            # Append the AI summary as extra colour when it produced one.
             if [ -s failure-summary.txt ] && [ -s failure-reason.txt ]; then
               detail=$(printf '%s\n— summary (%s): %s' "$detail" "${SUMMARY_MODEL:-unknown model}" "$(tr '\n' ' ' < failure-summary.txt)")
             fi

@@ -1,0 +1,125 @@
+<!doctype html>
+<!--
+  Explainer page template. Copy this file and replace every double-brace
+  placeholder; template/content.md says what goes in each.
+
+  One file serves both uses: opened in a browser it is a complete page, and
+  when the Claude Artifact publisher wraps it in its own skeleton, the browser
+  ignores the nested html, head and body tags.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Allows only the pinned Mermaid file and the one inline script at the end,
+     so a script, onload= attribute or javascript: link copied from PR text can't run. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://cdn.jsdelivr.net/npm/mermaid@11.4.1/ 'sha256-M0q/XZxWaxHLud8JN4WBgn6JEElE0lb4SEPzvxLtRd4='; style-src 'unsafe-inline'; img-src data:">
+<title>{{title}}</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: blue title band, then one reading column with a sticky section index on wide screens. */
+:root{
+  --bg:#f8f8fa; --panel:#ffffff; --fg:#111315; --muted:#6f7379; --line:#d1d4db;
+  --brand:#0563a5; --brand-hover:#2174af; --brand-ink:#ffffff; --band:#0563a5; --band-sub:#e6f4fe;
+  --accent:#0563a5; --accent-soft:#e6f4fe; --wash:#f2f8fe;
+  --good:#1f7a45; --good-soft:#e2f3e8; --warn:#9a5b00; --warn-soft:#fcefd9; --bad:#b3261e; --bad-soft:#fbe4e2; --neutral-soft:#eceef2;
+  --body:tngDIN,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r-box:1.5rem; --r-pill:30px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#001e33; --panel:#062b47; --fg:#e8eef4; --muted:#93a4b5; --line:#1d4566;
+  --brand:#2174af; --brand-hover:#3a8ac4; --band:#04395f; --band-sub:#9fc3e3;
+  --accent:#7fb2e0; --accent-soft:#0d3a5e; --wash:#08324f;
+  --good:#7fd19a; --good-soft:#163b2a; --warn:#f0bd62; --warn-soft:#3b2e14; --bad:#f2958c; --bad-soft:#44201f; --neutral-soft:#123a59; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#001e33; --panel:#062b47; --fg:#e8eef4; --muted:#93a4b5; --line:#1d4566;
+  --brand:#2174af; --brand-hover:#3a8ac4; --band:#04395f; --band-sub:#9fc3e3;
+  --accent:#7fb2e0; --accent-soft:#0d3a5e; --wash:#08324f;
+  --good:#7fd19a; --good-soft:#163b2a; --warn:#f0bd62; --warn-soft:#3b2e14; --bad:#f2958c; --bad-soft:#44201f; --neutral-soft:#123a59; color-scheme:dark}
+:root{--read:72ch;--code-bg:#f2f4f7}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--code-bg:#041a2c}}
+:root[data-theme="dark"]{--code-bg:#041a2c}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.6}
+.gut{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.in{max-width:1120px;margin:0 auto}
+.band{background:var(--band);color:var(--brand-ink);padding-block:32px 28px}
+.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--band-sub)}
+.eyebrow a{color:inherit}
+.band h1{font-size:clamp(28px,4vw,40px);line-height:1.1;margin:6px 0 10px;text-wrap:balance;max-width:28ch}
+.lede{font-size:18px;max-width:var(--read);margin:0;color:var(--brand-ink);opacity:.92}
+.facts{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:16px;font-size:13px;color:var(--band-sub);font-variant-numeric:tabular-nums}
+.layout{display:grid;grid-template-columns:200px minmax(0,1fr);gap:40px;padding-block:32px 72px}
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px);align-self:start;font-size:14px}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+nav.toc a{color:var(--muted);text-decoration:none;display:block;padding:4px 10px;border-left:2px solid var(--line)}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--accent);border-left-color:var(--accent);outline:none}
+article{min-width:0;display:grid;gap:48px}
+section{display:grid;gap:14px;min-width:0}
+section>*{max-width:var(--read)}
+section>.wide,section>.tbl,section>.diagram,section>.cards{max-width:none}
+h2{font-size:26px;line-height:1.2;margin:0;text-wrap:balance}
+h3{font-size:18px;margin:8px 0 0;text-wrap:balance}
+p,ul,ol{margin:0}
+ul,ol{padding-left:1.3em;display:grid;gap:6px}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+pre{margin:0;background:var(--code-bg);border-radius:10px;padding:14px 16px;overflow-x:auto;font-size:13.5px;line-height:1.5}
+.band code{background:rgba(255,255,255,.16);color:var(--brand-ink);border:1px solid rgba(255,255,255,.28)}
+pre code{background:none;padding:0;font-size:inherit;overflow-wrap:normal}
+.callout{border:1px solid var(--line);background:var(--wash);border-radius:12px;padding:14px 18px;display:grid;gap:8px}
+.callout .k{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.diagram{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto}
+.diagram figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:10px;align-content:start;min-width:0}
+.card h3{margin:0}
+.ba{display:grid;gap:8px}
+.ba>div{border-radius:10px;padding:10px 12px;font-size:15px;display:grid;gap:4px}
+.ba .before{background:var(--bad-soft)}
+.ba .after{background:var(--good-soft)}
+.ba .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+.ba .before .k{color:var(--bad)}
+.ba .after .k{color:var(--good)}
+.pill{display:inline-block;font-size:12px;font-weight:700;border-radius:30px;padding:2px 10px;white-space:nowrap}
+.p-this{background:var(--accent);color:var(--bg)}
+.p-good{background:var(--good-soft);color:var(--good)}
+.p-warn{background:var(--warn-soft);color:var(--warn)}
+.p-bad{background:var(--bad-soft);color:var(--bad)}
+.p-mut{background:var(--neutral-soft);color:var(--muted)}
+.pc{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;font-size:15px}
+.pc>div{display:grid;gap:4px}
+.pc .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;color:var(--muted)}
+.checks li::marker{content:"☐  "}
+footer{color:var(--muted);font-size:13px;padding-block:0 40px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:860px){.layout{grid-template-columns:minmax(0,1fr)}nav.toc{position:static}nav.toc ol{display:flex;flex-wrap:wrap;gap:6px}nav.toc a{border:1px solid var(--line);border-radius:30px;padding:4px 12px}}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+</head>
+<body>
+<header class="band gut"><div class="in">
+  <div class="eyebrow"><a href="https://github.com/{{repo}}/pull/{{number}}" target="_blank" rel="noopener">{{repo_name}} PR #{{number}}</a> · explainer for reviewers</div>
+  <h1>{{title}}</h1>
+  <p class="lede">{{lede}}</p>
+  <div class="facts">{{facts}}</div>
+</div></header>
+<div class="gut"><div class="in layout">
+  <nav class="toc" aria-label="Sections"><ol>{{toc}}</ol></nav>
+  <article>
+{{sections}}
+  </article>
+</div></div>
+<footer class="gut"><div class="in">Agent-generated from PR #{{number}} at head <code>{{head_short}}</code>. Check claims against the code before relying on them.</div></footer>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" integrity="sha384-rbtjAdnIQE/aQJGEgXrVUlMibdfTSa4PQju4HDhN3sR2PmaKFzhEafuePsl9H/9I" crossorigin="anonymous"></script>
+<!-- The CSP above allows the next script by its SHA-256 hash. If you change
+     the script, recompute the hash of the exact text between its tags and
+     replace the 'sha256-…' value in the CSP:
+     printf '%s' 'mermaid.initialize(…);' | openssl dgst -sha256 -binary | openssl base64 -A -->
+<script>mermaid.initialize({startOnLoad: true, securityLevel: "strict", theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default"});</script>
+</body>
+</html>

@@ -399,23 +399,42 @@ func TestPrepareSandboxDirsRejectsFileTarget(t *testing.T) {
 	}
 }
 
+// returns is a password argument for serverExposureWarning that answers v
+// without probing OpenCode.
+func returns(v serverPassword) func() serverPassword { return func() serverPassword { return v } }
+
 func TestServerExposureWarning(t *testing.T) {
 	oc, _ := config.LookupHarness("opencode")
 	cc, _ := config.LookupHarness("claude-code")
 
-	// opencode server + auth env UNSET -> hint naming the port, where the
+	// OpenCode 2.x + auth env UNSET -> hint naming the port, where the
 	// random password appears, and how to keep a stable one.
 	unset := func(string) string { return "" }
 	inner := []string{"opencode", "serve"}
-	w := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD")
+	w := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(serverPasswordRandom))
 	for _, want := range []string{"127.0.0.1:4096", "random password", `"server password …"`, "set OMAC_SERVE_PASSWORD"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("hint %q does not contain %q", w, want)
 		}
 	}
 
+	// OpenCode 1.x starts without a password ("server is unsecured"), so the
+	// hint must warn that the port is open instead of promising a password.
+	const v1Want = "omac serve: opencode server on 127.0.0.1:4096 has no password, so any local process can use it; " +
+		"to require a password, set OMAC_SERVE_PASSWORD."
+	if w1 := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(serverPasswordNone)); w1 != v1Want {
+		t.Errorf("OpenCode 1.x hint = %q\nwant %q", w1, v1Want)
+	}
+
+	// A version omac could not detect -> say so and name both cases.
+	const unknownWant = "omac serve: omac could not detect which OpenCode runs on 127.0.0.1:4096. OpenCode 2.x protects it " +
+		"with a random password, but 1.x has no password, so any local process can use it; to require a password, set OMAC_SERVE_PASSWORD."
+	if wu := serverExposureWarning(oc, inner, unset, "set OMAC_SERVE_PASSWORD", returns(serverPasswordUnknown)); wu != unknownWant {
+		t.Errorf("unknown-version hint = %q\nwant %q", wu, unknownWant)
+	}
+
 	// The warning names the port actually bound, not the harness default.
-	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset, "set OMAC_SERVE_PASSWORD")
+	ow := serverExposureWarning(oc, []string{"opencode", "serve", "--port", "4095"}, unset, "set OMAC_SERVE_PASSWORD", returns(serverPasswordNone))
 	if !strings.Contains(ow, "4095") || strings.Contains(ow, "4096") {
 		t.Errorf("expected warning naming :4095 for `--port 4095`, got %q", ow)
 	}
@@ -427,13 +446,68 @@ func TestServerExposureWarning(t *testing.T) {
 		}
 		return ""
 	}
-	if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD"); w != "" {
-		t.Errorf("auth set should suppress the warning, got %q", w)
+	for _, pw := range []serverPassword{serverPasswordUnknown, serverPasswordNone, serverPasswordRandom} {
+		if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD", returns(pw)); w != "" {
+			t.Errorf("auth set should suppress the warning (password=%d), got %q", pw, w)
+		}
 	}
 
+	// No hint -> no version probe: password runs `opencode --version`.
+	probe := func() serverPassword {
+		t.Error("password called although no hint is printed")
+		return serverPasswordUnknown
+	}
+	if w := serverExposureWarning(oc, inner, set, "set OMAC_SERVE_PASSWORD", probe); w != "" {
+		t.Errorf("auth set should suppress the warning, got %q", w)
+	}
+	serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD", probe)
+
 	// Harness with no server mode -> nothing to warn about.
-	if w := serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD"); w != "" {
+	if w := serverExposureWarning(cc, []string{"claude"}, unset, "set OMAC_SERVE_PASSWORD", returns(serverPasswordNone)); w != "" {
 		t.Errorf("non-server harness should not warn, got %q", w)
+	}
+}
+
+// Only OpenCode 2.x generates a server password and 1.x has none; for any
+// other class omac cannot tell.
+func TestOpenCodeServerPassword(t *testing.T) {
+	for class, want := range map[openCodeVersionKind]serverPassword{
+		openCodeOther:       serverPasswordUnknown,
+		openCodeUndecidable: serverPasswordUnknown,
+		openCodeV1:          serverPasswordNone,
+		openCodeV20x:        serverPasswordRandom,
+		openCodeV21Plus:     serverPasswordRandom,
+		openCodeV2MajorOnly: serverPasswordRandom,
+	} {
+		if got := openCodeServerPassword(class); got != want {
+			t.Errorf("openCodeServerPassword(%d) = %d, want %d", class, got, want)
+		}
+	}
+}
+
+// runServe picks the hint through servePassword. Wrapper specs pin
+// the version, so these cases need no opencode binary on the machine.
+func TestServePasswordPicksHint(t *testing.T) {
+	oc, _ := config.LookupHarness("opencode")
+	unset := func(string) string { return "" }
+	for _, tc := range []struct {
+		name  string
+		known openCodeVersionKind
+		inner []string
+		want  string
+	}{
+		{"1.x wrapper", openCodeOther, []string{"npx", "opencode-ai@1", "serve"}, "has no password"},
+		{"2.x wrapper", openCodeOther, []string{"npx", "opencode-ai@2.3.2", "serve"}, "random password"},
+		{"unpinned wrapper", openCodeOther, []string{"npx", "opencode-ai", "serve"}, "could not detect"},
+		{"unknown command", openCodeOther, []string{"my-wrapper.sh", "serve"}, "could not detect"},
+		{"class from discovery wins", openCodeV21Plus, []string{"npx", "opencode-ai@1", "serve"}, "random password"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := serverExposureWarning(oc, tc.inner, unset, "set OMAC_SERVE_PASSWORD", servePassword(tc.known, tc.inner))
+			if !strings.Contains(w, tc.want) {
+				t.Errorf("hint = %q, want it to contain %q", w, tc.want)
+			}
+		})
 	}
 }
 

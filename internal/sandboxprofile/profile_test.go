@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,129 @@ func TestParseValidationErrors(t *testing.T) {
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
 			t.Errorf("Parse(%s) should fail validation", c)
+		}
+	}
+}
+
+func TestParseExpandsPortRanges(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {
+	  "listen_port": [4097, "8000-8100"],
+	  "allow_tcp_connect": ["22", "8000-8100"]
+	}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(p.Network.ListenPort); got != 102 {
+		t.Errorf("listen_port has %d ports, want 102", got)
+	}
+	if got := len(p.Network.AllowTCPConnect); got != 102 {
+		t.Errorf("allow_tcp_connect has %d ports, want 102", got)
+	}
+}
+
+func TestParsePortFieldTotalAtCapIsAccepted(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {"allow_tcp_connect": ["1-500", "501-1000"]}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := len(p.Network.AllowTCPConnect); got != maxExpandedPorts {
+		t.Errorf("allow_tcp_connect has %d ports, want %d", got, maxExpandedPorts)
+	}
+}
+
+func TestParsePortFieldNull(t *testing.T) {
+	p, err := Parse([]byte(`{"network": {"listen_port": null}}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p.Network.ListenPort == nil {
+		t.Error("listen_port null decoded to nil, want an empty non-nil PortList")
+	}
+	if len(p.Network.ListenPort) != 0 {
+		t.Errorf("listen_port = %v, want empty", p.Network.ListenPort)
+	}
+}
+
+func TestParsePortRangeValidationErrors(t *testing.T) {
+	intsAboveCap := make([]string, 0, maxExpandedPorts+1)
+	for port := 1; port <= maxExpandedPorts+1; port++ {
+		intsAboveCap = append(intsAboveCap, strconv.Itoa(port))
+	}
+	tests := []struct {
+		name   string
+		config string
+		want   []string
+	}{
+		{
+			name:   "range including zero",
+			config: `{"network": {"listen_port": ["0-100"]}}`,
+			want:   []string{"network.listen_port", "invalid port 0"},
+		},
+		{
+			name:   "entries summing above the cap",
+			config: `{"network": {"listen_port": ["1-600", "601-1200"]}}`,
+			want:   []string{"network.listen_port", `"601-1200"`, "1000-port limit"},
+		},
+		{
+			name:   "allow_tcp_connect entries summing above the cap",
+			config: `{"network": {"allow_tcp_connect": ["1-600", "601-1200"]}}`,
+			want:   []string{"network.allow_tcp_connect", `"601-1200"`, "1000-port limit"},
+		},
+		{
+			name:   "single port above the field maximum",
+			config: `{"network": {"allow_tcp_connect": [70000]}}`,
+			want:   []string{"network.allow_tcp_connect", "invalid port 70000"},
+		},
+		{
+			name:   "plain integers above the cap",
+			config: `{"network": {"listen_port": [` + strings.Join(intsAboveCap, ",") + `]}}`,
+			want:   []string{"network.listen_port", "1001", "would exceed the 1000-port limit"},
+		},
+		{
+			name:   "single range above the cap names the entry",
+			config: `{"network": {"listen_port": ["1-1001"]}}`,
+			want:   []string{"network.listen_port", `"1-1001"`, "expands to 1001 ports", "1000-port limit"},
+		},
+		{
+			name:   "open_port rejects a range",
+			config: `{"network": {"open_port": ["3000-3100"]}}`,
+			want:   []string{"open_port"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.config))
+			if err == nil {
+				t.Fatalf("Parse(%s): want error", tt.config)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A decode failure inside a PortList must name the field it came from,
+// matching the field path Go's decoder reports for plain fields.
+func TestParsePortErrorsNameTheField(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		field  string
+	}{
+		{`{"network": {"listen_port": ["abc"]}}`, "network.listen_port"},
+		{`{"network": {"allow_tcp_connect": ["abc"]}}`, "network.allow_tcp_connect"},
+	} {
+		_, err := Parse([]byte(tc.config))
+		if err == nil {
+			t.Fatalf("Parse(%s): want error", tc.config)
+		}
+		if !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("error %q does not name %q", err, tc.field)
+		}
+		if got := strings.Count(err.Error(), "sandbox profile:"); got != 1 {
+			t.Errorf("error %q carries %d %q prefixes, want the loader's single one", err, got, "sandbox profile:")
 		}
 	}
 }
@@ -321,19 +445,21 @@ func TestDefaultProfileIsolatesToolCaches(t *testing.T) {
 			}
 		}
 	}
-	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup"} {
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.rustup", "~/.local/share/uv", "~/.local/share/uv/python"} {
 		for _, paths := range [][]string{p.Filesystem.Allow, p.Filesystem.Write} {
 			if containsPath(paths, dir) {
 				t.Errorf("DefaultProfile grants write access to %q: %v", dir, paths)
 			}
 		}
 	}
-	for _, dir := range []string{"~/go", "~/.cargo"} {
+	// ~/.local/share/uv as a whole stays unreadable: uv can keep index
+	// credentials there (`uv auth login`). Only its python subfolder is read.
+	for _, dir := range []string{"~/go", "~/.cargo", "~/.local/share/uv"} {
 		if containsPath(p.Filesystem.Read, dir) {
 			t.Errorf("DefaultProfile grants read access to %q: %v", dir, p.Filesystem.Read)
 		}
 	}
-	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin"} {
+	for _, dir := range []string{"~/.nvm", "~/.bun/bin", "~/.cargo/bin", "~/.rustup", "~/go/bin", "~/.local/share/uv/python"} {
 		if !containsPath(p.Filesystem.Read, dir) {
 			t.Errorf("DefaultProfile.Filesystem.Read missing %q: %v", dir, p.Filesystem.Read)
 		}
@@ -589,6 +715,114 @@ func TestParseFlagsInlineValues(t *testing.T) {
 	}
 }
 
+func TestParseFlagsListenPortRange(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--listen-port", "8000-8100", "--", "true"},
+		{"--listen-port=8000-8100", "--", "true"},
+	} {
+		f, err := ParseFlags(argv)
+		if err != nil {
+			t.Fatalf("ParseFlags(%v): %v", argv, err)
+		}
+		if len(f.ListenPort) != 101 {
+			t.Fatalf("listen-port from %v expanded to %d ports, want 101", argv, len(f.ListenPort))
+		}
+		if f.ListenPort[0] != 8000 || f.ListenPort[100] != 8100 {
+			t.Errorf("listen-port from %v is %d..%d, want 8000..8100",
+				argv, f.ListenPort[0], f.ListenPort[100])
+		}
+	}
+}
+
+func TestParseFlagsAllowTCPConnectRange(t *testing.T) {
+	f, err := ParseFlags([]string{
+		"--allow-tcp-connect", "22",
+		"--allow-tcp-connect", "8000-8100",
+		"--", "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.AllowTCP) != 102 {
+		t.Fatalf("allow-tcp-connect expanded to %d ports, want 102", len(f.AllowTCP))
+	}
+	if f.AllowTCP[0] != 22 || f.AllowTCP[101] != 8100 {
+		t.Errorf("allow-tcp-connect is %d..%d, want 22..8100", f.AllowTCP[0], f.AllowTCP[101])
+	}
+}
+
+// Repeating a range flag keeps every port from every occurrence.
+func TestParseFlagsRepeatedRangeAddsAllPorts(t *testing.T) {
+	f, err := ParseFlags([]string{"--listen-port", "1-2", "--listen-port", "5-6", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{1, 2, 5, 6}; !slices.Equal(f.ListenPort, want) {
+		t.Errorf("listen-port = %v, want %v", f.ListenPort, want)
+	}
+}
+
+// A single port stays one entry, and --open-port keeps taking single ports only.
+func TestParseFlagsSinglePortEntries(t *testing.T) {
+	f, err := ParseFlags([]string{"--listen-port", "8000", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.ListenPort) != 1 || f.ListenPort[0] != 8000 {
+		t.Errorf("listen-port = %v, want [8000]", f.ListenPort)
+	}
+	if _, err := ParseFlags([]string{"--open-port", "8000-8100", "--", "true"}); err == nil {
+		t.Error("--open-port must reject a range")
+	}
+}
+
+func TestParseFlagsPortEntryErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want []string
+	}{
+		{
+			name: "reversed range",
+			argv: []string{"--listen-port", "8100-8000", "--", "true"},
+			want: []string{"--listen-port", "8100-8000"},
+		},
+		{
+			name: "range above the expansion cap",
+			argv: []string{"--listen-port", "1-65535", "--", "true"},
+			want: []string{"--listen-port", "1-65535", "1000"},
+		},
+		{
+			name: "range endpoint above the field maximum",
+			argv: []string{"--allow-tcp-connect", "8000-70000", "--", "true"},
+			want: []string{"--allow-tcp-connect", "8000-70000", "65535"},
+		},
+		{
+			name: "zero port",
+			argv: []string{"--listen-port", "0", "--", "true"},
+			want: []string{"--listen-port", `"0"`, "port 0"},
+		},
+		{
+			name: "range starting at zero",
+			argv: []string{"--allow-tcp-connect", "0-100", "--", "true"},
+			want: []string{"--allow-tcp-connect", `"0-100"`, "port 0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseFlags(tt.argv)
+			if err == nil {
+				t.Fatalf("ParseFlags(%v): want error", tt.argv)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseAndMergeAllowEnvFlag(t *testing.T) {
 	f, err := ParseFlags([]string{"--allow-env", "ANTHROPIC_API_KEY", "--allow-env=OPENAI_API_KEY", "--", "true"})
 	if err != nil {
@@ -738,6 +972,32 @@ func TestMergeAdditive(t *testing.T) {
 	}
 }
 
+// Merge itself does not enforce the port cap: run.go validates the merged
+// profile before launch, and Validate rejects an over-cap merged list.
+func TestMergePortRangesOverCapRejectedByValidate(t *testing.T) {
+	base := make([]int, 0, maxExpandedPorts)
+	for port := 1; port <= maxExpandedPorts; port++ {
+		base = append(base, port)
+	}
+	f, err := ParseFlags([]string{"--listen-port", "2000-2100", "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, _ := Merge(&Profile{Network: Network{ListenPort: base}}, f)
+	if got := len(merged.Network.ListenPort); got != maxExpandedPorts+101 {
+		t.Fatalf("merged listen_port has %d ports, want %d", got, maxExpandedPorts+101)
+	}
+	err = merged.Validate()
+	if err == nil {
+		t.Fatal("merged profile above the port cap passed Validate")
+	}
+	for _, want := range []string{"network.listen_port", "has 1101 ports", "(profile entries plus --listen-port flags)", "1000-port limit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
 func TestMergeBlockNetOverrides(t *testing.T) {
 	p := &Profile{
 		Network: Network{
@@ -769,6 +1029,18 @@ func TestValidateOpenPortZeroSentinel(t *testing.T) {
 	// Out-of-range ports are still rejected for open_port.
 	if err := (&Profile{Network: Network{OpenPort: []int{70000}}}).Validate(); err == nil {
 		t.Error("open_port 70000 must be rejected")
+	}
+}
+
+func TestValidateOpenPortAboveRangeCapIsAccepted(t *testing.T) {
+	ports := make([]int, 0, maxExpandedPorts+1)
+	for port := 1; port <= maxExpandedPorts+1; port++ {
+		ports = append(ports, port)
+	}
+	// open_port is a plain integer list, not a range-expanded field, so the
+	// 1000-port cap does not apply and its behavior stays as before.
+	if err := (&Profile{Network: Network{OpenPort: ports}}).Validate(); err != nil {
+		t.Errorf("open_port with %d ports rejected: %v", len(ports), err)
 	}
 }
 
@@ -1184,13 +1456,15 @@ func TestUpstreamProxyValidation(t *testing.T) {
 }
 
 func TestNoProxyValidation(t *testing.T) {
-	// Valid entries accepted.
-	p, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "10.0.0.0/8", ".local"]}}`))
+	// Non-empty entries accepted, including ones that can never match
+	// ("10.0.0.0/8", ".", a port, "<local>"): those must not block
+	// startup; the sandbox drops them with a warning at launch.
+	p, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", "10.0.0.0/8", ".local", ".", "example.com:8443", "<local>"]}}`))
 	if err != nil {
 		t.Fatalf("Parse valid no_proxy should succeed: %v", err)
 	}
-	if len(p.Network.NoProxy) != 3 {
-		t.Errorf("NoProxy = %v, want 3 entries", p.Network.NoProxy)
+	if len(p.Network.NoProxy) != 6 {
+		t.Errorf("NoProxy = %v, want 6 entries", p.Network.NoProxy)
 	}
 	// Empty entry rejected.
 	if _, err := Parse([]byte(`{"network": {"no_proxy": ["example.com", ""]}}`)); err == nil {

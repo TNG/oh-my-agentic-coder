@@ -146,6 +146,7 @@ func Run(opts Options) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	maps.Copy(cacheEnv, toolBinPathEnv(cacheEnv, os.Getenv))
 	maps.Copy(cacheEnv, zshTmpPrefixEnv(runtime.GOOS, grants, sandboxprofile.EffectiveAllowVars(merged.Environment.AllowVars), os.Getenv))
 
 	// Learn mode: lift filesystem restrictions (network/env filtering
@@ -347,6 +348,31 @@ func injectedToolCacheEnv(grants *Grants, getenv func(string) string) (map[strin
 	return nil, fmt.Errorf("OMAC_CACHE_DIR %q does not match an exact writable grant", dir)
 }
 
+// toolBinPathEnv appends UV_TOOL_BIN_DIR to the child's PATH, so a command
+// installed with `uv tool install ruff` can be run as plain `ruff`. uv's own
+// fix (`uv tool update-shell`) edits shell rc files the sandbox denies.
+//
+// The directory is appended, not prepended: it lives in the agent-writable
+// cache, which later sessions reuse, so a file placed there must never
+// shadow a host command such as `git`. Without a cache (no OMAC_CACHE_DIR,
+// e.g. --no-sandbox) cacheEnv is empty and PATH is left alone; the same
+// holds when PATH is unset or already contains the directory.
+//
+// Example: PATH=/usr/bin:/bin becomes /usr/bin:/bin:<cache>/uv/bin.
+func toolBinPathEnv(cacheEnv map[string]string, getenv func(string) string) map[string]string {
+	bin := cacheEnv["UV_TOOL_BIN_DIR"]
+	if bin == "" {
+		return nil
+	}
+	path := getenv("PATH")
+	// An unset PATH makes shells fall back to their built-in default;
+	// setting PATH to the cache dir alone would replace that default.
+	if path == "" || slices.Contains(filepath.SplitList(path), bin) {
+		return nil
+	}
+	return map[string]string{"PATH": path + string(filepath.ListSeparator) + bin}
+}
+
 // zshTmpPrefixEnv moves zsh's heredoc and here-string temp files from
 // its default /tmp/zsh into TMPDIR. The macOS baseline denies writes to
 // /tmp, so every heredoc would fail; on Linux /tmp is a private, writable
@@ -481,6 +507,9 @@ func redactProxyURL(raw string) string {
 //   - profile network.no_proxy (if non-empty)
 //   - env NO_PROXY / no_proxy (comma-separated, trimmed)
 //
+// Entries that can never match (e.g. "10.0.0.0/8") are dropped with a
+// warning instead of failing startup.
+//
 // Only proxyURL.Host is logged — never the userinfo (credentials).
 func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func(string, ...any)) netproxy.Dialer {
 	proxyStr := p.Network.UpstreamProxy
@@ -516,11 +545,14 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 	}
 
 	var noProxy []string
+	noProxySource := "network.no_proxy"
 	if len(p.Network.NoProxy) > 0 {
 		noProxy = p.Network.NoProxy
 	} else {
+		noProxySource = "the NO_PROXY environment variable"
 		noProxyStr := os.Getenv("NO_PROXY")
 		if noProxyStr == "" {
+			noProxySource = "the no_proxy environment variable"
 			noProxyStr = os.Getenv("no_proxy")
 		}
 		if noProxyStr != "" {
@@ -530,10 +562,29 @@ func resolveUpstreamProxy(p *sandboxprofile.Profile, stderr io.Writer, logf func
 			}
 		}
 	}
+	noProxy = dropUnsupportedNoProxy(noProxy, noProxySource, stderr)
 
 	logf("omac sandbox: using upstream proxy %s", proxyURL.Host)
 
 	return netproxy.NewUpstreamProxyDialer(proxyURL, noProxy, logf)
+}
+
+// dropUnsupportedNoProxy returns entries without those that can never
+// match a host (see netproxy.NoProxyEntryIgnoreReason), printing one
+// warning per dropped entry. These entries come from the user's shell or
+// grants file and are common in company networks (e.g. "10.0.0.0/8"), so
+// they must not block startup, but silently ignoring them would leave the
+// user guessing why those hosts still go through the upstream proxy.
+func dropUnsupportedNoProxy(entries []string, source string, stderr io.Writer) []string {
+	var kept []string
+	for _, e := range entries {
+		if reason := netproxy.NoProxyEntryIgnoreReason(e); reason != "" {
+			fmt.Fprintf(stderr, "omac sandbox: warning: ignoring %q in %s: %s. Hosts it was meant for still go through the upstream proxy.\n", strings.TrimSpace(e), source, reason)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
 }
 
 // resolvedDenial merges a profile's Denial override with the compiled-in

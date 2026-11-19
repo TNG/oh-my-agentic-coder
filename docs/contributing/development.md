@@ -88,8 +88,9 @@ inline findings and update one summary comment. It reviews non-draft PRs from
 branches in this repository targeting `main` when they are opened, updated,
 reopened, or marked ready for review. Fork PRs are skipped.
 
-Reviews use high effort and the existing `SKAINET_INTERNAL` (gateway base URL)
-and `SKAINET_TOKEN` repository secrets. The model follows the OpenCode pin in
+Reviews use high effort and the trustedtokens.eu gateway
+(`https://api.trustedtokens.eu/v1`) with the `TRUSTEDTOKENS_TOKEN` repository
+secret. The model follows the OpenCode pin in
 `internal/e2e/versions.go`, verified by `scripts/probe-model.sh` before each run.
 No separate GitHub token is needed. Each push can incur LLM costs; successful
 complete reviews record a checkpoint so later pushes review only new changes.
@@ -111,3 +112,12 @@ Reviews are advisory: **do not add OCR review to required status checks or
 required workflows** in branch protection or repository rulesets. Findings do
 not fail the job; technical errors remain visible as a failed OCR run, separate
 from the existing CI checks.
+
+## Reviewing pull requests with agents
+
+The repo ships two agent skills in `.agents/skills` (linked from `.claude/skills` for Claude Code). Ask your agent to use them by name, for example "review PR 487 with the agent-review skill".
+
+- **`agent-review`** runs the project's tests at the PR head and on the base, picks the reviewers that fit the PR (code style, error handling, tests, documentation, UX consistency, security, complexity, performance), checks each of their findings against the code, and writes one PR comment with numbered findings, each with a type and a severity. To get findings fixed, reply e.g. "Please address F2, F5" and point an agent at the comment; it commits the fixes on a local `review-fixes/<N>` branch and leaves pushing to you.
+- **`explain-pr`** writes an explainer page for a complex PR: what it changes, where that fits in the codebase, the usage scenarios that matter, alternative approaches, and how to review it. The result is one HTML page: an Artifact link in Claude Code, a file you open in a browser elsewhere. It needs no extra tools; only its diagrams load from a CDN (cdn.jsdelivr.net).
+
+Both read the PR with `gh`, the omac `omac-gh` skill, or a GitHub MCP server. `agent-review` posts a comment only when you ask it to.

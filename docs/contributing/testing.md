@@ -81,8 +81,9 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
-All harnesses except claude-code use a shared model gateway (`zai-org/GLM-5.3`) because it is cost-effective.
-claude-code is the exception because it communicates directly with the Anthropic API — it cannot route through a third-party gateway — so it uses `claude-sonnet-5-5` with an Anthropic key.
+All harnesses except claude-code use a shared OpenAI-compatible model gateway, trustedtokens.eu (`https://api.trustedtokens.eu/v1`), with `deepseek-ai/DeepSeek-V4.1-Flash-1017` (codex: `zai-org/GLM-5.3`, because codex cannot use DeepSeek's replies on the `/responses` route), because it is cost-effective.
+They read the gateway URL from `SKAINET_INTERNAL` and its key from `SKAINET_TOKEN` (the names predate the switch; CI fills them from the `TRUSTEDTOKENS_TOKEN` secret).
+claude-code is the exception because it speaks the Anthropic API, so it uses `claude-sonnet-5-5` through the SkaiNet Anthropic proxy: set `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` (CI: the `ANTHROPIC_BASE_URL` and `SKAINET_TOKEN` secrets).
 
 ### With the wrapper scripts
 
@@ -101,8 +102,8 @@ macOS Seatbelt paths are not covered — the `e2e.yml` CI matrix handles those o
 
 ```sh
 scripts/e2e-docker.sh build                # one-time (~3 min): Ubuntu + Go + bun/node + bubblewrap + rust/pip
-SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-docker.sh run opencode     # echo-rest lifecycle (llm stage)
-SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-docker.sh audit opencode   # security_assertions stage
+SKAINET_TOKEN=<trustedtokens key> SKAINET_INTERNAL=https://api.trustedtokens.eu/v1 scripts/e2e-docker.sh run opencode     # echo-rest lifecycle (llm stage)
+SKAINET_TOKEN=<trustedtokens key> SKAINET_INTERNAL=https://api.trustedtokens.eu/v1 scripts/e2e-docker.sh audit opencode   # security_assertions stage
 scripts/e2e-docker.sh cache                # cache_isolation stage — no secrets
 scripts/e2e-docker.sh prompt "..."         # run echo-rest with a custom prompt
 scripts/e2e-docker.sh artifact opencode-linux-echo-rest | tar -x   # fetch a run's output
@@ -117,8 +118,8 @@ unset it is a thin passthrough to `go test`, so it works on a plain host shell t
 
 ```sh
 scripts/e2e-local.sh smoke opencode         # no secrets, ~10s: contract + launch stages
-SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh echo opencode     # echo-rest lifecycle / llm stage (needs secrets)
-SKAINET_TOKEN=... SKAINET_INTERNAL=... scripts/e2e-local.sh audit opencode    # security_assertions stage (needs secrets)
+SKAINET_TOKEN=<trustedtokens key> SKAINET_INTERNAL=https://api.trustedtokens.eu/v1 scripts/e2e-local.sh echo opencode     # echo-rest lifecycle / llm stage (needs secrets)
+SKAINET_TOKEN=<trustedtokens key> SKAINET_INTERNAL=https://api.trustedtokens.eu/v1 scripts/e2e-local.sh audit opencode    # security_assertions stage (needs secrets)
 ```
 
 When `OMAC_SOCKET` is set, the wrapper sets three vars the tests read, to work

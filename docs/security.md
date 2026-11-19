@@ -263,15 +263,15 @@ primitives built into the OS so confinement is enforced by the kernel.
 
 ## Sandbox access reference
 
-The table below lists which paths and environment variables the sandbox can and
-cannot access.
+The table below lists which paths, ports, and environment variables the sandbox
+can and cannot access.
 
-| Path or variable | Access | Why |
+| Path, variable, or port grant | Access | Why |
 |---|---|---|
 | `<workdir>` | read + write | Your project files |
 | Harness config dirs (e.g. `~/.claude`, `~/.local/share/opencode`, `~/.local/share/opentui`) | read + write | The harness stores its state and credentials here; omac pre-creates declared first-use dirs (e.g. OpenCode's `opentui` tree-sitter grammar cache) before sandbox grant resolution |
 | omac-managed tool cache (isolated from `~/.cache`; see [Cache](./advanced/cache.md)) | read + write | Build artifacts and downloaded packages; isolated from your host caches |
-| Language toolchain binaries (`~/.cargo/bin`, `~/go/bin`, `~/.nvm`, `~/.bun/bin`, `~/.rustup`) | read-only | So installed compilers and build tools can run |
+| Language toolchain binaries and managed runtimes (`~/.cargo/bin`, `~/go/bin`, `~/.nvm`, `~/.bun/bin`, `~/.rustup`, `~/.local/share/uv/python`) | read-only | So installed compilers, build tools, and uv-managed Python interpreters can run. A sandbox profile created before uv support lacks `~/.local/share/uv/python`; add it yourself (see [uv](./advanced/cache.md#uv)), omac doesn't update existing profiles |
 | pnpm home (`~/.local/share/pnpm`, `~/Library/pnpm`) | read-only | So the agent can run `pnpm` at all: the `pnpm` executables, pnpm-installed global tools, and the `pnpm` store live here. |
 | Shared skills dirs (`~/.config/agents/skills`, `~/.agents/skills`) | read-only | So the agent can read skill descriptions (`SKILL.md`) |
 | Git config (`~/.gitconfig`, `~/.gitignore_global`) | read-only | Read commit settings and global ignores; write access would affect all your repos |
@@ -285,6 +285,9 @@ cannot access.
 | `.env` / `.envrc` files (including nested ones inside the project; dependency/cache trees are skipped) | **blocked** | Often contain secrets |
 | `~/.cache`, `~/Library/Caches` (host cache roots) | **blocked** | Prevents cross-project cache poisoning; omac provides its own isolated cache |
 | Files matching `filesystem.deny` patterns (e.g. `*.key`) | **blocked** | User-defined extra restrictions |
+| `network.listen_port` | bind | TCP ports the agent may listen on. Entries are port numbers or inclusive ranges such as `"8000-8100"`, capped at 1000 ports per field; see [Granting port ranges](./configuration.md#granting-port-ranges). On macOS a list does not limit bind access to the named ports: any non-empty list permits binding any port and accepting connections on it |
+| `network.allow_tcp_connect` | connect | Direct outbound TCP on those ports, to any host. Used for protocols the proxy cannot carry, such as SSH or database clients; the domain allow/deny list does not apply. Same entry syntax and 1000-port cap |
+| `network.open_port` | bind + connect | Localhost ports the agent may both listen on and connect to; the broadest of the three port grants. On Linux a granted port also permits outbound connections to any host on that port (see the accepted gap under [Network](#network)), and on macOS a non-empty list permits binding any port and accepting connections on it. Single ports only, no ranges |
 | Environment variables in `allow_vars` (`OMAC_*`, `HOME`, `PATH`, `LANG`, …) | passed through | Operational minimum |
 | All other environment variables (cloud secrets, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) | **stripped** | Not needed and potentially sensitive |
 
