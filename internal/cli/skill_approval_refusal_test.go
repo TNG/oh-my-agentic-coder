@@ -172,7 +172,7 @@ func TestSkillCopyStripsControlCharsFromDir(t *testing.T) {
 	e := registry.Entry{Name: "foo", Harness: "opencode", SkillDir: ".opencode/skills/foo\x1b[2J\x1b[H"}
 	c := skillCopyOf(e, filepath.Join(workdir, e.SkillDir), workdir)
 	r := &spawnRefusal{Kind: skillstate.SnapshotMissing, Skill: c}
-	for name, text := range map[string]string{"String": c.String(), "Error": r.Error(), "notice": refusalNotice(r)} {
+	for name, text := range map[string]string{"String": c.String(), "Error": r.Error(), "reload line": reloadRefusalLine(refusalProblem("foo", r))} {
 		if strings.Contains(text, "\x1b") {
 			t.Errorf("%s leaked an escape sequence: %q", name, text)
 		}

@@ -91,3 +91,15 @@ func TestDoctorSpawnGateAllClear(t *testing.T) {
 		t.Errorf("doctor output missing the all-clear line:\n%s", out)
 	}
 }
+
+func TestDoctorSpawnGateSilentWithoutSkills(t *testing.T) {
+	isolateHome(t)
+	workdir := t.TempDir()
+	env, outBuf, _, drain := newPipeEnv(t, "")
+	env.Workdir = workdir
+	_ = runDoctor([]string{}, env)
+	drain()
+	if out := outBuf.String(); strings.Contains(out, "skill approvals") {
+		t.Errorf("doctor claimed an approval check with no skills registered:\n%s", out)
+	}
+}

@@ -303,7 +303,7 @@ func TestRenderApprovalRefusalsGroupsByClass(t *testing.T) {
 			"    gone — rebuild with: omac register gone\n",
 		"\n  Could not be checked (fix the cause, then relaunch):\n" +
 			"    odd — cannot read the host approval store: boom\n",
-		"\n  The session starts without them; the agent sees them listed as unavailable.\n",
+		"\n  The session starts without them; the agent sees them listed as unavailable. Once registered, the running session picks them up.\n",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {
@@ -365,5 +365,22 @@ func TestSpawnRefusalClassesCoverEveryKind(t *testing.T) {
 	// reload lines use, so the stale cause must carry its docs pointer once.
 	if c := spawnRefusalClassOf(skillstate.SnapshotStale); !strings.Contains(c.header(), "troubleshooting") {
 		t.Errorf("stale header lacks the docs pointer: %q", c.header())
+	}
+}
+
+// TestReloadRefusalLine (F7): a refusal that first appears on a live reload is
+// printed as one short line in the report's words, not the agent-facing
+// sentence with the full location.
+func TestReloadRefusalLine(t *testing.T) {
+	stale := skillstate.Problem{Kind: skillstate.SnapshotStale, Skill: "omac-gh", Fix: "omac register omac-gh"}
+	if got, want := reloadRefusalLine(stale), "omac start: omac-gh will not run: registered before v0.13.1, snapshot must be rebuilt once for the new store format; run from a host terminal: omac register omac-gh"; got != want {
+		t.Errorf("stale line = %q\nwant %q", got, want)
+	}
+	odd := skillstate.Problem{Kind: skillstate.SpawnRefused, Skill: "odd", Detail: "cannot read the host approval store: boom"}
+	if got, want := reloadRefusalLine(odd), "omac start: odd will not run: cannot read the host approval store: boom"; got != want {
+		t.Errorf("untyped line = %q\nwant %q", got, want)
+	}
+	if got := reloadRefusalLine(skillstate.Problem{Kind: skillstate.NotApproved, Skill: "x\x1b[2J", Fix: "omac register x"}); strings.Contains(got, "\x1b") {
+		t.Errorf("escape sequence leaked: %q", got)
 	}
 }

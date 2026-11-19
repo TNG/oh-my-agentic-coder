@@ -16,7 +16,7 @@ func TestRegisterHarnessFlagHelpDescribesScan(t *testing.T) {
 	if strings.Contains(out, "Default: opencode") {
 		t.Errorf("--harness help still claims a default harness:\n%s", out)
 	}
-	for _, want := range []string{"-harness string", "every harness is searched", "more than one harness is refused"} {
+	for _, want := range []string{"-harness string", "opencode|claude-code", `"claude" also works`, "every harness is searched", "more than one harness is refused"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("--harness help missing %q:\n%s", want, out)
 		}

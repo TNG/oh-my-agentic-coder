@@ -259,6 +259,9 @@ func runDoctor(args []string, env *Env) int {
 // (SkipBundleHash); the gate cannot answer without the hash, and `omac
 // register` walks the same tree anyway.
 func doctorSpawnGate(env *Env, reg *registry.Registry) {
+	if len(reg.Registered) == 0 {
+		return // nothing to check; an "[ok] 0 skill(s)" line would be noise
+	}
 	var problems []skillstate.Problem
 	for _, e := range reg.Registered {
 		absDir := e.SkillDir

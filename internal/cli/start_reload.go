@@ -480,7 +480,7 @@ func (r *startReloader) reload() []string {
 			})
 			r.aud().Emit(audit.ControlMutation("reload", absDir, "refused: "+refusal.Error()))
 			if r.warnOnce(e.Name, refusal.Error()) {
-				fmt.Fprintf(r.env.Stderr, "omac start: %s\n", refusalNotice(refusal))
+				fmt.Fprintln(r.env.Stderr, reloadRefusalLine(refusalProblem(e.Name, refusal)))
 			}
 			continue
 		}

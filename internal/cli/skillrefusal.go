@@ -347,5 +347,27 @@ func renderApprovalRefusals(w io.Writer, prefix string, problems []skillstate.Pr
 		}
 	}
 
-	fmt.Fprintln(w, "\n  The session starts without them; the agent sees them listed as unavailable.")
+	// `omac register` asks the running session to reload (notifyReload), so
+	// the fixed skill comes up without a restart; say so, or the user will
+	// restart for nothing.
+	fmt.Fprintln(w, "\n  The session starts without them; the agent sees them listed as unavailable. Once registered, the running session picks them up.")
+}
+
+// reloadRefusalLine is the one-line form live reload prints for a refusal
+// that was not in the launch report (a skill registered or changed
+// mid-session). It uses the report's words and the copy-selecting command,
+// not the agent-facing sentence with the full location (issue #514, F7).
+func reloadRefusalLine(p skillstate.Problem) string {
+	p = sanitizeProblems([]skillstate.Problem{p})[0]
+	line := "omac start: " + p.Skill + " will not run: "
+	c := spawnRefusalClassOf(p.Kind)
+	switch {
+	case p.Fix == "" || c == nil:
+		if p.Detail != "" {
+			return line + p.Detail
+		}
+		return line + c.cause
+	default:
+		return line + c.cause + "; run from a host terminal: " + p.Fix
+	}
 }

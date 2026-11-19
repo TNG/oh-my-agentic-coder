@@ -254,14 +254,6 @@ func errSkillNotApproved(name string) error {
 	return &spawnRefusal{Kind: skillstate.NotApproved, Skill: skillCopy{Name: name}}
 }
 
-// refusalNotice is the operator-facing line live reload prints when a skill is
-// left unavailable (the launch itself prints one grouped report instead, see
-// renderApprovalRefusals). The refusal already names the skill and the remedy,
-// so this only adds what happened to the route.
-func refusalNotice(refusal error) string {
-	return fmt.Sprintf("%v (mounted as unavailable)", refusal)
-}
-
 // brokenApprovalRoute is the facade route an unapproved skill is mounted as:
 // a broken (502) stub naming the remedy, so a probe is answered instead of
 // 404'd — and no sidecar is spawned.
