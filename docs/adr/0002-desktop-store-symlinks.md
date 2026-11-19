@@ -33,7 +33,7 @@ A link opens two ways around the check:
 
 Option B. A symlink is fine as long as the agent can change neither the link nor its target:
 
-- **Both paths are checked.** No write grant may cover a folder on the path as written or on the real path. This includes the working directory and the temp folder, which the agent can always write. On every OS, no read grant may cover them either, because Desktop keeps cookies and browser storage next to its project list.
+- **Both paths are checked.** No write grant may cover a folder on the path as written or on the real path, or the folder that holds any link on the way. This includes the working directory and the temp folder, which the agent can always write. On every OS, no read grant may cover them either, because Desktop keeps cookies and browser storage next to its project list.
 - **Both forms are denied.** Each file is denied under the path as written and under the real path. macOS matches sandbox rules against the real path; Linux hides a file at the path it is given.
 - **The files themselves must not be links.** A symlinked `opencode.global.dat` or `drafts.sqlite` is refused.
 - **A link to a missing target doesn't refuse the start.** If the target doesn't exist at startup, no Desktop data can be there. omac checks and denies the place where the target would appear like a real path, so the agent can't create it there.

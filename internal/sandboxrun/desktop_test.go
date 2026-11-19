@@ -153,6 +153,68 @@ func TestProtectDesktopStoresThroughSymlinks(t *testing.T) {
 	}
 }
 
+// In a chain of links (~/.config -> <tmp>/a -> <data>/config), the agent
+// could re-point the middle link if it can write the folder that holds it.
+func TestProtectDesktopStoresChecksEveryLinkInAChain(t *testing.T) {
+	dirs := make([]string, 4)
+	for i := range dirs {
+		d, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs[i] = d
+	}
+	home, tmp, data, other := dirs[0], dirs[1], dirs[2], dirs[3]
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if err := os.MkdirAll(filepath.Join(data, "config", "ai.opencode.desktop"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(data, "config"), filepath.Join(tmp, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tmp, "a"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &Grants{AllowPaths: []string{other}}
+	if err := protectDesktopStores(g, false); err != nil {
+		t.Fatalf("chain without a grant on its links: %v", err)
+	}
+	for _, dir := range []string{filepath.Join(home, ".config"), filepath.Join(data, "config")} {
+		if p := filepath.Join(dir, "ai.opencode.desktop", "opencode.global.dat"); !slices.Contains(g.ProtectedPaths, p) {
+			t.Errorf("%s not in ProtectedPaths", p)
+		}
+	}
+	err := protectDesktopStores(&Grants{AllowPaths: []string{tmp}}, false)
+	if err == nil || !strings.Contains(err.Error(), "could change") {
+		t.Errorf("write grant on the folder of the middle link: error = %v, want a refusal", err)
+	}
+}
+
+// A loop of links never resolves; omac stops after the kernel's limit.
+func TestProtectDesktopStoresRefusesLinkLoop(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	if err := os.Symlink(filepath.Join(home, "b"), filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".config"), filepath.Join(home, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectDesktopStores(&Grants{}, false); err == nil || !strings.Contains(err.Error(), "more than 40 symlinks") {
+		t.Errorf("link loop: error = %v, want a refusal", err)
+	}
+}
+
 // A link whose target is missing at startup (an unmounted disk) holds no
 // Desktop data, so it doesn't refuse the start. The place where its
 // target would appear is checked and denied like a real path, so the
