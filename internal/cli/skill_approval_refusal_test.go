@@ -163,3 +163,21 @@ func TestSkillCopyIgnoresUnknownHarness(t *testing.T) {
 		t.Errorf("registerCmd = %q, want the canonical harness name", got)
 	}
 }
+
+// TestSkillCopyStripsControlCharsFromDir (F5): the reload line and the audit
+// event print refusal.Error() without going through sanitizeProblems, so the
+// copy itself must hold no terminal controls.
+func TestSkillCopyStripsControlCharsFromDir(t *testing.T) {
+	workdir := t.TempDir()
+	e := registry.Entry{Name: "foo", Harness: "opencode", SkillDir: ".opencode/skills/foo\x1b[2J\x1b[H"}
+	c := skillCopyOf(e, filepath.Join(workdir, e.SkillDir), workdir)
+	r := &spawnRefusal{Kind: skillstate.SnapshotMissing, Skill: c}
+	for name, text := range map[string]string{"String": c.String(), "Error": r.Error(), "notice": refusalNotice(r)} {
+		if strings.Contains(text, "\x1b") {
+			t.Errorf("%s leaked an escape sequence: %q", name, text)
+		}
+	}
+	if !strings.Contains(c.Dir, "foo") {
+		t.Errorf("sanitizing must keep the printable path, got %q", c.Dir)
+	}
+}

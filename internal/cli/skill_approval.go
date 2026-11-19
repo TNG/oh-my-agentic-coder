@@ -88,7 +88,11 @@ func skillCopyOf(e registry.Entry, absDir, workdir string) skillCopy {
 	if h, ok := config.LookupHarness(e.Harness); ok {
 		harness = h.Name
 	}
-	return skillCopy{Name: e.Name, Harness: harness, Dir: absDir, Global: global}
+	// The directory comes from the same file (or from a directory name on
+	// disk) and is printed by the live-reload line and the audit trail
+	// without a sanitizing step of their own, so strip terminal controls here,
+	// where every consumer gets it (F5).
+	return skillCopy{Name: e.Name, Harness: harness, Dir: stripControlChars(absDir), Global: global}
 }
 
 // registerCmd is the `omac register` invocation that resolves to exactly this
