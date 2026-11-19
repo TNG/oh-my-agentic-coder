@@ -72,11 +72,7 @@ func TestRunServeDesktopRefusals(t *testing.T) {
 // the OpenCode runtime folder it grants.
 func TestRunServeDesktopGrantsReachTheSandbox(t *testing.T) {
 	isolateHome(t)
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-serve-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	shortTmp := shortSocketDir(t)
 	t.Setenv("TMPDIR", shortTmp)
 	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 	state := filepath.Join(t.TempDir(), "desktop")
@@ -104,6 +100,28 @@ func TestRunServeDesktopGrantsReachTheSandbox(t *testing.T) {
 	if fi, err := os.Stat(runtimeDir); err != nil || !fi.IsDir() {
 		t.Errorf("runtime folder %s not created: %v", runtimeDir, err)
 	}
+}
+
+// shortSocketDir returns a new folder short enough for serve's sockets
+// below it (<dir>/omac/omac-serve-<n>/bridge.sock), which macOS limits to
+// 104 bytes. It tries /tmp, the temp folder and that folder's parent:
+// a sandboxed test run can get a long temp folder and no access to /tmp.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	const maxLen = 104 - len("/omac/omac-serve-0123456789/bridge.sock")
+	for _, parent := range []string{"/tmp", os.TempDir(), filepath.Dir(os.TempDir())} {
+		dir, err := os.MkdirTemp(parent, "s")
+		if err != nil {
+			continue
+		}
+		if len(dir) < maxLen {
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			return dir
+		}
+		os.Remove(dir)
+	}
+	t.Skip("no writable folder with a path short enough for unix sockets")
+	return ""
 }
 
 // The sandbox gets the Desktop flag and only the runtime subdirectory of
