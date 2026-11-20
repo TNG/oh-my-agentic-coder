@@ -403,13 +403,21 @@ func TestCheck_NoMatchingAsset(t *testing.T) {
 // --- Apply() tests ---------------------------------------------------------
 
 func TestApply_LinuxPackage_RunsSudoWithPackageManager(t *testing.T) {
+	pkgPath := filepath.Join(t.TempDir(), "x.deb")
+	if err := os.WriteFile(pkgPath, []byte("package-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantSum, err := sha256File(pkgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := baseDeps(t)
 	runner := &fakeRunner{}
 	deps.Runner = runner
 	deps.PkgManagers = []PackageManager{
 		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
 	}
-	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: "/tmp/x.deb"}
+	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: pkgPath, WantChecksum: wantSum}
 
 	if err := Apply(context.Background(), plan, deps); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -421,7 +429,7 @@ func TestApply_LinuxPackage_RunsSudoWithPackageManager(t *testing.T) {
 	if got.name != "sudo" {
 		t.Fatalf("name = %q, want sudo", got.name)
 	}
-	want := []string{"dpkg", "-i", "/tmp/x.deb"}
+	want := []string{"dpkg", "-i", pkgPath}
 	if len(got.args) != len(want) {
 		t.Fatalf("args = %v, want %v", got.args, want)
 	}
@@ -468,15 +476,23 @@ func TestApply_BrewUpdateFailureSkipsUpgrade(t *testing.T) {
 }
 
 func TestApply_InstallCommandFailure(t *testing.T) {
+	pkgPath := filepath.Join(t.TempDir(), "x.deb")
+	if err := os.WriteFile(pkgPath, []byte("package-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantSum, err := sha256File(pkgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deps := baseDeps(t)
 	sentinel := errors.New("dpkg exited 1")
 	deps.Runner = &fakeRunner{err: sentinel}
 	deps.PkgManagers = []PackageManager{
 		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
 	}
-	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: "/tmp/x.deb"}
+	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: pkgPath, WantChecksum: wantSum}
 
-	err := Apply(context.Background(), plan, deps)
+	err = Apply(context.Background(), plan, deps)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel wrapped", err)
 	}
@@ -491,7 +507,11 @@ func TestApply_SelfReplace_ExtractsAndWritesBinary(t *testing.T) {
 	replacer := &fakeReplacer{}
 	deps.Replacer = replacer
 	deps.Executable = func() (string, error) { return filepath.Join(dir, "omac"), nil }
-	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath}
+	wantSum, err := sha256File(tgzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath, WantChecksum: wantSum}
 
 	if err := Apply(context.Background(), plan, deps); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -512,9 +532,13 @@ func TestApply_SelfReplace_PermissionDenied(t *testing.T) {
 	deps := baseDeps(t)
 	deps.Replacer = &fakeReplacer{err: fmt.Errorf("wrap: %w", fs.ErrPermission)}
 	deps.Executable = func() (string, error) { return filepath.Join(dir, "omac"), nil }
-	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath}
+	wantSum, err := sha256File(tgzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath, WantChecksum: wantSum}
 
-	err := Apply(context.Background(), plan, deps)
+	err = Apply(context.Background(), plan, deps)
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Fatalf("err = %v, want fs.ErrPermission", err)
 	}
