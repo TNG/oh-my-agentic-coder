@@ -78,6 +78,7 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `sandbox_denied` | Protected paths (`.ssh`, `.aws`, `.env`, …) stay inaccessible inside the sandbox | no | all                   |
 | `security_assertions` | A live agent runs an in-sandbox self-audit script; the test then checks its output to confirm protected files (read/write, incl. symlink escape), secrets, filtered env vars, and disallowed network requests were all blocked, while allowed paths still worked | yes | all                   |
 | `self_authored_skill` | A user-written skill can be registered and executed | no | all                   |
+| `approvals` | A skill's `approvals` block through `omac register`, `omac serve` and `omac start`: what asks, every dialog answer, path cleaning, stored answers and how far they reach. The dialog is a fake `zenity` on `PATH` (Linux only) | no | n/a (`--inner` probe) |
 | `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
@@ -167,7 +168,7 @@ The `serve` probe requires opencode to be installable via [bun](https://bun.sh) 
 These areas have no automated coverage and must be verified by hand, especially before a release:
 
 - **Installation packages**: Homebrew tap trust and `brew install`, Debian `.deb` postinstall, Arch `.pkg.tar.zst` via pacman.
-- **Network prompt dialog**: zenity/kdialog (Linux) and osascript (macOS) dialogs require a real display session. CI runs them with `xvfb-run` on a best-effort basis; visual appearance and button behaviour need a human.
+- **Network prompt and sidecar approval dialogs**: zenity/kdialog (Linux) and osascript (macOS) dialogs require a real display session. The `approvals` E2E tests check the argv omac passes, not how zenity renders it; zenity 4, for example, parses list text as markup even with `--no-markup`. CI runs them with `xvfb-run` on a best-effort basis; visual appearance and button behaviour need a human.
 - **Keychain interaction**: macOS Keychain unlock prompts and Linux Secret Service interaction (especially the WSL2 setup flow) require a live user session.
 - **WSL2 end-to-end**: The full WSL2 keychain setup (dbus, gnome-keyring, Secret Service) needs a real WSL2 instance to verify — neither WSL detection (`internal/osinfo/`) nor the live keychain wiring is covered by automated tests.
 - **Platform sandbox binaries**: Confirming bwrap + Landlock on a given kernel version, or Seatbelt on a given macOS release, requires running on that platform.
