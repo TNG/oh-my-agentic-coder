@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
 )
 
@@ -59,6 +61,170 @@ type SidecarMeta struct {
 	InstallScripts map[string]string `yaml:"install_scripts,omitempty"`
 	Protocols      []string          `yaml:"protocols,omitempty"`
 	Limits         *LimitsSpec       `yaml:"limits,omitempty"`
+	Approvals      *ApprovalsSpec    `yaml:"approvals,omitempty"`
+}
+
+// ApprovalsSpec is the optional endpoint declaration under sidecar.approvals.
+// A skill without it is forwarded without asking. With it, a request asks
+// unless it matches an entry with approval: none; see internal/approval.
+type ApprovalsSpec struct {
+	Endpoints []ApprovalSpec `yaml:"endpoints"`
+}
+
+// ApprovalSpec declares one endpoint: "<METHOD|ANY> <path>" and whether the
+// user must approve calls to it.
+type ApprovalSpec struct {
+	Match       string        `yaml:"match"`
+	Approval    approval.Mode `yaml:"approval"`
+	Description string        `yaml:"description,omitempty"`
+}
+
+// UnmarshalYAML decodes the sidecar block as usual, with two exceptions that
+// keep a mistake in the approvals block from switching every dialog off:
+//   - An `approvals:` key with no value is read as an empty declaration
+//     (every route asks), not as a missing one (nothing asks). yaml.v3 leaves
+//     a pointer nil for a null value, so a block whose entries are all
+//     commented out would otherwise be no gate at all.
+//   - A key that is a near-miss of `approvals` (e.g. `aprovals`) is an
+//     error. Other unknown keys in omac.yaml are only warned about, but this
+//     one would silently mean "no block".
+func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: sidecar must be a mapping, got %s", node.Line, node.ShortTag())
+	}
+	keys := mappingKeys(node)
+	for _, k := range keys {
+		if k != "approvals" && nearApprovals(k) {
+			return fmt.Errorf("sidecar.%s: unknown key; did you mean approvals? Misspelled, the block is ignored and nothing asks", k)
+		}
+	}
+	type plain SidecarMeta
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*s = SidecarMeta(p)
+	if s.Approvals == nil && slices.Contains(keys, "approvals") {
+		s.Approvals = &ApprovalsSpec{}
+	}
+	return nil
+}
+
+// UnmarshalYAML decodes omac.yaml as usual, but refuses an `approvals`
+// block at the top level: it belongs under `sidecar`, and in the wrong
+// place it would be ignored, so nothing would ask.
+func (m *Meta) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: omac.yaml must be a mapping, got %s", node.Line, node.ShortTag())
+	}
+	for _, k := range mappingKeys(node) {
+		if nearApprovals(k) {
+			return fmt.Errorf("%s: unknown top-level key; the approvals block belongs under sidecar, otherwise it is ignored and nothing asks", k)
+		}
+	}
+	type plain Meta
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*m = Meta(p)
+	return nil
+}
+
+// mappingKeys returns the keys of a YAML mapping, including those pulled in
+// with a `<<` merge key, so a block written through an anchor is seen too.
+func mappingKeys(node *yaml.Node) []string {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		return mappingKeys(node.Alias)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	var keys []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if k.Value == "<<" && k.Tag == "!!merge" {
+			merged := []*yaml.Node{v}
+			if v.Kind == yaml.SequenceNode {
+				merged = v.Content
+			}
+			for _, m := range merged {
+				keys = append(keys, mappingKeys(m)...)
+			}
+			continue
+		}
+		keys = append(keys, k.Value)
+	}
+	return keys
+}
+
+// nearApprovals reports whether k is `approvals` or within two typos of it.
+// A key with the `x-` or `x_` extension prefix holds an anchor or extension
+// data by convention (`x-approvals: &safe {...}`), not a misspelled block.
+func nearApprovals(k string) bool {
+	k = strings.ToLower(k)
+	if strings.HasPrefix(k, "x-") || strings.HasPrefix(k, "x_") {
+		return false
+	}
+	return editDistance(k, "approvals") <= 2
+}
+
+// editDistance is the Levenshtein distance between a and b (bytes).
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	cur := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(b)]
+}
+
+// UnmarshalYAML decodes the block strictly: unknown keys are an error here,
+// unlike the rest of omac.yaml, because a misspelled key in a security
+// declaration must not silently weaken it.
+func (a *ApprovalsSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: sidecar.approvals must be a mapping with an endpoints list, got %s", node.Line, node.ShortTag())
+	}
+	var unknown []string
+	collectUnknownKeys(node, reflect.TypeOf(ApprovalsSpec{}), "sidecar.approvals", &unknown)
+	if len(unknown) > 0 {
+		return fmt.Errorf("unknown key %s", strings.Join(unknown, ", "))
+	}
+	type plain ApprovalsSpec
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return fmt.Errorf("sidecar.approvals: %w", err)
+	}
+	*a = ApprovalsSpec(p)
+	return nil
+}
+
+// Compile validates the declaration and returns the matcher the facade uses.
+func (a *ApprovalsSpec) Compile() (*approval.Set, error) {
+	entries := make([]approval.Entry, len(a.Endpoints))
+	for i, e := range a.Endpoints {
+		entries[i] = approval.Entry{Match: e.Match, Approval: e.Approval, Description: e.Description}
+	}
+	set, err := approval.Compile(entries)
+	if err != nil {
+		return nil, fmt.Errorf("sidecar.%w", err)
+	}
+	return set, nil
 }
 
 // SecretSpec describes a single credential that omac prompts for at
@@ -309,9 +475,29 @@ func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 // found in type config.SecretSpec". Walking the parsed YAML tree next to
 // the Go type gives the path a skill author knows from the docs instead.
 func unknownMetaKeys(root *yaml.Node) []string {
-	var out []string
-	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &out)
+	var all []string
+	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &all)
+	out := all[:0]
+	for _, key := range all {
+		if !refusedKey(key) {
+			out = append(out, key)
+		}
+	}
 	return out
+}
+
+// refusedKey reports whether decoding stops on this unknown key instead of
+// ignoring it: any unknown key inside sidecar.approvals, and a misspelled or
+// misplaced approvals block. Warning that it is ignored would contradict the
+// error that follows.
+func refusedKey(path string) bool {
+	if strings.HasPrefix(path, "sidecar.approvals.") {
+		return true
+	}
+	if parent, key, nested := strings.Cut(path, "."); nested {
+		return parent == "sidecar" && !strings.Contains(key, ".") && nearApprovals(key)
+	}
+	return nearApprovals(path)
 }
 
 // collectUnknownKeys walks node, which should hold a value of type t, and
@@ -424,6 +610,11 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	}
 	if s.Mount != "" && !mountRE.MatchString(s.Mount) {
 		return fmt.Errorf("sidecar.mount %q must match %s", s.Mount, mountRE.String())
+	}
+	if s.Approvals != nil {
+		if _, err := s.Approvals.Compile(); err != nil {
+			return err
+		}
 	}
 
 	// Track every authoritatively-declared env var (secrets + config) so
