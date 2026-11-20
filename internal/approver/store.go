@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
@@ -26,7 +27,8 @@ const (
 // Verdict is one stored "allow always" answer.
 type Verdict struct {
 	ID        string    `json:"id"`
-	Scope     string    `json:"scope"` // what the verdict is bound to: a workdir hash
+	Scope     string    `json:"scope"`         // what the verdict is bound to: a workdir hash, or "global"
+	Dir       string    `json:"dir,omitempty"` // the project directory the scope stands for
 	Skill     string    `json:"skill"`
 	Match     string    `json:"match"` // the declared pattern, e.g. "POST /tools/{name}", or the exact route when Approval is "unlisted"
 	Approval  string    `json:"approval"`
@@ -40,9 +42,14 @@ type file struct {
 
 // Store persists always-verdicts in <dir>/endpoint-verdicts.json. A missing
 // file is an empty store; an unreadable one is an error and the caller treats
-// it as "no verdict" (the dialog is raised instead).
+// it as "no verdict" (the dialog is raised instead). The next answer to be
+// stored moves an unparseable file aside and starts a new one.
 type Store struct {
 	dir string
+
+	mu       sync.Mutex
+	cached   map[string]bool // verdict ids of the file described by cachedAt
+	cachedAt os.FileInfo
 }
 
 // NewStore returns the store under dir; "" means the user-global omac config
@@ -85,18 +92,35 @@ func (s *Store) load() (*file, error) {
 	return &f, nil
 }
 
-// Has reports whether an always-verdict with this id exists.
+// Has reports whether an always-verdict with this id exists. It runs for
+// every request that asks, so it parses the file again only when the file
+// was replaced or changed (a save or `omac approvals revoke` renames a new
+// file into place).
 func (s *Store) Has(id string) (bool, error) {
-	f, err := s.load()
+	if s.dir == "" {
+		return false, nil
+	}
+	info, err := os.Stat(s.path())
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read endpoint verdicts: %w", err)
 	}
-	for _, v := range f.Verdicts {
-		if v.ID == id {
-			return true, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cachedAt == nil || !os.SameFile(s.cachedAt, info) || !s.cachedAt.ModTime().Equal(info.ModTime()) || s.cachedAt.Size() != info.Size() {
+		f, err := s.load()
+		if err != nil {
+			return false, err
 		}
+		s.cached = make(map[string]bool, len(f.Verdicts))
+		for _, v := range f.Verdicts {
+			s.cached[v.ID] = true
+		}
+		s.cachedAt = info
 	}
-	return false, nil
+	return s.cached[id], nil
 }
 
 // List returns every stored verdict, ordered by skill and match.
@@ -147,6 +171,17 @@ func (s *Store) mutate(fn func(*file)) error {
 	}
 	return registry.WithLockAt(s.dir, filepath.Join(s.dir, fileName+".lock"), func() error {
 		f, err := s.load()
+		var syntax *json.SyntaxError
+		var typ *json.UnmarshalTypeError
+		if errors.As(err, &syntax) || errors.As(err, &typ) {
+			// A file cut short by a crash or a bad hand edit would otherwise
+			// refuse every new answer. Keep it for inspection and start over:
+			// losing stored allows only means asking again.
+			if rerr := os.Rename(s.path(), s.path()+".corrupt"); rerr != nil {
+				return fmt.Errorf("%w; moving it aside failed: %v", err, rerr)
+			}
+			f, err = &file{Version: schemaVersion}, nil
+		}
 		if err != nil {
 			return err
 		}
@@ -179,6 +214,9 @@ func (s *Store) save(f *file) error {
 		return fail(err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
 		return fail(err)
 	}
 	if err := tmp.Close(); err != nil {

@@ -2,6 +2,7 @@ package approver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -35,11 +36,22 @@ type Config struct {
 	Store   *Store
 	// Timeout bounds one dialog; zero means DefaultTimeout.
 	Timeout time.Duration
-	// ScopeFor maps a route namespace to what verdicts are bound to (a
-	// workdir hash for workdir-bound skills). Nil means one scope for all.
-	ScopeFor func(namespace string) string
+	// ScopeFor maps a route namespace to the scope answers are bound to. A
+	// scope with an empty Key, or a nil ScopeFor, means the request cannot
+	// be tied to a project: it is denied and nothing is stored.
+	ScopeFor func(namespace string) Scope
 	// Logf receives diagnostics; nil discards them.
 	Logf func(format string, args ...any)
+}
+
+// Scope is what stored answers are bound to.
+type Scope struct {
+	// Key identifies the scope in the store, e.g. "wd-<hash of the
+	// project directory>" or "global" for a skill every project shares.
+	Key string
+	// Dir is the project directory, for `omac approvals list`; "" for a
+	// scope that is not one project.
+	Dir string
 }
 
 // Approver implements facade.Approver with a native dialog, a session store
@@ -76,9 +88,9 @@ func New(cfg Config) *Approver {
 	}
 }
 
-func (a *Approver) scope(ns string) string {
+func (a *Approver) scope(ns string) Scope {
 	if a.cfg.ScopeFor == nil {
-		return ""
+		return Scope{}
 	}
 	return a.cfg.ScopeFor(ns)
 }
@@ -89,11 +101,11 @@ func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 	a.mu.Lock()
 	if a.denyAll[skillKey] {
 		a.mu.Unlock()
-		return facade.ApprovalDecision{Source: "deny-all"}, true
+		return facade.ApprovalDecision{Source: facade.SourceDenyAll}, true
 	}
 	if a.session[id] {
 		a.mu.Unlock()
-		return facade.ApprovalDecision{Allow: true, Scope: "session", Source: "session"}, true
+		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeSession, Source: facade.SourceSession}, true
 	}
 	a.mu.Unlock()
 	if a.cfg.Store != nil {
@@ -101,7 +113,7 @@ func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 		if err != nil {
 			a.cfg.Logf("omac approvals: %v (asking instead)", err)
 		} else if ok {
-			return facade.ApprovalDecision{Allow: true, Scope: "always", Source: "always"}, true
+			return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeAlways, Source: facade.SourceAlways}, true
 		}
 	}
 	return facade.ApprovalDecision{}, false
@@ -110,23 +122,24 @@ func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 // Approve implements facade.Approver.
 func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) facade.ApprovalDecision {
 	scope := a.scope(req.Namespace)
-	if a.cfg.ScopeFor != nil && scope == "" {
+	if scope.Key == "" {
 		// The request cannot be tied to a project, so no answer may be
 		// stored for it or read from another project's answers.
 		a.cfg.Logf("omac approvals: cannot tell which project %s %s belongs to; denied", req.Method, req.Path)
-		return facade.ApprovalDecision{Source: "unavailable"}
+		return facade.ApprovalDecision{Source: facade.SourceUnavailable}
 	}
-	skillKey := scope + "\x00" + req.Skill
-	id := VerdictID(scope, req.Skill, req.Match, ruleKind(req))
+	skillKey := scope.Key + "\x00" + req.Skill
+	id := VerdictID(scope.Key, req.Skill, req.Match, ruleKind(req))
 	if d, ok := a.known(skillKey, id); ok {
 		return d
 	}
 
 	// Identical requests that are pending right now share the leader's
 	// dialog: a denial, timeout or missing dialog is returned to all of them,
-	// so one unanswered dialog is not shown again for each waiting copy. An
-	// allow is re-read from the stored state. Only when the leader's own
-	// client went away does a follower ask again.
+	// so one unanswered dialog is not shown again for each waiting copy. A
+	// session or always allow is re-read from the stored state. "Allow once"
+	// covers only the leader's request, so each waiting copy asks again, as
+	// it does when the leader's own client went away.
 	flight := strings.Join([]string{skillKey, req.Method, req.Path, req.RawQuery}, "\x00")
 	a.mu.Lock()
 	if p, ok := a.inflight[flight]; ok {
@@ -134,9 +147,9 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 		select {
 		case <-p.done:
 		case <-ctx.Done():
-			return facade.ApprovalDecision{Source: "abandoned"}
+			return facade.ApprovalDecision{Source: facade.SourceAbandoned}
 		}
-		if !p.dec.Allow && p.dec.Source != "abandoned" {
+		if !p.dec.Allow && p.dec.Source != facade.SourceAbandoned {
 			return p.dec
 		}
 		if d, ok := a.known(skillKey, id); ok {
@@ -158,7 +171,7 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 	case a.sem <- struct{}{}:
 		defer func() { <-a.sem }()
 	case <-ctx.Done():
-		p.dec = facade.ApprovalDecision{Source: "abandoned"}
+		p.dec = facade.ApprovalDecision{Source: facade.SourceAbandoned}
 		return p.dec
 	}
 	// Answered while this request was queued behind another dialog.
@@ -170,11 +183,11 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 	return p.dec
 }
 
-func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey, id, scope string) facade.ApprovalDecision {
+func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey, id string, scope Scope) facade.ApprovalDecision {
 	if a.cfg.Chooser == nil {
-		return facade.ApprovalDecision{Source: "unavailable"}
+		return facade.ApprovalDecision{Source: facade.SourceUnavailable}
 	}
-	a.cfg.Chooser.Notify("omac: approval needed", fmt.Sprintf("%s wants to %s %s", req.Skill, req.Method, req.Path))
+	a.cfg.Chooser.Notify("omac: approval needed", fmt.Sprintf("%s wants to %s %s", req.Skill, printableASCII(req.Method), clip(printableASCII(req.Path), 160)))
 	dctx, cancel := context.WithTimeout(ctx, a.cfg.Timeout)
 	defer cancel()
 	label, err := a.cfg.Chooser.Choose(dctx, "omac: approve sidecar request", DialogText(req),
@@ -182,51 +195,62 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 	if err != nil {
 		switch {
 		case ctx.Err() != nil:
-			return facade.ApprovalDecision{Source: "abandoned"}
+			return facade.ApprovalDecision{Source: facade.SourceAbandoned}
 		case dctx.Err() != nil:
-			return facade.ApprovalDecision{Source: "timeout"}
+			return facade.ApprovalDecision{Source: facade.SourceTimeout}
 		default:
 			a.cfg.Logf("omac approvals: dialog failed: %v", err)
-			return facade.ApprovalDecision{Source: "unavailable"}
+			return facade.ApprovalDecision{Source: facade.SourceUnavailable}
 		}
 	}
 	switch label {
 	case LabelOnce:
-		return facade.ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}
+		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeOnce, Source: facade.SourcePrompt}
 	case LabelSession:
 		a.mu.Lock()
 		a.session[id] = true
 		a.mu.Unlock()
-		return facade.ApprovalDecision{Allow: true, Scope: "session", Source: "prompt"}
+		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeSession, Source: facade.SourcePrompt}
 	case LabelAlways:
-		v := Verdict{ID: id, Scope: scope, Skill: req.Skill, Match: req.Match, Approval: ruleKind(req), CreatedAt: time.Now().UTC()}
-		if a.cfg.Store == nil || a.cfg.Store.Add(v) != nil {
-			// Could not persist: honor the answer for this session only.
-			a.cfg.Logf("omac approvals: could not store the always-verdict for %s %s; allowing for this session", req.Skill, req.Match)
+		v := Verdict{ID: id, Scope: scope.Key, Dir: scope.Dir, Skill: req.Skill, Match: req.Match, Approval: ruleKind(req), CreatedAt: time.Now().UTC()}
+		err := errors.New("no verdict store configured")
+		if a.cfg.Store != nil {
+			err = a.cfg.Store.Add(v)
+		}
+		if err != nil {
+			a.cfg.Logf("omac approvals: could not store the always-verdict for %s %s: %v; allowing for this session", req.Skill, req.Match, err)
 			a.mu.Lock()
 			a.session[id] = true
 			a.mu.Unlock()
-			return facade.ApprovalDecision{Allow: true, Scope: "session", Source: "prompt"}
+			return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeSession, Source: facade.SourcePrompt}
 		}
-		return facade.ApprovalDecision{Allow: true, Scope: "always", Source: "prompt"}
+		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeAlways, Source: facade.SourcePrompt}
 	case LabelDenyAll:
 		a.mu.Lock()
 		a.denyAll[skillKey] = true
 		a.mu.Unlock()
-		return facade.ApprovalDecision{Scope: "session", Source: "deny-all"}
+		return facade.ApprovalDecision{Scope: facade.ScopeSession, Source: facade.SourceDenyAll}
 	default: // Deny, Cancel, anything unexpected
-		return facade.ApprovalDecision{Scope: "once", Source: "prompt"}
+		return facade.ApprovalDecision{Scope: facade.ScopeOnce, Source: facade.SourcePrompt}
 	}
 }
 
-// ruleKind is what an answer is stored under besides the rule text: a
-// declared entry ("required"), or an exact unlisted route ("unlisted"). An
-// answer for one is never read as an answer for the other.
+// The kinds of rule an answer is stored under, besides the rule text. An
+// answer for one kind is never read as an answer for another.
+const (
+	KindRequired = "required" // a declared entry
+	KindUnlisted = "unlisted" // an exact route the skill does not declare
+	KindCatchAll = "catchall" // an exact route under a declared ANY or ** entry
+)
+
 func ruleKind(r facade.ApprovalRequest) string {
-	if r.Unlisted {
-		return "unlisted"
+	switch {
+	case r.Unlisted:
+		return KindUnlisted
+	case r.CatchAll:
+		return KindCatchAll
 	}
-	return "required"
+	return KindRequired
 }
 
 // DialogText is built only from what omac observed and declared; the
@@ -242,6 +266,9 @@ func DialogText(r facade.ApprovalRequest) string {
 	fmt.Fprintf(&b, "    Request:  %s %s\n", clip(printableASCII(r.Method), 16), clip(printableASCII(r.Path), 160))
 	if q := MaskQuery(printableASCII(r.RawQuery)); q != "" {
 		fmt.Fprintf(&b, "    Query:    %s\n", q)
+	}
+	if r.Upgrade != "" {
+		fmt.Fprintf(&b, "    Upgrade:  %s; the connection stays open and its messages are not checked\n", clip(printableASCII(r.Upgrade), 32))
 	}
 	switch {
 	case r.Unlisted:

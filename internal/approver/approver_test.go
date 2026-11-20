@@ -2,6 +2,10 @@ package approver
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,9 +59,12 @@ func req(path string) facade.ApprovalRequest {
 		Match: "POST " + path, Description: "Posts a message"}
 }
 
+// oneProject binds every request to one project.
+func oneProject(string) Scope { return Scope{Key: "wd-test", Dir: "/p/test"} }
+
 func newApprover(t *testing.T, c *fakeChooser) *Approver {
 	t.Helper()
-	return New(Config{Chooser: c, Store: NewStore(t.TempDir()), Timeout: 2 * time.Second})
+	return New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: 2 * time.Second})
 }
 
 func TestOnceIsNotRemembered(t *testing.T) {
@@ -91,12 +98,12 @@ func TestSessionIsRememberedPerEndpoint(t *testing.T) {
 func TestAlwaysPersistsAcrossRestartAndRevokes(t *testing.T) {
 	dir := t.TempDir()
 	c := &fakeChooser{answers: []string{LabelAlways}}
-	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second})
 	if d := a.Approve(context.Background(), req("/send")); !d.Allow || d.Scope != "always" {
 		t.Fatalf("decision = %+v", d)
 	}
 	c2 := &fakeChooser{answers: []string{LabelDeny}}
-	a2 := New(Config{Chooser: c2, Store: NewStore(dir), Timeout: time.Second})
+	a2 := New(Config{ScopeFor: oneProject, Chooser: c2, Store: NewStore(dir), Timeout: time.Second})
 	d := a2.Approve(context.Background(), req("/send"))
 	if !d.Allow || d.Source != "always" || c2.asked() != 0 {
 		t.Errorf("after restart: %+v asked=%d", d, c2.asked())
@@ -117,7 +124,7 @@ func TestAlwaysForAnUnlistedRouteDoesNotCoverADeclaredEntry(t *testing.T) {
 	dir := t.TempDir()
 	unlisted := req("/send")
 	unlisted.Unlisted, unlisted.Description = true, ""
-	a := New(Config{Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
+	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
 	if d := a.Approve(context.Background(), unlisted); !d.Allow || d.Scope != "always" {
 		t.Fatalf("decision = %+v", d)
 	}
@@ -127,7 +134,7 @@ func TestAlwaysForAnUnlistedRouteDoesNotCoverADeclaredEntry(t *testing.T) {
 	}
 	// The same text as a declared entry asks again.
 	c := &fakeChooser{answers: []string{LabelDeny}}
-	b := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	b := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second})
 	if d := b.Approve(context.Background(), req("/send")); d.Allow || c.asked() != 1 {
 		t.Errorf("declared entry inherited the unlisted answer: %+v asked=%d", d, c.asked())
 	}
@@ -140,10 +147,10 @@ func TestAlwaysForAnUnlistedRouteDoesNotCoverADeclaredEntry(t *testing.T) {
 func TestAlwaysIsBoundToScope(t *testing.T) {
 	dir := t.TempDir()
 	c := &fakeChooser{answers: []string{LabelAlways}}
-	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) string { return "wd-1" }})
+	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) Scope { return Scope{Key: "wd-1"} }})
 	a.Approve(context.Background(), req("/send"))
 	c2 := &fakeChooser{answers: []string{LabelDeny}}
-	b := New(Config{Chooser: c2, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) string { return "wd-2" }})
+	b := New(Config{Chooser: c2, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) Scope { return Scope{Key: "wd-2"} }})
 	if d := b.Approve(context.Background(), req("/send")); d.Allow || c2.asked() != 1 {
 		t.Errorf("another workdir inherited the verdict: %+v", d)
 	}
@@ -208,17 +215,17 @@ func TestIdenticalPendingRequestsShareOneDenial(t *testing.T) {
 
 func TestTimeoutAndAbandonedAndUnavailable(t *testing.T) {
 	c := &fakeChooser{answers: []string{LabelOnce}, block: make(chan struct{})}
-	a := New(Config{Chooser: c, Store: NewStore(t.TempDir()), Timeout: 100 * time.Millisecond})
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: 100 * time.Millisecond})
 	if d := a.Approve(context.Background(), req("/a")); d.Allow || d.Source != "timeout" {
 		t.Errorf("timeout: %+v", d)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
-	a2 := New(Config{Chooser: c, Store: NewStore(t.TempDir()), Timeout: 5 * time.Second})
+	a2 := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: 5 * time.Second})
 	if d := a2.Approve(ctx, req("/b")); d.Allow || d.Source != "abandoned" {
 		t.Errorf("abandoned: %+v", d)
 	}
-	a3 := New(Config{Store: NewStore(t.TempDir())})
+	a3 := New(Config{ScopeFor: oneProject, Store: NewStore(t.TempDir())})
 	if d := a3.Approve(context.Background(), req("/c")); d.Allow || d.Source != "unavailable" {
 		t.Errorf("no chooser: %+v", d)
 	}
@@ -262,7 +269,7 @@ func TestVerdictIDChangesWithTheDeclaration(t *testing.T) {
 // instead of each showing the dialog again for the full timeout.
 func TestWaitingCopiesShareATimeout(t *testing.T) {
 	c := &fakeChooser{answers: []string{LabelOnce}, block: make(chan struct{})}
-	a := New(Config{Chooser: c, Store: NewStore(t.TempDir()), Timeout: 150 * time.Millisecond})
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: 150 * time.Millisecond})
 	var wg sync.WaitGroup
 	results := make([]facade.ApprovalDecision, 4)
 	for i := range results {
@@ -286,7 +293,7 @@ func TestWaitingCopiesShareATimeout(t *testing.T) {
 func TestUnknownScopeIsDeniedAndNothingIsStored(t *testing.T) {
 	dir := t.TempDir()
 	c := &fakeChooser{answers: []string{LabelAlways}}
-	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) string { return "" }})
+	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second, ScopeFor: func(string) Scope { return Scope{} }})
 	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != "unavailable" {
 		t.Errorf("decision = %+v", d)
 	}
@@ -345,5 +352,114 @@ func TestDialogTextEscapesAgentTextBeforeClipping(t *testing.T) {
 		RawQuery: "q=" + strings.Repeat("ä", 100)})
 	if !strings.Contains(text, "q=%C3%A4") || !strings.Contains(text, "…") {
 		t.Errorf("query not escaped, or clip marker lost:\n%s", text)
+	}
+}
+
+// Without a way to tell projects apart, nothing is asked and nothing is
+// stored, so no answer can end up shared by every project.
+func TestNoScopeMapperDeniesAndStoresNothing(t *testing.T) {
+	dir := t.TempDir()
+	c := &fakeChooser{answers: []string{LabelAlways}}
+	a := New(Config{Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != facade.SourceUnavailable {
+		t.Errorf("decision = %+v", d)
+	}
+	if vs, _ := NewStore(dir).List(); c.asked() != 0 || len(vs) != 0 {
+		t.Errorf("asked=%d stored=%+v", c.asked(), vs)
+	}
+}
+
+func TestAlwaysRecordsTheProjectDirectory(t *testing.T) {
+	dir := t.TempDir()
+	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
+	a.Approve(context.Background(), req("/send"))
+	vs, err := NewStore(dir).List()
+	if err != nil || len(vs) != 1 || vs[0].Scope != "wd-test" || vs[0].Dir != "/p/test" {
+		t.Errorf("stored %+v %v", vs, err)
+	}
+}
+
+// "Allow once" covers the one request the user saw; an identical request
+// that waited on the same dialog asks again.
+func TestOnceDoesNotCoverWaitingCopies(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelOnce}, delay: 50 * time.Millisecond}
+	a := newApprover(t, c)
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if d := a.Approve(context.Background(), req("/send")); !d.Allow || d.Scope != facade.ScopeOnce {
+				t.Errorf("decision = %+v", d)
+			}
+		}()
+	}
+	wg.Wait()
+	if c.asked() != 3 {
+		t.Errorf("asked %d times, want once per request", c.asked())
+	}
+}
+
+// An answer for an exact route under a catch-all entry is stored as its own
+// kind, so `omac approvals list` can say it covers one route.
+func TestCatchAllAnswerIsItsOwnKind(t *testing.T) {
+	dir := t.TempDir()
+	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
+	r := req("/admin/users")
+	r.Method, r.Match, r.CatchAll = "DELETE", "DELETE /admin/users", true
+	a.Approve(context.Background(), r)
+	if vs, _ := NewStore(dir).List(); len(vs) != 1 || vs[0].Approval != KindCatchAll {
+		t.Errorf("stored %+v", vs)
+	}
+}
+
+type erringChooser struct{ fakeChooser }
+
+func (*erringChooser) Choose(context.Context, string, string, []string, string) (string, error) {
+	return "", errors.New("zenity: exit status 1: Failed to open display")
+}
+
+// A dialog that fails is not the user's answer: the request gets 503
+// unavailable, and a label nobody offered denies.
+func TestDialogFailureAndUnknownLabel(t *testing.T) {
+	var logged []string
+	a := New(Config{ScopeFor: oneProject, Chooser: &erringChooser{}, Store: NewStore(t.TempDir()), Timeout: time.Second,
+		Logf: func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) }})
+	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != facade.SourceUnavailable {
+		t.Errorf("failed dialog: %+v", d)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "Failed to open display") {
+		t.Errorf("logged %q", logged)
+	}
+	b := newApprover(t, &fakeChooser{answers: []string{"0"}})
+	if d := b.Approve(context.Background(), req("/send")); d.Allow || d.Source != facade.SourcePrompt {
+		t.Errorf("unknown label: %+v", d)
+	}
+}
+
+func TestStoreFailureIsLoggedWithItsCause(t *testing.T) {
+	var logged []string
+	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(filepath.Join(t.TempDir(), "file", "x")), Timeout: time.Second,
+		Logf: func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) }})
+	if err := os.WriteFile(filepath.Join(filepath.Dir(a.cfg.Store.dir)), []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.Approve(context.Background(), req("/send")); !d.Allow || d.Scope != facade.ScopeSession {
+		t.Errorf("decision = %+v", d)
+	}
+	if last := logged[len(logged)-1]; !strings.Contains(last, "could not store") || !strings.Contains(last, "not a directory") {
+		t.Errorf("logged %q", logged)
+	}
+}
+
+func TestDialogTextNamesAnUpgrade(t *testing.T) {
+	r := req("/live")
+	r.Method, r.Upgrade = "GET", "websocket\nDeclared: fine"
+	txt := DialogText(r)
+	if !strings.Contains(txt, "Upgrade:  websocket%0ADeclared:%20fine; the connection stays open") {
+		t.Errorf("upgrade line:\n%s", txt)
+	}
+	if strings.Contains(DialogText(req("/send")), "Upgrade:") {
+		t.Error("plain request shown as an upgrade")
 	}
 }
