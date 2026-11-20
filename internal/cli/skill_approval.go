@@ -129,15 +129,15 @@ func snapshotMeta(name, snapDir string) (*config.Meta, error) {
 // routeApprovals is the declared endpoint set the facade enforces for a skill,
 // taken from the approved snapshot's manifest. A skill without an approvals
 // block yields nil (ungated). The block was validated when the manifest was
-// loaded; if it cannot be compiled anyway the result admits nothing, never
-// everything.
+// loaded; if it cannot be compiled anyway every request asks, nothing is
+// let through unasked.
 func routeApprovals(m *config.Meta) *approval.Set {
 	if m == nil || m.Sidecar == nil || m.Sidecar.Approvals == nil {
 		return nil
 	}
 	set, err := m.Sidecar.Approvals.Compile()
 	if err != nil {
-		return approval.DenyAll()
+		return approval.AskAll()
 	}
 	return set
 }

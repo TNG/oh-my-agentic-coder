@@ -18,9 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
+	"github.com/TNG/oh-my-agentic-coder/internal/approver"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
@@ -357,6 +359,9 @@ func runServe(args []string, env *Env) int {
 	sup := supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, skillSpawnAuthorizer)
 	defer sup.ShutdownAll(5 * time.Second)
 
+	// srvRef is set once the server exists; verdict scopes are only asked
+	// for after routes are installed.
+	var srvRef atomic.Pointer[serveServer]
 	f := facade.New(
 		socketPath,
 		"127.0.0.1:0",
@@ -367,6 +372,12 @@ func runServe(args []string, env *Env) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
+	f.Approver = newSidecarApprover(env.Stderr, "omac serve", func(namespace string) approver.Scope {
+		if srv := srvRef.Load(); srv != nil {
+			return srv.approvalScope(namespace)
+		}
+		return approver.Scope{}
+	})
 	wireFacadeSandbox(f, noSandbox, learn, plan, func(format string, args ...any) {
 		fmt.Fprintf(env.Stderr, format+"\n", args...)
 	})
@@ -403,6 +414,7 @@ func runServe(args []string, env *Env) int {
 		byToken:           map[string]*dirState{},
 		global:            map[string]*skillRoute{},
 	}
+	srvRef.Store(srv)
 	if cacheScope != nil {
 		srv.cacheEnv = map[string]string{
 			"OMAC_CACHE_DIR":  cacheScope.Dir,
@@ -1128,7 +1140,8 @@ type skillRoute struct {
 type dirState struct {
 	Dir          string
 	Token        string
-	State        string // activating|active|active_partial
+	scope        approver.Scope // what approval answers for this directory are bound to
+	State        string         // activating|active|active_partial
 	Skills       map[string]*skillRoute
 	tokenEmitted bool // true after dir_token was included in the first manifest response
 	// warnedSkipped holds the Dir of every skill folder already reported
@@ -1177,6 +1190,29 @@ type serveServer struct {
 	// directory activates.
 	flatAliasMu sync.Mutex
 	flatAliases map[string]struct{}
+}
+
+// approvalScope is the scope a stored approval answer for a request in
+// namespace belongs to. A skill in the global namespace is one route shared
+// by every project, so its answers are shared too. A project's namespace
+// maps to that project's directory, and so does the flat alias while
+// exactly one directory is active. Anything else has no key: the approver
+// then denies instead of storing an answer every project could read.
+func (s *serveServer) approvalScope(namespace string) approver.Scope {
+	if namespace == facade.GlobalNamespace {
+		return globalScope
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if d := s.byToken[namespace]; d != nil {
+		return d.scope
+	}
+	if namespace == "" && len(s.dirs) == 1 {
+		for _, d := range s.dirs {
+			return d.scope
+		}
+	}
+	return approver.Scope{}
 }
 
 // aud returns the server's auditor, or a no-op when unset (tests construct
@@ -1439,7 +1475,7 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	}
 
 	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, State: "activating", Skills: map[string]*skillRoute{}}
+	d := &dirState{Dir: absDir, Token: token, scope: projectScope(absDir), State: "activating", Skills: map[string]*skillRoute{}}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
