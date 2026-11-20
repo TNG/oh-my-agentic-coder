@@ -5,6 +5,8 @@ description: The WHY behind omac's architecture
 
 ## Key decisions
 
+Larger decisions with the options that were considered are recorded as ADRs (architecture decision records) in [`docs/adr/`](../adr/0001-optional-route-consent.md).
+
 ### OS sandbox primitives, not a custom layer
 
 omac delegates all filesystem, network, and process isolation to a sandbox backend — an OS-level program that builds the sandbox. The default `builtin` backend re-executes omac itself to drive Seatbelt on macOS and bubblewrap + Landlock on Linux. A custom sandbox would duplicate what the OS already does and force omac to track kernel-level security guarantees itself. Instead, omac only configures what the backend exposes: which socket path to allow and which loopback TCP port to open. The command that launches the backend is a config-driven argv template (`sandbox.profiles.<name>.command`), so you can swap in a different backend without changing omac; the external `nono` backend is still selectable but deprecated.
