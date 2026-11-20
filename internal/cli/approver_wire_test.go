@@ -22,3 +22,12 @@ func TestSidecarApproverWarnsAboutTheStub(t *testing.T) {
 		t.Errorf("warned without the stub: %q", buf.String())
 	}
 }
+
+func TestSidecarApproverStubOffValuesDoNotWarn(t *testing.T) {
+	t.Setenv("OMAC_APPROVAL_STUB", "0")
+	var buf bytes.Buffer
+	newSidecarApprover(&buf, "omac start", nil)
+	if strings.Contains(buf.String(), "OMAC_APPROVAL_STUB") {
+		t.Errorf("warned for a stub that is off: %q", buf.String())
+	}
+}

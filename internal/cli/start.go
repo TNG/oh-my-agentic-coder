@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
+	"github.com/TNG/oh-my-agentic-coder/internal/approver"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
@@ -733,7 +734,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env.Version,
 	)
 	f.SetAuditor(auditor)
-	f.Approver = newSidecarApprover(env.Stderr, prefix, func(string) string { return workdirScope(env.Workdir) })
+	approvalScope := projectScope(env.Workdir)
+	f.Approver = newSidecarApprover(env.Stderr, prefix, func(string) approver.Scope { return approvalScope })
 	// `omac start` has no --learn (serve-only), so the protected set is
 	// always the profile's.
 	wireFacadeSandbox(f, noSandbox, false, plan, func(format string, args ...any) {
