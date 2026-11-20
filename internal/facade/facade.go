@@ -90,7 +90,9 @@ type Route struct {
 	// Approvals is the skill's approvals block (from the approved snapshot's
 	// omac.yaml). Nil means the skill has no block and every request is
 	// forwarded. Otherwise a request asks the user unless its entry says
-	// `approval: none` (see gate.go).
+	// `approval: none` (see gate.go). A GET of the mount root that omac
+	// answers with the snapshot's SKILL.md never reaches the sidecar, so it
+	// does not ask.
 	Approvals *approval.Set
 
 	// State selects forward vs. stub behavior. The zero value ("") is

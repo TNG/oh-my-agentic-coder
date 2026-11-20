@@ -1,5 +1,7 @@
 package audit
 
+import "unicode/utf8"
+
 // Constructors for the typed events. Emit points call these to build an
 // Event with the right Type and fields set, keeping call sites terse and
 // making the sensitive-field contract explicit (secret NAMES, never
@@ -73,11 +75,22 @@ func NetDecision(host string, port int, allow bool, scope, source string, persis
 // cannot exceed the ~4 KiB threshold that forces two write(2) calls.
 const maxPathBytes = 512
 
+// capPath bounds an agent-controlled path to maxPathBytes, cut at a rune
+// boundary.
+func capPath(path string) string {
+	if len(path) <= maxPathBytes {
+		return path
+	}
+	cut := maxPathBytes
+	for cut > 0 && !utf8.RuneStart(path[cut]) {
+		cut--
+	}
+	return path[:cut] + "…"
+}
+
 // FacadeRequest builds a facade.request event.
 func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, durationMS int64) Event {
-	if len(path) > maxPathBytes {
-		path = path[:maxPathBytes] + "…"
-	}
+	path = capPath(path)
 	return Event{
 		Type:           TypeFacadeRequest,
 		Method:         method,
@@ -90,19 +103,31 @@ func FacadeRequest(method, mount, namespace, path string, status int, bytesOut, 
 	}
 }
 
-// FacadeApproval builds a facade.approval event: the gate's decision for one
-// request to a skill that declares approvals. result is "allow" or "deny";
-// source is why (declared, prompt, session, always,
-// invalid-path, timeout, unavailable, abandoned, deny-all); scope is
-// once|session|always when a user answer was involved. The query string is
-// never recorded.
-func FacadeApproval(skill, method, mount, namespace, path, result, source, scope string) Event {
-	if len(path) > maxPathBytes {
-		path = path[:maxPathBytes] + "…"
-	}
+// FacadeApprovalInfo is the gate's decision for one request to a skill that
+// declares approvals.
+type FacadeApprovalInfo struct {
+	Skill, Method, Mount, Namespace string
+	// Path is the cleaned, decoded path, as in facade.request; for a path
+	// the gate refused to clean, the escaped path as received.
+	Path string
+	// Result is "allow" or "deny".
+	Result string
+	// Source is why: declared, prompt, session, always, invalid-path,
+	// timeout, unavailable, abandoned, deny-all.
+	Source string
+	// Scope is once|session|always when a user answer was involved.
+	Scope           string
+	Unlisted        bool
+	StrippedHeaders []string
+}
+
+// FacadeApproval builds a facade.approval event. The query string is never
+// recorded.
+func FacadeApproval(i FacadeApprovalInfo) Event {
 	return Event{
-		Type: TypeFacadeApproval, Skill: skill, Method: method, Mount: mount,
-		Namespace: namespace, Path: path, Result: result, Source: source, Scope: scope,
+		Type: TypeFacadeApproval, Skill: i.Skill, Method: i.Method, Mount: i.Mount,
+		Namespace: i.Namespace, Path: capPath(i.Path), Result: i.Result, Source: i.Source, Scope: i.Scope,
+		Unlisted: i.Unlisted, StrippedHeaders: i.StrippedHeaders,
 	}
 }
 

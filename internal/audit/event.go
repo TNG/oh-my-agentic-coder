@@ -99,6 +99,8 @@ type Event struct {
 
 	// --- facade.approval --- (Method, Mount, Path, Skill, Namespace above;
 	// Result is allow|deny, Source says why, Scope is once|session|always)
+	Unlisted        bool     `json:"unlisted,omitempty"`         // the approvals block has no entry for the request
+	StrippedHeaders []string `json:"stripped_headers,omitempty"` // method-override headers removed before forwarding
 
 	// --- control.mutation ---
 	Action string `json:"action,omitempty"` // activate|deactivate|reload|reload-global

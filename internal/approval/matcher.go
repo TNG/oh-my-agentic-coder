@@ -7,7 +7,12 @@ type Entry struct {
 	Match       string
 	Approval    Mode
 	Description string
+	catchAll    bool
 }
+
+// IsCatchAll reports whether the entry, as returned by Set.Lookup, is on ANY
+// or a `**` path.
+func (e Entry) IsCatchAll() bool { return e.catchAll }
 
 type compiled struct {
 	pat   Pattern
@@ -44,6 +49,7 @@ func Compile(entries []Entry) (*Set, error) {
 			return nil, fmt.Errorf("approvals.endpoints[%d] (%s) has the same specificity as %s (letter case does not count)", i, e.Match, prev)
 		}
 		seen[p.shapeKey()] = e.Match
+		e.catchAll = p.IsCatchAll()
 		s.items = append(s.items, compiled{pat: p, entry: e})
 	}
 	return s, nil

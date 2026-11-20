@@ -232,7 +232,7 @@ func TestGate_CatchAllIsAnsweredPerRoute(t *testing.T) {
 		t.Fatalf("calls = %+v", ap.calls)
 	}
 	for i, want := range []string{"GET /admin/users", "DELETE /admin/users"} {
-		if c := ap.calls[i]; c.Match != want || c.Unlisted {
+		if c := ap.calls[i]; c.Match != want || c.Unlisted || !c.CatchAll {
 			t.Errorf("call %d = %+v, want Match %q", i, c, want)
 		}
 	}
@@ -365,7 +365,10 @@ func TestGate_ApprovedStreamIsNotBuffered(t *testing.T) {
 	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Source: "prompt", Scope: "once"}, delay: 300 * time.Millisecond}
 	f, _, _ := gatedFacade(t, ap)
 	// "GET /tick" is none; use a required rule for the streaming check.
-	f.routes["echo"].Approvals, _ = approval.Compile([]approval.Entry{{Match: "GET /tick", Approval: approval.Required}})
+	tickAsks, _ := approval.Compile([]approval.Entry{{Match: "GET /tick", Approval: approval.Required}})
+	route := *f.routes["echo"]
+	route.Approvals = tickAsks
+	f.AddRoute(route)
 	srv := httptest.NewServer(http.HandlerFunc(f.handle))
 	defer srv.Close()
 	start := time.Now()
@@ -417,5 +420,113 @@ func TestGateAcceptsAnEncodedLetterInTheMount(t *testing.T) {
 	}
 	if got := seen(); len(got) != 1 || !strings.HasPrefix(got[0], "GET /status ") {
 		t.Errorf("forwarded=%v", got)
+	}
+}
+
+func auditEvents(rec *recAuditor, typ string) []audit.Event {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var out []audit.Event
+	for _, e := range rec.ev {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// A refused path is the probe an operator wants to find in the trail, so it
+// is recorded as received, not as "/".
+func TestGate_InvalidPathIsAuditedAsReceived(t *testing.T) {
+	for target, want := range map[string]string{
+		"/echo/a%2f..%2fadmin": "/a%2f..%2fadmin",
+		"/echo%2Fstatus":       "/echo%2Fstatus",
+	} {
+		f, rec, _ := gatedFacade(t, &fakeApprover{})
+		if w := do(f, "GET", target); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: code %d", target, w.Code)
+		}
+		ap, req := auditEvents(rec, audit.TypeFacadeApproval), auditEvents(rec, audit.TypeFacadeRequest)
+		if len(ap) != 1 || ap[0].Path != want || ap[0].Source != string(SourceInvalidPath) {
+			t.Errorf("%s: approval events %+v, want path %q", target, ap, want)
+		}
+		if len(req) != 1 || req[0].Path != want {
+			t.Errorf("%s: request events %+v, want path %q", target, req, want)
+		}
+	}
+}
+
+// Both events of one request name the same path, whether it was allowed or
+// denied.
+func TestGate_ApprovalAndRequestEventsAgreeOnPath(t *testing.T) {
+	for _, d := range []ApprovalDecision{{Allow: true, Source: SourcePrompt, Scope: ScopeOnce}, {Source: SourcePrompt}} {
+		f, rec, _ := gatedFacade(t, &fakeApprover{d: d})
+		do(f, "GET", "/echo/live/a%20b")
+		do(f, "GET", "/echo/new%20route")
+		ap, req := auditEvents(rec, audit.TypeFacadeApproval), auditEvents(rec, audit.TypeFacadeRequest)
+		if len(ap) != 2 || len(req) != 2 {
+			t.Fatalf("events: %+v %+v", ap, req)
+		}
+		for i, want := range []string{"/live/a b", "/new route"} {
+			if ap[i].Path != want || req[i].Path != want {
+				t.Errorf("allow=%v: approval path %q, request path %q, want %q", d.Allow, ap[i].Path, req[i].Path, want)
+			}
+		}
+	}
+}
+
+func TestGate_AuditsStrippedOverrideAndUnlisted(t *testing.T) {
+	f, rec, _ := gatedFacade(t, &fakeApprover{})
+	req := httptest.NewRequest("GET", "/echo/status", nil)
+	req.Header.Set("X-HTTP-Method-Override", "DELETE")
+	req.Header["X_http_method_override"] = []string{"DELETE"}
+	f.handle(httptest.NewRecorder(), req)
+	do(f, "GET", "/echo/new-route")
+	ap := auditEvents(rec, audit.TypeFacadeApproval)
+	if len(ap) != 2 {
+		t.Fatalf("events: %+v", ap)
+	}
+	if got := ap[0].StrippedHeaders; len(got) != 1 || got[0] != "X-HTTP-Method-Override" || ap[0].Unlisted {
+		t.Errorf("declared route with override: %+v", ap[0])
+	}
+	if !ap[1].Unlisted || len(ap[1].StrippedHeaders) != 0 {
+		t.Errorf("unlisted route: %+v", ap[1])
+	}
+}
+
+// A WebSocket upgrade goes through the gate like any request: the approver
+// is told it is one, and the hijacked connection forwards the path escaped
+// once, as the plain proxy does.
+func TestGate_UpgradeIsNamedAndForwardedOnce(t *testing.T) {
+	s := startSidecar(t, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+	set, err := approval.Compile([]approval.Entry{{Match: "GET /live/{id}", Approval: approval.Required}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Source: SourcePrompt, Scope: ScopeOnce}}
+	f := New("", "127.0.0.1:0", []Route{{Mount: "skill", UpstreamPort: s.port, State: RouteReady, Approvals: set}}, 1<<20, time.Minute, "", "test")
+	f.Approver = ap
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	c := dialFacade(t, f.TCPPort(), "GET /skill/live/a%20b HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+	buf := make([]byte, 512)
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _ := c.Read(buf)
+	if !strings.Contains(string(buf[:n]), "101") {
+		t.Fatalf("client got %q", buf[:n])
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(s.saw(), "\r\n") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if line, _, _ := strings.Cut(s.saw(), "\r\n"); line != "GET /live/a%20b HTTP/1.1" {
+		t.Errorf("sidecar request line %q", line)
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	if len(ap.calls) != 1 || ap.calls[0].Upgrade != "websocket" {
+		t.Errorf("approver calls %+v, want one naming the websocket upgrade", ap.calls)
 	}
 }

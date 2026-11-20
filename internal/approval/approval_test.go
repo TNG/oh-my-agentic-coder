@@ -318,3 +318,27 @@ func TestParsePatternTrailingSlash(t *testing.T) {
 		t.Errorf("err = %v, want a trailing-slash message that does not suggest **", err)
 	}
 }
+
+// Two spellings of one override header are both removed and reported once.
+func TestStripOverrideHeadersReportsEachNameOnce(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-HTTP-Method-Override", "DELETE")
+	h["X_HTTP_METHOD_OVERRIDE"] = []string{"DELETE"}
+	got := StripOverrideHeaders(h)
+	if len(h) != 0 || !reflect.DeepEqual(got, []string{"X-HTTP-Method-Override"}) {
+		t.Errorf("removed %v, left %v", got, h)
+	}
+}
+
+func TestCatchAllEntryIsMarked(t *testing.T) {
+	s := mustSet(t,
+		Entry{Match: "GET /a", Approval: Required},
+		Entry{Match: "ANY /b", Approval: Required},
+		Entry{Match: "GET /c/**", Approval: Required},
+	)
+	for raw, want := range map[string]bool{"/a": false, "/b": true, "/c/x": true, "/d": false} {
+		if e, _ := lookup(t, s, "GET", raw); e.IsCatchAll() != want {
+			t.Errorf("%s: IsCatchAll = %v", raw, e.IsCatchAll())
+		}
+	}
+}
