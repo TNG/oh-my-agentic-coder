@@ -194,7 +194,7 @@ Before forwarding the request, omac strips your skill's mount prefix (`/my-skill
 
 ## Approvals: which routes run without asking
 
-With an `approvals` block in `omac.yaml`, omac asks the user before it forwards a request to your sidecar, except for the routes you list with `approval: none`. omac does this in the facade, outside your code. The block is part of the [registered snapshot](#registering-the-skill-snapshot): editing it in the workdir changes nothing until the skill is registered again.
+With an `approvals` block in `omac.yaml`, omac asks the user before it forwards a request to your sidecar, except for the routes you list with `approval: none`. omac does this in the facade (the proxy that sits between the sandbox and your sidecar), outside your code. The block is part of the [registered snapshot](#registering-the-skill-snapshot): editing it in the workdir changes nothing until the skill is registered again.
 
 ```yaml
 sidecar:
@@ -213,22 +213,24 @@ sidecar:
 - **Unlisted routes ask.** With the block present, a request that matches no entry asks the user, the same as `approval: required`. omac does not read your code: a route you add and forget to declare asks, it is not open.
 - **Without the block, nothing asks.** `omac register` says so. An empty block (`endpoints: []`, or `approvals:` with no value) is different: every route asks.
 - **`approval: none`** forwards the request. **`approval: required`** holds it and shows the user a dialog. `none` is not allowed on `ANY` or on a `**` path, so a catch-all always asks.
+- **Your `SKILL.md` does not ask.** A `GET` of the mount root that omac answers with the registered `SKILL.md` never reaches your sidecar.
 - **Split by what a route can do.** A route that can do everything (a generic passthrough such as a raw API or a command runner) is always `required`: omac cannot see inside the body, so the user decides per call. Offer subsets as separate routes instead, for example a read-only route and a write route, and enforce the subset in the sidecar (refuse what does not belong on the route). A subset route that can only read is `none`; one that can send, change or delete is `required`.
 
 **Writing `match`**
 
 - `match` is `<METHOD> <path>`. The method is upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or `ANY`. The path is relative to the mount.
-- A path segment is a literal (letters, digits, `.`, `_`, `~`, `-`), `{name}` for exactly one non-empty segment, or `**` for the rest of the path, including nothing, and only as the last segment. No regular expressions, and the query string is not matched.
-- An entry covers exactly what it says. `GET /status` does not cover `HEAD /status` or `GET /status/` (trailing slash). List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both. A trailing slash cannot be declared, so a request with one always asks; have your clients call the path without it.
-- Literal segments match case-sensitively, but many sidecars ignore case (Express does by default). So that `/files/SECRET` cannot slip through `GET /files/{name}: none` to a handler declared `GET /files/secret: required`, a request asks when a `required` entry matches it ignoring case.
+- A path segment is a literal (ASCII letters and digits, `.`, `_`, `~`, `-`; a segment such as `café` can only be matched by `{name}` or `**`), `{name}` for exactly one non-empty segment, or `**` for the rest of the path, including nothing, and only as the last segment. No regular expressions, and the query string is not matched.
+- An entry covers exactly what it says. `GET /status` does not cover `HEAD /status` or `GET /status/` (trailing slash). List each spelling your sidecar accepts: if it serves a tool at both `/tools/x` and `/x`, declare both. A `match` cannot end in `/`, so a request with a trailing slash always asks; have your clients call the path without it.
+- Literal segments match case-sensitively, but many sidecars ignore case (Express does by default). So that `/files/SECRET` cannot slip through `GET /files/{name}: none` to a handler declared `GET /files/secret: required`, a request asks when the most specific entry that matches it ignoring case is `required`. Two entries that differ only in letter case (`GET /files/Public` and `GET /files/public`) are an error.
 - **Most specific wins**: compared segment by segment, a literal beats `{name}`, and an exact path beats a `**` that would match nothing (`GET /a` beats `GET /a/**` for a request to `/a`). If the paths tie, a concrete method beats `ANY`. Two entries of the same shape are an error.
-- Unknown keys in the block, a misspelled block name such as `aprovals:`, or any other `approval` value stop the registration, so a typo cannot silently turn the dialog off.
+- Unknown keys in the block, a misspelled block name such as `aprovals:` (also at the top level or pulled in with `<<`), or any other `approval` value stop the registration, so a typo cannot silently turn the dialog off. `omac start` and `omac serve` refuse such a skill too, where other unknown keys are only ignored. To keep an anchor next to the block, give its key an `x-` prefix (`x-approvals: &safe {...}`).
 
 **What the user sees and answers**
 
-- The dialog shows what omac itself saw (method, cleaned path, query) and your `description`, one sentence. Credential-like query values are masked, and characters outside printable ASCII in the method, path and query are shown percent-encoded (`ä` as `%C3%A4`), so the agent cannot add a line that looks like omac's. Line breaks in `description` show as spaces. The request body is not shown.
+- The dialog shows what omac itself saw (method, cleaned path, query, and whether the request opens a WebSocket) and your `description`, one sentence. Credential-like query values are masked, and characters outside printable ASCII in the method, path and query are shown percent-encoded (`ä` as `%C3%A4`), so the agent cannot add a line that looks like omac's. Line breaks in `description` show as spaces. The request body is not shown.
 - The user can answer once, for the session, or always. "For the session" and "always" cover everything the matched entry covers, and the dialog names the entry when it is wider than the request. For an unlisted route, and for an entry on `ANY` or a `**` path, they cover only that exact method and path: allowing `GET /messages/123` does not allow `GET /messages/124`. Declare `GET /messages/{id}` if one answer should cover them all.
-- Stored answers belong to one project directory and to the entry's `match` text. Rewording an entry, or registering the skill in another project, asks again. In `omac serve`, a skill registered user-global is one route shared by all projects, so its answers are shared by all projects too. The user lists and removes them with `omac approvals list` and `omac approvals revoke <id>`.
+- Only "always" is stored, on the host. It belongs to one project directory and to the entry's `match` text: rewording an entry, or using the skill in another project, asks again. In `omac serve`, a skill registered user-global is one route shared by all projects, so its "always" answers cover all projects too; the dialog does not name the project. The user lists and removes "always" answers with `omac approvals list` and `omac approvals revoke <id>`.
+- "For the session" and "deny everything from this skill" are kept in memory until `omac start` or `omac serve` stops; for `omac serve` that can be days. A plain "Deny" applies to that one request, so the next call asks again.
 - Other choices in the dialog, its wording and its timeout are omac's choice and can change; do not rely on them.
 
 **What the agent gets back**
