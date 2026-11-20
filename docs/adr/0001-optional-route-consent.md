@@ -47,10 +47,12 @@ The `POST /send` entry does not change whether that route asks. It gives the dia
 
 - Unknown keys in the block are rejected, and so is a misspelled block name such as `aprovals:`. A typo must not silently change what asks, and a misspelled block would otherwise read as no block at all.
 - `approval: none` is not allowed on `ANY` or on a `**` path. Otherwise one entry such as `ANY /**: none` switches every dialog off, which is the same as having no block.
-- Two entries of the same shape (same method, same layout of literal, `{name}` and `**` segments) are an error. Otherwise the order of the entries would decide which one applies.
+- Two entries of the same shape (same method, same layout of literal, `{name}` and `**` segments, literals compared ignoring letter case) are an error. Otherwise the order of the entries would decide which one applies, also for a sidecar that ignores case.
 - An empty `endpoints: []`, or an `approvals:` key with no value, is valid and means every route asks.
 
 **Answers.** The user can at least answer once, for the session, or always. What else the dialog offers, its wording and its timeout are omac's choice. They are not part of the contract and can change in any release.
+
+Only "always" is stored. A deny applies to that one request, so omac remembers a yes but not a no. The stored state stays an allow-list with no stale denies to manage; the price is that a route the user never wants asks again on every call.
 
 ## Consequences
 
