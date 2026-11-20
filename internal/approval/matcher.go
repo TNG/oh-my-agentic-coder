@@ -22,7 +22,9 @@ type Set struct {
 // Compile validates the entries and returns a Set. It fails on an unparsable
 // match, a value other than required/none, `approval: none` on a catch-all
 // (ANY or a `**` path), and two entries of the same shape (same method and
-// same literal/{name}/** layout), which would otherwise be ambiguous.
+// same literal/{name}/** layout, literals compared ignoring case), which
+// would otherwise be ambiguous: a sidecar that ignores case cannot tell
+// "GET /files/Public" from "GET /files/public" either.
 // No entries is valid: nothing matches, so every request asks.
 func Compile(entries []Entry) (*Set, error) {
 	seen := map[string]string{}
@@ -39,7 +41,7 @@ func Compile(entries []Entry) (*Set, error) {
 			return nil, fmt.Errorf("approvals.endpoints[%d] (%s): approval %q is not allowed on ANY or a ** path; a catch-all must be explicit and %q", i, e.Match, None, Required)
 		}
 		if prev, dup := seen[p.shapeKey()]; dup {
-			return nil, fmt.Errorf("approvals.endpoints[%d] (%s) has the same specificity as %s", i, e.Match, prev)
+			return nil, fmt.Errorf("approvals.endpoints[%d] (%s) has the same specificity as %s (letter case does not count)", i, e.Match, prev)
 		}
 		seen[p.shapeKey()] = e.Match
 		s.items = append(s.items, compiled{pat: p, entry: e})
@@ -49,17 +51,18 @@ func Compile(entries []Entry) (*Set, error) {
 
 // Lookup returns the most specific declared entry that admits the request.
 // method is the upper-case request method; segs comes from CleanPath. ok is
-// false when nothing is declared for the request: the caller treats it as
-// `approval: required`, so an unlisted route asks.
+// false when nothing is declared for the request; the returned entry then
+// says `approval: required`, so an unlisted route asks however the result
+// is read.
 //
 // Many sidecars route without regard to case (Express does by default), so
 // "/files/SECRET" may run the handler of "/files/secret". When the best match
-// says `none` but a `required` entry matches the path ignoring case, the
-// request asks.
+// says `none` but the most specific entry matching the path ignoring case is
+// `required`, the request asks.
 func (s *Set) Lookup(method string, segs []string) (Entry, bool) {
 	best := s.mostSpecific(method, segs, Pattern.matches)
 	if best == nil {
-		return Entry{}, false
+		return Entry{Approval: Required}, false
 	}
 	if best.entry.Approval == None {
 		if strict := s.mostSpecific(method, segs, Pattern.matchesIgnoringCase); strict != nil && strict.entry.Approval == Required {

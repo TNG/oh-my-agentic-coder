@@ -77,6 +77,9 @@ func ParsePattern(s string) (Pattern, error) {
 	if path == "/" {
 		return p, nil
 	}
+	if strings.HasSuffix(path, "/") {
+		return Pattern{}, fmt.Errorf("match %q: a path cannot end in \"/\"; a request with a trailing slash always asks", s)
+	}
 	parts := strings.Split(path[1:], "/")
 	for i, part := range parts {
 		switch {
@@ -141,7 +144,7 @@ func (p Pattern) match(method string, segs []string, sameLiteral func(a, b strin
 }
 
 // shapeKey identifies a pattern's shape for duplicate detection; parameter
-// names do not matter.
+// names and the case of literals do not matter.
 func (p Pattern) shapeKey() string {
 	var b strings.Builder
 	b.WriteString(p.Method)
@@ -149,7 +152,7 @@ func (p Pattern) shapeKey() string {
 		b.WriteByte('/')
 		switch s.kind {
 		case segLiteral:
-			b.WriteString("L:" + s.lit)
+			b.WriteString("L:" + strings.ToLower(s.lit))
 		case segParam:
 			b.WriteString("P")
 		case segRest:

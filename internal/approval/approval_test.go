@@ -253,3 +253,56 @@ func TestCaseVariantOfNoneLiteralStaysNone(t *testing.T) {
 		t.Errorf("/a/B: got %q, want required", e.Approval)
 	}
 }
+
+func TestUnlistedEntrySaysRequired(t *testing.T) {
+	s := mustSet(t, Entry{Match: "GET /a", Approval: None})
+	if e, ok := lookup(t, s, "GET", "/b"); ok || e.Approval != Required {
+		t.Errorf("miss returned %+v (ok=%v), want approval required", e, ok)
+	}
+}
+
+// A required entry that only a case-insensitive match finds still asks, also
+// when a none entry is the most specific case-sensitive match.
+func TestCaseVariantOfRequiredLiteralUnderNoneParamAsks(t *testing.T) {
+	s := mustSet(t,
+		Entry{Match: "GET /files/secret", Approval: None},
+		Entry{Match: "GET /files/{name}", Approval: Required},
+	)
+	if e, _ := lookup(t, s, "GET", "/files/SECRET"); e.Approval != Required {
+		t.Errorf("/files/SECRET: got %q, want required", e.Approval)
+	}
+}
+
+// Entries that differ only in letter case would leave the answer to the
+// declaration order, so they are refused in either order.
+func TestCompileRejectsCaseOnlyDifference(t *testing.T) {
+	a := Entry{Match: "GET /files/Public", Approval: None}
+	b := Entry{Match: "GET /files/public", Approval: Required}
+	for _, es := range [][]Entry{{a, b}, {b, a}} {
+		if _, err := Compile(es); err == nil || !strings.Contains(err.Error(), "letter case") {
+			t.Errorf("%s then %s: err = %v", es[0].Match, es[1].Match, err)
+		}
+	}
+}
+
+func TestCleanPathEncodedTrailingDot(t *testing.T) {
+	for plain, encoded := range map[string]string{
+		"/a/b/.":    "/a/b/%2e",
+		"/a/.":      "/a/%2E",
+		"/x/a/b/..": "/x/a/b/%2e%2e",
+		"/x/a/..":   "/x/a/.%2E",
+	} {
+		s1, f1, err1 := CleanPath(plain)
+		s2, f2, err2 := CleanPath(encoded)
+		if err1 != nil || err2 != nil || f1 != f2 || !reflect.DeepEqual(s1, s2) {
+			t.Errorf("%s -> %q %q (%v); %s -> %q %q (%v)", plain, s1, f1, err1, encoded, s2, f2, err2)
+		}
+	}
+}
+
+func TestParsePatternTrailingSlash(t *testing.T) {
+	_, err := ParsePattern("GET /files/")
+	if err == nil || !strings.Contains(err.Error(), "cannot end in") || strings.Contains(err.Error(), "**") {
+		t.Errorf("err = %v, want a trailing-slash message that does not suggest **", err)
+	}
+}

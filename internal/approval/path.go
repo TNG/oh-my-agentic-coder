@@ -62,8 +62,8 @@ func CleanPath(rawPath string) (segs []string, forward string, err error) {
 		}
 	}
 	// A trailing "." or ".." also ends in a directory: "/a/.." is "/".
-	last := parts[len(parts)-1]
-	if last == "." || last == ".." {
+	// The loop above already refused invalid percent-encoding.
+	if last, _ := url.PathUnescape(parts[len(parts)-1]); last == "." || last == ".." {
 		trailing = true
 	}
 	if trailing && len(out) > 0 {
