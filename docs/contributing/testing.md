@@ -40,6 +40,13 @@ Terminal resize on Linux is covered at two levels, because bwrap detaches the sa
 
 Runtime skipping is a separate mechanism: some facade and serve tests are compiled everywhere but skip themselves at runtime when they cannot open a loopback TCP port or Unix socket (e.g. on locked-down CI runners), and these do show up as skipped in the test output.
 
+### Control regression-test inputs
+
+Exercise the failure condition explicitly instead of relying on incidental checkout or host settings:
+
+- Supply relevant input variants, such as CRLF line endings, on every platform.
+- Isolate external tools from user configuration. For optional local prerequisites, skip explicitly with `t.Skip`; ensure CI installs tools needed for required coverage.
+
 Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`, `TestIntegrationOverrideDenyGrantsAccess` in `internal/sandboxrun/`) grant a staged temporary home directory, then check that sensitive folders (`~/.ssh`, `~/.aws`, `~/.azure`, …) are still hidden inside the sandbox. Staging the home keeps the broad grant a small scan root and avoids depending on which home paths happen to exist on the machine.
 
 ---
