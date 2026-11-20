@@ -156,6 +156,17 @@ omac secrets import <skill> --from <file>      # set multiple secrets from a KEY
 
 `omac secrets import` is the recommended way to pre-seed secrets in CI before running `omac register --no-secrets`.
 
+### omac approvals
+
+A skill can ask you before the agent calls one of its routes (see [approvals](../skills/authoring.md#approvals-which-routes-run-without-asking)). When you answer "Allow always" in that dialog, omac stores the answer on the host. Run these from a host terminal, outside the sandbox:
+
+```bash
+omac approvals list         # each stored answer: id, skill, route, project, date
+omac approvals revoke <id>  # the next request to that route asks again
+```
+
+Only "Allow always" answers are stored. Answers "for this session" end when `omac start` or `omac serve` stops.
+
 ### omac config
 
 Show or retrieve resolved config values for a skill.

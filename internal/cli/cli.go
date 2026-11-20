@@ -149,6 +149,7 @@ func commands() map[string]Command {
 		"diagnose":   {Name: "diagnose", Short: "Explain why a run failed: blocked connections + config clashes.", Run: runDiagnose},
 		"update":     {Name: "update", Short: "Check GitHub for a newer release and install it.", Run: runUpdate},
 		"manifest":   {Name: "manifest", Short: "Render the skills manifest from activate-response JSON.", Run: runManifest},
+		"approvals":  {Name: "approvals", Short: "List and revoke stored sidecar endpoint approvals.", Run: runApprovals},
 		"cache":      {Name: "cache", Short: "Manage the tool cache (clear [--all]).", Run: runCache},
 		"version":    {Name: "version", Short: "Print version.", Run: runVersion},
 	}
@@ -185,6 +186,7 @@ Subcommands:
   diagnose     Explain why a run failed: blocked connections + config clashes.
   update       Check GitHub for a newer release and install it.
   manifest     Render the skills manifest from activate-response JSON.
+  approvals    List and revoke stored sidecar endpoint approvals (list|revoke <id>).
   cache        Manage the tool cache: omac cache clear [--all].
   version      Print version.
 
