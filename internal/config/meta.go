@@ -89,6 +89,9 @@ type ApprovalSpec struct {
 //     error. Other unknown keys in omac.yaml are only warned about, but this
 //     one would silently mean "no block".
 func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: sidecar must be a mapping, got %s", node.Line, node.ShortTag())
+	}
 	keys := mappingKeys(node)
 	for _, k := range keys {
 		if k != "approvals" && nearApprovals(k) {
@@ -111,6 +114,9 @@ func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
 // block at the top level: it belongs under `sidecar`, and in the wrong
 // place it would be ignored, so nothing would ask.
 func (m *Meta) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: omac.yaml must be a mapping, got %s", node.Line, node.ShortTag())
+	}
 	for _, k := range mappingKeys(node) {
 		if nearApprovals(k) {
 			return fmt.Errorf("%s: unknown top-level key; the approvals block belongs under sidecar, otherwise it is ignored and nothing asks", k)
@@ -128,28 +134,42 @@ func (m *Meta) UnmarshalYAML(node *yaml.Node) error {
 // mappingKeys returns the keys of a YAML mapping, including those pulled in
 // with a `<<` merge key, so a block written through an anchor is seen too.
 func mappingKeys(node *yaml.Node) []string {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		return mappingKeys(node.Alias)
+	}
 	if node.Kind != yaml.MappingNode {
 		return nil
 	}
-	var m map[string]any
-	if err := node.Decode(&m); err != nil {
-		// Not a string-keyed mapping; the literal keys are all there is.
-		var keys []string
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			keys = append(keys, node.Content[i].Value)
+	var keys []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if k.Value == "<<" && k.Tag == "!!merge" {
+			merged := []*yaml.Node{v}
+			if v.Kind == yaml.SequenceNode {
+				merged = v.Content
+			}
+			for _, m := range merged {
+				keys = append(keys, mappingKeys(m)...)
+			}
+			continue
 		}
-		return keys
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+		keys = append(keys, k.Value)
 	}
 	return keys
 }
 
 // nearApprovals reports whether k is `approvals` or within two typos of it.
+// A key with the `x-` or `x_` extension prefix holds an anchor or extension
+// data by convention (`x-approvals: &safe {...}`), not a misspelled block.
 func nearApprovals(k string) bool {
-	return editDistance(strings.ToLower(k), "approvals") <= 2
+	k = strings.ToLower(k)
+	if strings.HasPrefix(k, "x-") || strings.HasPrefix(k, "x_") {
+		return false
+	}
+	return editDistance(k, "approvals") <= 2
 }
 
 // editDistance is the Levenshtein distance between a and b (bytes).
@@ -177,6 +197,9 @@ func editDistance(a, b string) int {
 // unlike the rest of omac.yaml, because a misspelled key in a security
 // declaration must not silently weaken it.
 func (a *ApprovalsSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: sidecar.approvals must be a mapping with an endpoints list, got %s", node.Line, node.ShortTag())
+	}
 	var unknown []string
 	collectUnknownKeys(node, reflect.TypeOf(ApprovalsSpec{}), "sidecar.approvals", &unknown)
 	if len(unknown) > 0 {
@@ -452,9 +475,29 @@ func LoadMetaWithWarnings(path string) (*Meta, []string, error) {
 // found in type config.SecretSpec". Walking the parsed YAML tree next to
 // the Go type gives the path a skill author knows from the docs instead.
 func unknownMetaKeys(root *yaml.Node) []string {
-	var out []string
-	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &out)
+	var all []string
+	collectUnknownKeys(root, reflect.TypeOf(Meta{}), "", &all)
+	out := all[:0]
+	for _, key := range all {
+		if !refusedKey(key) {
+			out = append(out, key)
+		}
+	}
 	return out
+}
+
+// refusedKey reports whether decoding stops on this unknown key instead of
+// ignoring it: any unknown key inside sidecar.approvals, and a misspelled or
+// misplaced approvals block. Warning that it is ignored would contradict the
+// error that follows.
+func refusedKey(path string) bool {
+	if strings.HasPrefix(path, "sidecar.approvals.") {
+		return true
+	}
+	if parent, key, nested := strings.Cut(path, "."); nested {
+		return parent == "sidecar" && !strings.Contains(key, ".") && nearApprovals(key)
+	}
+	return nearApprovals(path)
 }
 
 // collectUnknownKeys walks node, which should hold a value of type t, and

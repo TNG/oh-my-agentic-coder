@@ -136,3 +136,81 @@ func TestApprovals_UnknownKeyBehindAliasIsRefused(t *testing.T) {
 		t.Errorf("err = %v, want the misspelled key named", err)
 	}
 }
+
+func writeApprovalsDoc(t *testing.T, doc string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), MetaFileName)
+	if err := os.WriteFile(p, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A key that stops the load is reported by the error alone, not also as an
+// "ignored" warning.
+func TestApprovals_RefusedKeyIsNotWarnedAsIgnored(t *testing.T) {
+	for name, doc := range map[string]string{
+		"unknown key in block": "name: t\nsidecar:\n  command: [\"true\"]\n  approvals:\n    endpoints: []\n    default: none\n",
+		"unknown entry key":    "name: t\nsidecar:\n  command: [\"true\"]\n  approvals:\n    endpoints:\n      - {match: \"GET /a\", aproval: none}\n",
+		"misspelled block":     "name: t\nsidecar:\n  command: [\"true\"]\n  aprovals: {}\n",
+		"top-level block":      "name: t\napprovals: {}\nsidecar:\n  command: [\"true\"]\n",
+	} {
+		_, warnings, err := LoadMetaWithWarnings(writeApprovalsDoc(t, doc))
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		if len(warnings) != 0 {
+			t.Errorf("%s: warnings %q next to error %v", name, warnings, err)
+		}
+	}
+	_, warnings, err := LoadMetaWithWarnings(writeApprovalsDoc(t, "name: t\nsidecar:\n  command: [\"true\"]\n  hnit: x\n"))
+	if err != nil || len(warnings) != 1 {
+		t.Errorf("other unknown keys still warn: warnings=%q err=%v", warnings, err)
+	}
+}
+
+func TestApprovals_WrongKindNamesTheBlock(t *testing.T) {
+	for doc, want := range map[string]string{
+		"name: t\nsidecar: \"cmd\"\n": "sidecar must be a mapping",
+		"- a\n- b\n":                  "omac.yaml must be a mapping",
+		"name: t\nsidecar:\n  command: [\"true\"]\n  approvals: [1]\n": "sidecar.approvals must be a mapping",
+	} {
+		_, err := LoadMeta(writeApprovalsDoc(t, doc))
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "plain") {
+			t.Errorf("%q: err = %v, want %q", doc, err, want)
+		}
+	}
+}
+
+// The keys pulled in by a merge are seen even when a value elsewhere in the
+// mapping could not be decoded into a generic map (here a duplicate key).
+func TestApprovals_MergedBlockNextToUndecodableValue(t *testing.T) {
+	doc := "name: t\nsidecar:\n  <<: {approvals: null}\n  command: [\"true\"]\n  x-ext: {a: 1, a: 2}\n"
+	m, err := LoadMeta(writeApprovalsDoc(t, doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Sidecar.Approvals == nil {
+		t.Error("merged approvals block read as absent")
+	}
+}
+
+func TestApprovals_MergedMisspellingIsRefused(t *testing.T) {
+	for _, doc := range []string{
+		"name: t\nsidecar:\n  <<: {aprovals: {endpoints: []}}\n  command: [\"true\"]\n",
+		"name: t\nx-d: &d {aprovals: {endpoints: []}}\nsidecar:\n  <<: [*d]\n  command: [\"true\"]\n",
+	} {
+		if _, err := LoadMeta(writeApprovalsDoc(t, doc)); err == nil || !strings.Contains(err.Error(), "did you mean approvals") {
+			t.Errorf("%q: err = %v", doc, err)
+		}
+	}
+}
+
+func TestApprovals_ExtensionKeysHoldAnchors(t *testing.T) {
+	for _, k := range []string{"x-approvals", "x_approvals", "X-Approval"} {
+		doc := "name: t\n" + k + ": &s {match: \"GET /status\", approval: none}\nsidecar:\n  command: [\"true\"]\n  approvals:\n    endpoints: [*s]\n"
+		if _, err := LoadMeta(writeApprovalsDoc(t, doc)); err != nil {
+			t.Errorf("%s: %v", k, err)
+		}
+	}
+}
