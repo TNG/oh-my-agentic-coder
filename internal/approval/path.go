@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 )
 
@@ -85,14 +87,29 @@ var overrideHeaders = []string{
 }
 
 // StripOverrideHeaders removes method-override headers from h and returns the
-// names it removed, for the audit trail.
+// names it removed, once each and sorted, for the audit trail.
+//
+// Names are compared case-insensitively and with "_" read as "-": CGI-, WSGI-
+// and Rack-style servers map X_HTTP_Method_Override and
+// X-HTTP-Method-Override to the same variable.
 func StripOverrideHeaders(h http.Header) []string {
 	var removed []string
-	for _, name := range overrideHeaders {
-		if h.Get(name) != "" {
-			removed = append(removed, name)
+	for name := range h {
+		for _, o := range overrideHeaders {
+			if overrideName(name) != overrideName(o) {
+				continue
+			}
+			delete(h, name)
+			if !slices.Contains(removed, o) {
+				removed = append(removed, o)
+			}
+			break
 		}
-		h.Del(name)
 	}
+	sort.Strings(removed)
 	return removed
+}
+
+func overrideName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "_", "-")
 }

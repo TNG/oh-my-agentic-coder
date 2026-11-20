@@ -202,6 +202,18 @@ func TestCleanPathForwardMatchesMatched(t *testing.T) {
 	}
 }
 
+// Go keeps a header with underscores under its own key, but CGI-style
+// servers read it as the dashed name.
+func TestStripOverrideHeadersWithUnderscores(t *testing.T) {
+	h := http.Header{"X_http_method_override": {"DELETE"}, "X_method_override": {"PUT"}, "X_other": {"keep"}}
+	if got := StripOverrideHeaders(h); len(got) != 2 {
+		t.Errorf("removed %v", got)
+	}
+	if len(h) != 1 || h["X_other"] == nil {
+		t.Errorf("headers left: %v", h)
+	}
+}
+
 func TestStripOverrideHeaders(t *testing.T) {
 	h := http.Header{}
 	h.Set("x-http-method-override", "DELETE")
@@ -304,5 +316,29 @@ func TestParsePatternTrailingSlash(t *testing.T) {
 	_, err := ParsePattern("GET /files/")
 	if err == nil || !strings.Contains(err.Error(), "cannot end in") || strings.Contains(err.Error(), "**") {
 		t.Errorf("err = %v, want a trailing-slash message that does not suggest **", err)
+	}
+}
+
+// Two spellings of one override header are both removed and reported once.
+func TestStripOverrideHeadersReportsEachNameOnce(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-HTTP-Method-Override", "DELETE")
+	h["X_HTTP_METHOD_OVERRIDE"] = []string{"DELETE"}
+	got := StripOverrideHeaders(h)
+	if len(h) != 0 || !reflect.DeepEqual(got, []string{"X-HTTP-Method-Override"}) {
+		t.Errorf("removed %v, left %v", got, h)
+	}
+}
+
+func TestCatchAllEntryIsMarked(t *testing.T) {
+	s := mustSet(t,
+		Entry{Match: "GET /a", Approval: Required},
+		Entry{Match: "ANY /b", Approval: Required},
+		Entry{Match: "GET /c/**", Approval: Required},
+	)
+	for raw, want := range map[string]bool{"/a": false, "/b": true, "/c/x": true, "/d": false} {
+		if e, _ := lookup(t, s, "GET", raw); e.IsCatchAll() != want {
+			t.Errorf("%s: IsCatchAll = %v", raw, e.IsCatchAll())
+		}
 	}
 }

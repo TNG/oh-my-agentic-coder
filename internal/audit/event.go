@@ -40,6 +40,7 @@ const (
 	TypeProcessExit     = "process.exit"
 	TypeNetDecision     = "net.decision"
 	TypeFacadeRequest   = "facade.request"
+	TypeFacadeApproval  = "facade.approval"
 	TypeControlMutation = "control.mutation"
 	TypeSecretInject    = "secret.inject"
 	TypeRouteState      = "route.state"
@@ -95,6 +96,11 @@ type Event struct {
 	Path           string `json:"path,omitempty"`
 	UpstreamStatus int    `json:"upstream_status,omitempty"`
 	BytesOut       int64  `json:"bytes_out,omitempty"`
+
+	// --- facade.approval --- (Method, Mount, Path, Skill, Namespace above;
+	// Result is allow|deny, Source says why, Scope is once|session|always)
+	Unlisted        bool     `json:"unlisted,omitempty"`         // the approvals block has no entry for the request
+	StrippedHeaders []string `json:"stripped_headers,omitempty"` // method-override headers removed before forwarding
 
 	// --- control.mutation ---
 	Action string `json:"action,omitempty"` // activate|deactivate|reload|reload-global
