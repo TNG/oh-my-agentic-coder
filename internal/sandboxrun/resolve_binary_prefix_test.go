@@ -40,7 +40,8 @@ func TestResolveInnerBinaryDirsGrantsInstallPrefixSupportDirs(t *testing.T) {
 	root := t.TempDir()
 	exe := writeInstallPrefix(t, root, "bin", "java", "lib", "conf")
 
-	got := resolveInnerBinaryDirs([]string{exe})
+	// Zero policy: this tests the resolution itself, not grant bounding.
+	got, _ := resolveInnerBinaryDirs([]string{exe}, derivedGrantPolicy{})
 
 	for _, want := range []string{
 		filepath.Join(root, "bin"),
@@ -59,7 +60,7 @@ func TestResolveInnerBinaryDirsSkipsAbsentSupportDirs(t *testing.T) {
 	root := t.TempDir()
 	exe := writeInstallPrefix(t, root, "bin", "tool", "lib")
 
-	got := resolveInnerBinaryDirs([]string{exe})
+	got, _ := resolveInnerBinaryDirs([]string{exe}, derivedGrantPolicy{})
 
 	if !slices.Contains(got, filepath.Join(root, "lib")) {
 		t.Errorf("existing lib missing from %v", got)
@@ -79,7 +80,7 @@ func TestResolveInnerBinaryDirsNeverTreatsHomeAsInstallPrefix(t *testing.T) {
 	t.Setenv("HOME", home)
 	exe := writeInstallPrefix(t, home, "bin", "tool", "lib", "conf")
 
-	got := resolveInnerBinaryDirs([]string{exe})
+	got, _ := resolveInnerBinaryDirs([]string{exe}, derivedGrantPolicy{})
 
 	for _, forbidden := range []string{home, filepath.Join(home, "lib"), filepath.Join(home, "conf")} {
 		if slices.Contains(got, forbidden) {
@@ -97,7 +98,7 @@ func TestResolveInnerBinaryDirsNeverGrantsPrefixRoot(t *testing.T) {
 	root := t.TempDir()
 	exe := writeInstallPrefix(t, root, "bin", "tool", "lib", "share")
 
-	got := resolveInnerBinaryDirs([]string{exe})
+	got, _ := resolveInnerBinaryDirs([]string{exe}, derivedGrantPolicy{})
 
 	if slices.Contains(got, root) {
 		t.Errorf("prefix root granted: %v", got)
@@ -113,7 +114,7 @@ func TestResolveInnerBinaryDirsIgnoresNonBinParent(t *testing.T) {
 	root := t.TempDir()
 	exe := writeInstallPrefix(t, root, "opt", "tool", "lib")
 
-	got := resolveInnerBinaryDirs([]string{exe})
+	got, _ := resolveInnerBinaryDirs([]string{exe}, derivedGrantPolicy{})
 
 	if p := filepath.Join(root, "lib"); slices.Contains(got, p) {
 		t.Errorf("derived a prefix from a non-bin parent: %v", got)
