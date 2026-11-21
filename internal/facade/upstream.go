@@ -17,6 +17,9 @@ const (
 	// upstreamQueueWait is how long a request waits for a free slot before
 	// the facade answers 503 sidecar-busy.
 	upstreamQueueWait = 5 * time.Second
+	// slowSlotWait is how long a request may wait for a slot before the
+	// facade logs it.
+	slowSlotWait = time.Second
 	// maxIdleConnsPerSidecar bounds the keep-alive connections the facade
 	// parks per sidecar between requests.
 	maxIdleConnsPerSidecar = 8

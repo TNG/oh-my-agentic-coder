@@ -3,7 +3,9 @@ package facade
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -333,6 +335,88 @@ func TestQueueDeadlineReturns503(t *testing.T) {
 		if code := <-codes; code != 200 {
 			t.Errorf("queued request finished with %d, want 200", code)
 		}
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func slotWaitLines(log string) []map[string]any {
+	var out []map[string]any
+	for _, line := range strings.Split(log, "\n") {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil && e["event"] == "slot_wait" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestSlowSlotWaitIsLogged(t *testing.T) {
+	b := newBusySidecar(t)
+	f, base := poolFacade(t, echoRoute(b.port))
+	var accLog syncBuffer
+	f.accLog = log.New(&accLog, "", 0)
+	f.slowWait = 50 * time.Millisecond
+	f.queueWait = 5 * time.Second
+	codes := b.fill(t, base, maxConnsPerSidecar)
+
+	served := make(chan int, 1)
+	go func() { served <- getStatus(t, http.DefaultClient, base+"/echo/work") }()
+	time.Sleep(150 * time.Millisecond)
+	b.unblock()
+	if code := <-served; code != 200 {
+		t.Fatalf("waiting request got %d, want 200", code)
+	}
+	for i := 0; i < maxConnsPerSidecar; i++ {
+		<-codes
+	}
+	lines := slotWaitLines(accLog.String())
+	if len(lines) != 1 || lines[0]["outcome"] != "served" || lines[0]["mount"] != "echo" || lines[0]["wait_ms"].(float64) < 50 {
+		t.Fatalf("want one served slot_wait line for mount echo with wait_ms >= 50, got %v", lines)
+	}
+}
+
+func TestSlowSlotWaitLoggedOn503(t *testing.T) {
+	b := newBusySidecar(t)
+	f, base := poolFacade(t, echoRoute(b.port))
+	var accLog syncBuffer
+	f.accLog = log.New(&accLog, "", 0)
+	f.slowWait = 50 * time.Millisecond
+	f.queueWait = 150 * time.Millisecond
+	b.fill(t, base, maxConnsPerSidecar)
+
+	if code := getStatus(t, http.DefaultClient, base+"/echo/work"); code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503", code)
+	}
+	lines := slotWaitLines(accLog.String())
+	if len(lines) != 1 || lines[0]["outcome"] != "503" || lines[0]["wait_ms"].(float64) < 150 {
+		t.Fatalf("want one 503 slot_wait line with wait_ms >= 150, got %v", lines)
+	}
+}
+
+func TestFastSlotAcquireIsNotLogged(t *testing.T) {
+	up := newCountingUpstream(t, okHandler())
+	f, base := poolFacade(t, echoRoute(up.port))
+	var accLog syncBuffer
+	f.accLog = log.New(&accLog, "", 0)
+	getStatus(t, http.DefaultClient, base+"/echo/x")
+	if lines := slotWaitLines(accLog.String()); len(lines) != 0 {
+		t.Fatalf("unexpected slot_wait lines: %v", lines)
 	}
 }
 

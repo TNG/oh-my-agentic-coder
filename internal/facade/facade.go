@@ -195,6 +195,8 @@ type Facade struct {
 	upstreamIdle time.Duration
 	// queueWait overrides upstreamQueueWait in tests; zero uses the constant.
 	queueWait time.Duration
+	// slowWait overrides slowSlotWait in tests; zero uses the constant.
+	slowWait time.Duration
 
 	server      *http.Server
 	unixLn      net.Listener
@@ -1014,12 +1016,17 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			wait = upstreamQueueWait
 		}
 		var err error
+		waitStart := time.Now()
 		release, err = up.acquire(r.Context(), wait)
+		if err == nil {
+			f.logSlotWait(route, time.Since(waitStart), "served")
+		}
 		if err != nil {
 			if errors.Is(err, errSidecarBusy) {
 				w.Header().Set("Retry-After", "1")
 				w.Header().Set("X-Omac-Reason", "sidecar-busy")
 				http.Error(w, fmt.Sprintf("omac: sidecar-busy: %d requests to this skill are already in progress; retry later", maxConnsPerSidecar), http.StatusServiceUnavailable)
+				f.logSlotWait(route, time.Since(waitStart), "503")
 				f.logAccess(r, route, rest, http.StatusServiceUnavailable, 0, time.Since(started))
 			}
 			return
@@ -1228,6 +1235,26 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	go func() { _, _ = io.Copy(clientConn, upConn); done <- struct{}{} }()
 	<-done
 	f.logAccess(r, route, rest, 101, 0, time.Since(started))
+}
+
+// logSlotWait writes one access-log line when a request waited longer than
+// slowSlotWait for a free sidecar slot. outcome is "served" or "503".
+func (f *Facade) logSlotWait(route *Route, waited time.Duration, outcome string) {
+	threshold := f.slowWait
+	if threshold == 0 {
+		threshold = slowSlotWait
+	}
+	if f.accLog == nil || waited <= threshold {
+		return
+	}
+	b, _ := json.Marshal(map[string]any{
+		"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		"event":   "slot_wait",
+		"mount":   route.Mount,
+		"wait_ms": waited.Milliseconds(),
+		"outcome": outcome,
+	})
+	f.accLog.Println(string(b))
 }
 
 func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status int, bytes int64, dur time.Duration) {
