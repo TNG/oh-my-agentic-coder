@@ -1127,14 +1127,15 @@ func (m *intMultiFlag) Set(v string) error {
 // ---- server state (docs/contributing/serve-spec.md) ----
 
 type skillRoute struct {
-	Name      string
-	Mount     string
-	Namespace string // dir token or facade.GlobalNamespace
-	SkillDir  string // skill's on-disk dir; source of SKILL.md auto-discovery
-	State     facade.RouteState
-	Detail    string
-	Missing   []string
-	Approvals *approval.Set // declared endpoints from the approved snapshot; nil = ungated
+	Name       string
+	Mount      string
+	Namespace  string // dir token or facade.GlobalNamespace
+	SkillDir   string // skill's on-disk dir; source of SKILL.md auto-discovery
+	State      facade.RouteState
+	Detail     string
+	Missing    []string
+	Approvals  *approval.Set // declared endpoints from the approved snapshot; nil = ungated
+	HealthPath string        // the sidecar's health endpoint; exempt from the facade's request cap
 }
 
 type dirState struct {
@@ -1834,7 +1835,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		s.installRoute(sr, 0)
 		return sr
 	}
-	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM)}
+	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM), HealthPath: health.Defaults().Path}
 	s.installRoute(sr, running.Port)
 	return sr
 }
@@ -1958,6 +1959,7 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		Owner:        sr.Name,
 		SkillDir:     sr.SkillDir,
 		Approvals:    sr.Approvals,
+		HealthPath:   sr.HealthPath,
 		State:        sr.State,
 		Detail:       sr.Detail,
 	})
@@ -2009,7 +2011,7 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if port == 0 {
 			continue
 		}
-		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, State: facade.RouteReady})
+		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, HealthPath: sr.HealthPath, State: facade.RouteReady})
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}

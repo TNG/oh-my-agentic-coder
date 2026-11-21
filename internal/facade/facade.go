@@ -95,6 +95,11 @@ type Route struct {
 	// does not ask.
 	Approvals *approval.Set
 
+	// HealthPath is the sidecar's health endpoint (for example "/status").
+	// A GET to it skips the per-sidecar request cap, so a sidecar that is
+	// busy is not reported as down. Empty means no route is exempt.
+	HealthPath string
+
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep
 	// working unchanged.
@@ -1002,21 +1007,25 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 	// The slot bounds how many requests wait on the sidecar at once. It is
 	// released when the response has been copied, or as soon as an SSE
 	// response starts so that open streams do not use up the slots.
-	wait := f.queueWait
-	if wait == 0 {
-		wait = upstreamQueueWait
-	}
-	release, err := up.acquire(r.Context(), wait)
-	if err != nil {
-		if errors.Is(err, errSidecarBusy) {
-			w.Header().Set("Retry-After", "1")
-			w.Header().Set("X-Omac-Reason", "sidecar-busy")
-			http.Error(w, fmt.Sprintf("omac: sidecar-busy: %d requests to this skill are already in progress; retry later", maxConnsPerSidecar), http.StatusServiceUnavailable)
-			f.logAccess(r, route, rest, http.StatusServiceUnavailable, 0, time.Since(started))
+	release := func() {}
+	if !isHealthCheck(r, route, rest) {
+		wait := f.queueWait
+		if wait == 0 {
+			wait = upstreamQueueWait
 		}
-		return
+		var err error
+		release, err = up.acquire(r.Context(), wait)
+		if err != nil {
+			if errors.Is(err, errSidecarBusy) {
+				w.Header().Set("Retry-After", "1")
+				w.Header().Set("X-Omac-Reason", "sidecar-busy")
+				http.Error(w, fmt.Sprintf("omac: sidecar-busy: %d requests to this skill are already in progress; retry later", maxConnsPerSidecar), http.StatusServiceUnavailable)
+				f.logAccess(r, route, rest, http.StatusServiceUnavailable, 0, time.Since(started))
+			}
+			return
+		}
+		defer release()
 	}
-	defer release()
 
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no
 	// body). Use limitedBody rather than http.MaxBytesReader: MaxBytesReader
@@ -1076,6 +1085,13 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 	wr := &statusCaptureWriter{ResponseWriter: w, status: http.StatusOK}
 	rp.ServeHTTP(wr, r)
 	f.logAccess(r, route, rest, wr.status, wr.bytes, time.Since(started))
+}
+
+// isHealthCheck reports whether r is a GET of the route's health endpoint.
+// rest is the cleaned path after the mount, without a leading slash.
+func isHealthCheck(r *http.Request, route *Route, rest string) bool {
+	return r.Method == http.MethodGet && route.HealthPath != "" &&
+		rest == strings.TrimPrefix(route.HealthPath, "/")
 }
 
 // hopByHopHeaders lists headers that must not be forwarded across a proxy

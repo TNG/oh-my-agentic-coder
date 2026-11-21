@@ -466,3 +466,20 @@ func TestClientDisconnectClosesUpstreamStream(t *testing.T) {
 		t.Fatal("sidecar request context was not canceled after the client left")
 	}
 }
+
+func TestHealthCheckBypassesFullPool(t *testing.T) {
+	b := newBusySidecar(t)
+	route := echoRoute(b.port)
+	route.HealthPath = "/status"
+	f, base := poolFacade(t, route)
+	f.queueWait = 100 * time.Millisecond
+	b.fill(t, base, maxConnsPerSidecar)
+
+	client := &http.Client{Timeout: time.Second}
+	if code := getStatus(t, client, base+"/echo/status"); code != 200 {
+		t.Errorf("health check on a full pool: status %d, want 200", code)
+	}
+	if code := getStatus(t, client, base+"/echo/other"); code != http.StatusServiceUnavailable {
+		t.Errorf("other route on a full pool: status %d, want 503", code)
+	}
+}

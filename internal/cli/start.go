@@ -657,6 +657,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	specs := make([]supervisor.SidecarSpec, 0, len(approved))
 	approvalSets := make([]*approval.Set, 0, len(approved))
+	healthPaths := make([]string, 0, len(approved))
 	for _, s := range approved {
 		// Load behavioural fields from the snapshot, not from the workdir
 		// manifest that was already read into s.Meta. This ensures the
@@ -672,6 +673,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			health = *snapM.Sidecar.Health
 		}
 		approvalSets = append(approvalSets, routeApprovals(snapM))
+		healthPaths = append(healthPaths, health.Defaults().Path)
 		specs = append(specs, supervisor.SidecarSpec{
 			Name:             s.Entry.Name,
 			SkillDir:         s.AbsDir,
@@ -712,6 +714,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			Skill:        r.Name,
 			SkillDir:     approved[i].AbsDir,
 			Approvals:    approvalSets[i],
+			HealthPath:   healthPaths[i],
 		})
 		mounts = append(mounts, mount)
 	}
