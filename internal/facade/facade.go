@@ -1176,8 +1176,10 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	if limit == 0 {
 		limit = f.MaxBodyBytes
 	}
+	var capped *limitedBody
 	if limit > 0 {
-		r.Body = &limitedBody{ReadCloser: r.Body, n: limit}
+		capped = &limitedBody{ReadCloser: r.Body, n: limit}
+		r.Body = capped
 	}
 
 	upstreamAddr := upstreamHost(route.UpstreamPort)
@@ -1202,6 +1204,11 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	}
 	clone.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	if err := clone.Write(upConn); err != nil {
+		if capped != nil && capped.exceeded {
+			w.Header().Set("X-Omac-Reason", "body-too-large")
+			http.Error(w, "omac: body-too-large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		w.Header().Set("X-Omac-Reason", "upstream-error")
 		http.Error(w, "omac: write upstream: "+err.Error(), http.StatusBadGateway)
 		return
@@ -1489,17 +1496,24 @@ func (w *statusCaptureWriter) Flush() {
 // matched in the ErrorHandler without importing internal/http details.
 var errBodyTooLarge = errors.New("request body too large")
 
-// limitedBody wraps a request body and returns errBodyTooLarge once more
-// than n bytes have been read. Unlike http.MaxBytesReader it does NOT store
+// limitedBody wraps a request body and returns errBodyTooLarge when the body
+// holds more than n bytes; a body of exactly n bytes reads to io.EOF.
+// Unlike http.MaxBytesReader it does NOT store
 // the ResponseWriter, so it cannot call requestTooLarge() from a transport
 // goroutine and race with any concurrent ResponseWriter write.
 type limitedBody struct {
 	io.ReadCloser
-	n int64
+	n        int64
+	exceeded bool
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
 	if b.n <= 0 {
+		var extra [1]byte
+		if _, err := io.ReadFull(b.ReadCloser, extra[:]); err != nil {
+			return 0, err
+		}
+		b.exceeded = true
 		return 0, errBodyTooLarge
 	}
 	if int64(len(p)) > b.n {
@@ -1507,8 +1521,5 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 	}
 	n, err := b.ReadCloser.Read(p)
 	b.n -= int64(n)
-	if b.n <= 0 && err == nil {
-		err = errBodyTooLarge
-	}
 	return n, err
 }

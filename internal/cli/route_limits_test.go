@@ -112,20 +112,26 @@ func TestRoutesEnforceDeclaredMaxBodyBytes(t *testing.T) {
 				if route.Namespace != "" {
 					prefix = route.Namespace + "/" + route.Mount
 				}
-				post := func(size int64) int {
+				post := func(size int64, chunked bool) int {
 					url := fmt.Sprintf("http://127.0.0.1:%d/%s/ingest", f.TCPPort(), prefix)
-					resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(make([]byte, size)))
+					var body io.Reader = bytes.NewReader(make([]byte, size))
+					if chunked {
+						body = io.MultiReader(body)
+					}
+					resp, err := http.Post(url, "application/octet-stream", body)
 					if err != nil {
 						t.Fatalf("post %d bytes: %v", size, err)
 					}
 					defer resp.Body.Close()
 					return resp.StatusCode
 				}
-				if got := post(limit - 1); got != http.StatusOK {
-					t.Errorf("body of %d bytes: status %d, want 200", limit-1, got)
-				}
-				if got := post(limit + 1); got != http.StatusRequestEntityTooLarge {
-					t.Errorf("body of %d bytes: status %d, want 413", limit+1, got)
+				for _, chunked := range []bool{false, true} {
+					if got := post(limit, chunked); got != http.StatusOK {
+						t.Errorf("chunked=%v: body of exactly %d bytes: status %d, want 200", chunked, limit, got)
+					}
+					if got := post(limit+1, chunked); got != http.StatusRequestEntityTooLarge {
+						t.Errorf("chunked=%v: body of %d bytes: status %d, want 413", chunked, limit+1, got)
+					}
 				}
 			})
 		}
