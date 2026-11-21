@@ -382,7 +382,7 @@ func (h *HealthSpec) Defaults() HealthSpec {
 // LimitsSpec configures per-skill proxy limits.
 type LimitsSpec struct {
 	MaxBodyBytes    int64 `yaml:"max_body_bytes,omitempty"`
-	IdleTimeoutSecs int   `yaml:"idle_timeout_secs,omitempty"`
+	IdleTimeoutSecs int   `yaml:"idle_timeout_secs,omitempty"` // inactivity limit of upgraded (WebSocket) connections; plain HTTP uses facade.idle_timeout_secs
 }
 
 var (

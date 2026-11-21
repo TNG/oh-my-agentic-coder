@@ -1136,6 +1136,8 @@ type skillRoute struct {
 	Missing    []string
 	Approvals  *approval.Set // declared endpoints from the approved snapshot; nil = ungated
 	HealthPath string        // the sidecar's health endpoint; exempt from the facade's request cap
+
+	IdleTimeout time.Duration // from the approved snapshot; 0 = facade default
 }
 
 type dirState struct {
@@ -1835,7 +1837,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		s.installRoute(sr, 0)
 		return sr
 	}
-	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM), HealthPath: health.Defaults().Path}
+	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM), HealthPath: health.Defaults().Path, IdleTimeout: routeIdleTimeout(snapM)}
 	s.installRoute(sr, running.Port)
 	return sr
 }
@@ -1960,6 +1962,7 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		SkillDir:     sr.SkillDir,
 		Approvals:    sr.Approvals,
 		HealthPath:   sr.HealthPath,
+		IdleTimeout:  sr.IdleTimeout,
 		State:        sr.State,
 		Detail:       sr.Detail,
 	})
@@ -2011,7 +2014,7 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if port == 0 {
 			continue
 		}
-		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, HealthPath: sr.HealthPath, State: facade.RouteReady})
+		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, HealthPath: sr.HealthPath, IdleTimeout: sr.IdleTimeout, State: facade.RouteReady})
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}

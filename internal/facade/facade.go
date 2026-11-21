@@ -71,7 +71,7 @@ type Route struct {
 	Namespace    string // "" (flat) or a dir token or "__global__" (serve mode)
 	UpstreamPort int
 	MaxBodyBytes int64         // 0 = inherit facade default
-	IdleTimeout  time.Duration // 0 = inherit facade default
+	IdleTimeout  time.Duration // inactivity limit of upgraded connections; 0 = Facade.IdleTimeout
 	Skill        string        // registry name
 
 	// Owner is the skill name that installed this route. When non-empty,
@@ -149,7 +149,7 @@ type Facade struct {
 	TCPAddr       string // bind addr for TCP listener (e.g. "127.0.0.1:0"); "" disables TCP.
 	Routes        []Route
 	MaxBodyBytes  int64
-	IdleTimeout   time.Duration
+	IdleTimeout   time.Duration // plain HTTP keep-alive; also the inactivity limit of upgraded connections unless the route sets its own
 	AccessLogPath string
 	Version       string
 
@@ -1177,34 +1177,80 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 		return
 	}
 
-	// Set idle deadlines on both connections.
-	idleTimeout := f.IdleTimeout
+	idleTimeout := route.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = f.IdleTimeout
+	}
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	_ = upConn.SetDeadline(time.Now().Add(idleTimeout))
-	_ = clientConn.SetDeadline(time.Now().Add(idleTimeout))
+	guard := &idleGuard{idle: idleTimeout, conns: []net.Conn{upConn, clientConn}}
+	guard.touch()
+	upSide := guard.wrap(upConn)
+	clientSide := guard.wrap(clientConn)
 
 	// Flush anything already buffered from the client to the upstream.
 	if buf != nil && buf.Reader.Buffered() > 0 {
-		if _, err := io.CopyN(upConn, buf.Reader, int64(buf.Reader.Buffered())); err != nil {
+		if _, err := io.CopyN(upSide, buf.Reader, int64(buf.Reader.Buffered())); err != nil {
 			return
 		}
 	}
 
 	// Also drain any bytes the upstream already sent after the 101 headers.
 	if upReader.Buffered() > 0 {
-		if _, err := io.CopyN(clientConn, upReader, int64(upReader.Buffered())); err != nil {
+		if _, err := io.CopyN(clientSide, upReader, int64(upReader.Buffered())); err != nil {
 			return
 		}
 	}
 
 	// Splice both directions.
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(upConn, clientConn); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(clientConn, upConn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upSide, clientSide); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(clientSide, upSide); done <- struct{}{} }()
 	<-done
 	f.logAccess(r, route, rest, 101, 0, time.Since(started))
+}
+
+// idleGuard pushes the deadline of every spliced connection forward whenever
+// data moves on any of them, so a connection is cut only after idle with no
+// traffic in either direction.
+type idleGuard struct {
+	idle  time.Duration
+	conns []net.Conn
+
+	mu sync.Mutex // keeps concurrent touches from setting an older deadline last
+}
+
+func (g *idleGuard) touch() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	deadline := time.Now().Add(g.idle)
+	for _, c := range g.conns {
+		_ = c.SetDeadline(deadline)
+	}
+}
+
+func (g *idleGuard) wrap(c net.Conn) net.Conn { return &guardedConn{Conn: c, guard: g} }
+
+type guardedConn struct {
+	net.Conn
+	guard *idleGuard
+}
+
+func (c *guardedConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.guard.touch()
+	}
+	return n, err
+}
+
+func (c *guardedConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.guard.touch()
+	}
+	return n, err
 }
 
 func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status int, bytes int64, dur time.Duration) {

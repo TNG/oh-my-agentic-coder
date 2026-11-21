@@ -24,7 +24,7 @@ sandbox:
   default_profile: builtin          # which sandbox runtime: builtin (default), nono (deprecated), nono-netprofile (deprecated), no-sandbox-debug (debugging)
   profiles: { }                     # custom runtime definitions (deprecated); leave empty unless you need a non-standard sandbox command
 facade:
-  idle_timeout_secs: 300            # close idle HTTP keep-alive connections after N seconds; does not end the session
+  idle_timeout_secs: 300            # close idle connections after N seconds (HTTP keep-alive, and WebSocket connections with no traffic); does not end the session
   max_body_bytes: 10485760          # 10 MB request body cap
   base_env_passthrough: [PATH, HOME, USER, LANG, LC_ALL, LC_CTYPE, TMPDIR]
 audit:
@@ -38,7 +38,7 @@ cache:
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
-**`idle_timeout_secs`** controls how long idle HTTP keep-alive connections to the facade are held open. It does not end the session — the agent and sandbox keep running regardless.
+**`idle_timeout_secs`** controls how long an idle connection to the facade is held open. For plain HTTP this is the keep-alive time between requests. For a WebSocket (upgraded) connection it is the inactivity limit: the connection is closed after this many seconds with no data in either direction, and one that keeps sending messages or pings stays open. A skill can set its own value for its WebSocket connections with `limits.idle_timeout_secs` in its manifest (see [Skill authoring](./skills/authoring.md)); the order is the skill's value, then this value, then 5 minutes. The skill's value does not change plain HTTP keep-alive, which always uses this one. The setting does not end the session — the agent and sandbox keep running regardless.
 
 ### Per-project configuration
 

@@ -701,16 +701,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	for i, r := range running {
 		mount := approved[i].Mount
 		var maxBody int64
-		var idle time.Duration
 		if lim := approved[i].Meta.Sidecar.Limits; lim != nil {
 			maxBody = lim.MaxBodyBytes
-			idle = time.Duration(lim.IdleTimeoutSecs) * time.Second
 		}
 		routes = append(routes, facade.Route{
 			Mount:        mount,
 			UpstreamPort: r.Port,
 			MaxBodyBytes: maxBody,
-			IdleTimeout:  idle,
+			IdleTimeout:  routeIdleTimeout(approved[i].Meta),
 			Skill:        r.Name,
 			SkillDir:     approved[i].AbsDir,
 			Approvals:    approvalSets[i],
