@@ -39,7 +39,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `health.timeout_ms` | no | `5000` | Milliseconds before a single health request times out. |
 | `health.interval_ms` | no | `500` | Milliseconds between health polls. |
 | `install_scripts` | no | — | Map of OS key → relative script path (e.g. `{linux: install/install.linux.sh, macos: install/install.macos.sh}`). omac prints these paths at `omac register` time for you to run yourself; it never executes them. |
-| `limits.max_body_bytes` | no | — | Maximum request/response body the proxy will forward, in bytes. |
+| `limits.max_body_bytes` | no | — | Largest request body, in bytes, that the facade forwards to this skill's sidecar; a bigger body is answered with `413`. It applies to the skill's mount in every mode (`omac start`, `omac serve` and live reload). Unset or `0` means the facade-wide `facade.max_body_bytes` (10 MiB by default) applies. |
 | `limits.idle_timeout_secs` | no | — | WebSocket (upgraded) connections only: seconds with no data in either direction before the proxy closes the connection. Plain HTTP keep-alive is not affected and always uses `facade.idle_timeout_secs`. If unset or 0, `facade.idle_timeout_secs` applies (default 300); a negative value is rejected. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
