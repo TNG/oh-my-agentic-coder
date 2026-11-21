@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	iofs "io/fs"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -49,10 +48,6 @@ func runUpdateWithDeps(env *Env, yes bool, deps updater.Deps) int {
 		default:
 			return ExitIOError
 		}
-	}
-
-	if plan.LocalPath != "" {
-		defer os.Remove(plan.LocalPath)
 	}
 
 	if plan.Method == updater.MethodUpToDate {

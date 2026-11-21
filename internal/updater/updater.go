@@ -53,16 +53,31 @@ type PackageManager struct {
 }
 
 // Plan is the fully-resolved result of Plan(): what would happen, and (for
-// every method except MethodUpToDate/MethodBrew) a checksum-verified local
-// download ready for Apply to install.
+// every method except MethodUpToDate/MethodBrew) the checksum-verified artifact
+// that Apply will install.
 type Plan struct {
-	CurrentVersion   string
-	LatestVersion    string
-	Method           Method
-	PackageManager   string // set for MethodLinuxPackage
-	Asset            Asset
-	LocalPath        string
+	CurrentVersion string
+	LatestVersion  string
+	Method         Method
+	PackageManager string // set for MethodLinuxPackage
+	Asset          Asset
+	// LocalPath is retained for diagnostics only. It is never an input to the
+	// install decision and is never reopened to read artifact content.
+	LocalPath string
+	// ChecksumVerified is display metadata only; Apply authorizes installation
+	// from the held artifact, not from this boolean.
 	ChecksumVerified bool
+
+	artifact *verifiedArtifact
+}
+
+// verifiedArtifact is the exact byte sequence whose digest was checked against
+// the release manifest, kept in memory so later path changes cannot affect what
+// gets installed.
+type verifiedArtifact struct {
+	name string
+	sum  string
+	data []byte
 }
 
 // Options configures Plan.
@@ -224,8 +239,9 @@ func Check(ctx context.Context, opts Options, deps Deps) (Plan, error) {
 	return p, nil
 }
 
-// downloadAndVerify fetches p.Asset into a temp file and checks its SHA-256
-// against the release's checksums.txt, setting p.LocalPath/ChecksumVerified.
+// downloadAndVerify fetches p.Asset, checks its SHA-256 against the release's
+// checksums.txt, and retains the verified bytes in p.artifact. The temporary
+// download is removed before returning; p.LocalPath is never used to reload it.
 func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) error {
 	var sums Asset
 	var ok bool
@@ -251,19 +267,18 @@ func downloadAndVerify(ctx context.Context, p *Plan, rel Release, deps Deps) err
 	if err != nil {
 		return fmt.Errorf("download %s: %w", p.Asset.Name, err)
 	}
-	defer func() {
-		if p.LocalPath == "" {
-			os.Remove(path)
-		}
-	}()
-	gotSum, err := sha256File(path)
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("checksum %s: %w", p.Asset.Name, err)
+		return fmt.Errorf("read %s: %w", p.Asset.Name, err)
 	}
+	digest := sha256.Sum256(data)
+	gotSum := hex.EncodeToString(digest[:])
 	if !strings.EqualFold(gotSum, wantSum) {
 		return fmt.Errorf("%w: %s", ErrChecksumMismatch, p.Asset.Name)
 	}
-	p.LocalPath = path
+	p.artifact = &verifiedArtifact{name: p.Asset.Name, sum: gotSum, data: data}
 	p.ChecksumVerified = true
 	return nil
 }
@@ -285,19 +300,6 @@ func parseChecksums(data []byte, name string) (sum string, ok bool) {
 		}
 	}
 	return "", false
-}
-
-func sha256File(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Apply installs the update described by plan.
@@ -325,8 +327,18 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 		if pm.Name == "" {
 			return fmt.Errorf("unknown package manager %q", plan.PackageManager)
 		}
-		args := append([]string{pm.Name}, pm.InstallArgs(plan.LocalPath)...)
-		return deps.Runner.Run(ctx, "sudo", args, deps.Stdin, deps.Stdout, deps.Stderr)
+		if plan.artifact == nil {
+			return errors.New("update artifact was not verified; refusing to install")
+		}
+		desc, err := openVerifiedDescriptor(plan.artifact.data)
+		if err != nil {
+			return err
+		}
+		defer desc.Close()
+		args := append([]string{pm.Name}, pm.InstallArgs(verifiedArtifactPath())...)
+		// Preserve the single inherited descriptor across sudo to the installer.
+		args = append([]string{"--preserve-fds", "1"}, args...)
+		return deps.Runner.Run(ctx, "sudo", args, deps.Stdin, deps.Stdout, deps.Stderr, desc)
 	case MethodTarballSelfReplace:
 		return applySelfReplace(plan, deps)
 	default:
@@ -335,13 +347,11 @@ func Apply(ctx context.Context, plan Plan, deps Deps) error {
 }
 
 func applySelfReplace(plan Plan, deps Deps) error {
-	f, err := os.Open(plan.LocalPath)
-	if err != nil {
-		return err
+	if plan.artifact == nil {
+		return errors.New("update artifact was not verified; refusing to extract")
 	}
-	defer f.Close()
 
-	data, mode, err := ExtractBinary(f, "omac")
+	data, mode, err := ExtractBinary(bytes.NewReader(plan.artifact.data), "omac")
 	if err != nil {
 		return fmt.Errorf("extract omac from %s: %w", plan.Asset.Name, err)
 	}

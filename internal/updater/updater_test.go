@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -68,10 +69,18 @@ type runCall struct {
 type fakeRunner struct {
 	calls []runCall
 	err   error
+	extra [][]byte
 }
 
-func (f *fakeRunner) Run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func (f *fakeRunner) Run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer, extraFiles ...*os.File) error {
 	f.calls = append(f.calls, runCall{name: name, args: args})
+	for _, file := range extraFiles {
+		data, err := io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+		f.extra = append(f.extra, data)
+	}
 	return f.err
 }
 
@@ -403,13 +412,16 @@ func TestCheck_NoMatchingAsset(t *testing.T) {
 // --- Apply() tests ---------------------------------------------------------
 
 func TestApply_LinuxPackage_RunsSudoWithPackageManager(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("verified descriptor inheritance is Linux-specific")
+	}
 	deps := baseDeps(t)
 	runner := &fakeRunner{}
 	deps.Runner = runner
 	deps.PkgManagers = []PackageManager{
 		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
 	}
-	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: "/tmp/x.deb"}
+	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", artifact: &verifiedArtifact{name: "x.deb", data: []byte("deb-bytes")}}
 
 	if err := Apply(context.Background(), plan, deps); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -421,7 +433,7 @@ func TestApply_LinuxPackage_RunsSudoWithPackageManager(t *testing.T) {
 	if got.name != "sudo" {
 		t.Fatalf("name = %q, want sudo", got.name)
 	}
-	want := []string{"dpkg", "-i", "/tmp/x.deb"}
+	want := []string{"--preserve-fds", "1", "dpkg", "-i", verifiedArtifactPath()}
 	if len(got.args) != len(want) {
 		t.Fatalf("args = %v, want %v", got.args, want)
 	}
@@ -429,6 +441,9 @@ func TestApply_LinuxPackage_RunsSudoWithPackageManager(t *testing.T) {
 		if got.args[i] != want[i] {
 			t.Fatalf("args = %v, want %v", got.args, want)
 		}
+	}
+	if len(runner.extra) != 1 || string(runner.extra[0]) != "deb-bytes" {
+		t.Fatalf("inherited descriptors = %q, want the verified artifact", runner.extra)
 	}
 }
 
@@ -468,17 +483,32 @@ func TestApply_BrewUpdateFailureSkipsUpgrade(t *testing.T) {
 }
 
 func TestApply_InstallCommandFailure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("verified descriptor inheritance is Linux-specific")
+	}
 	deps := baseDeps(t)
 	sentinel := errors.New("dpkg exited 1")
 	deps.Runner = &fakeRunner{err: sentinel}
 	deps.PkgManagers = []PackageManager{
 		{Name: "dpkg", AssetSuffix: ".deb", InstallArgs: func(p string) []string { return []string{"-i", p} }},
 	}
-	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", LocalPath: "/tmp/x.deb"}
+	plan := Plan{Method: MethodLinuxPackage, PackageManager: "dpkg", artifact: &verifiedArtifact{name: "x.deb", data: []byte("deb-bytes")}}
 
 	err := Apply(context.Background(), plan, deps)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want sentinel wrapped", err)
+	}
+}
+
+func testSelfReplacePlan(t *testing.T, archivePath string) Plan {
+	t.Helper()
+	data, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("read archive %q: %v", archivePath, err)
+	}
+	return Plan{
+		Method:   MethodTarballSelfReplace,
+		artifact: &verifiedArtifact{name: filepath.Base(archivePath), data: data},
 	}
 }
 
@@ -491,7 +521,7 @@ func TestApply_SelfReplace_ExtractsAndWritesBinary(t *testing.T) {
 	replacer := &fakeReplacer{}
 	deps.Replacer = replacer
 	deps.Executable = func() (string, error) { return filepath.Join(dir, "omac"), nil }
-	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath}
+	plan := testSelfReplacePlan(t, tgzPath)
 
 	if err := Apply(context.Background(), plan, deps); err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -512,7 +542,7 @@ func TestApply_SelfReplace_PermissionDenied(t *testing.T) {
 	deps := baseDeps(t)
 	deps.Replacer = &fakeReplacer{err: fmt.Errorf("wrap: %w", fs.ErrPermission)}
 	deps.Executable = func() (string, error) { return filepath.Join(dir, "omac"), nil }
-	plan := Plan{Method: MethodTarballSelfReplace, LocalPath: tgzPath}
+	plan := testSelfReplacePlan(t, tgzPath)
 
 	err := Apply(context.Background(), plan, deps)
 	if !errors.Is(err, fs.ErrPermission) {

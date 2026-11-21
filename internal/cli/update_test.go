@@ -61,7 +61,7 @@ func (f fakeFetcher) FetchToFile(ctx context.Context, url, dir, pattern string) 
 
 type fakeRunner struct{ err error }
 
-func (f fakeRunner) Run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func (f fakeRunner) Run(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer, extraFiles ...*os.File) error {
 	return f.err
 }
 
