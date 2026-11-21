@@ -181,8 +181,14 @@ type Facade struct {
 	// the intended end-state (tracked in issue #88).
 	FacadeToken string
 
-	mu          sync.RWMutex
-	routes      map[string]*Route
+	mu     sync.RWMutex
+	routes map[string]*Route
+	// upstreams holds one connection pool per sidecar port, created on
+	// first use. A port is dropped once no route references it.
+	upstreams map[int]*upstream
+	// upstreamIdle overrides upstreamIdleTimeout in tests; zero uses the constant.
+	upstreamIdle time.Duration
+
 	server      *http.Server
 	unixLn      net.Listener
 	tcpLn       net.Listener
@@ -252,7 +258,9 @@ func (f *Facade) AddRoute(r Route) {
 		return
 	}
 	f.routes[rr.key()] = &rr
+	dropped := f.dropUnusedUpstreamsLocked()
 	f.mu.Unlock()
+	closeIdle(dropped)
 }
 
 // RemoveRoute drops the route with the given namespace/mount. A no-op if
@@ -260,7 +268,57 @@ func (f *Facade) AddRoute(r Route) {
 func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
 	delete(f.routes, routeKey(namespace, mount))
+	dropped := f.dropUnusedUpstreamsLocked()
 	f.mu.Unlock()
+	closeIdle(dropped)
+}
+
+// upstreamFor returns the connection pool for a sidecar port, creating it
+// on first use. Routes that share a port (a namespaced route and its flat
+// alias) share the pool.
+func (f *Facade) upstreamFor(port int) *upstream {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.upstreams[port]; ok {
+		return u
+	}
+	if f.upstreams == nil {
+		f.upstreams = make(map[int]*upstream)
+	}
+	idle := f.upstreamIdle
+	if idle == 0 {
+		idle = upstreamIdleTimeout
+	}
+	u := newUpstreamPool(idle)
+	f.upstreams[port] = u
+	return u
+}
+
+// dropUnusedUpstreamsLocked removes and returns the pools whose port no
+// route references any more. The caller holds f.mu and closes the returned
+// pools after unlocking.
+func (f *Facade) dropUnusedUpstreamsLocked() []*upstream {
+	if len(f.upstreams) == 0 {
+		return nil
+	}
+	inUse := make(map[int]bool, len(f.routes))
+	for _, r := range f.routes {
+		inUse[r.UpstreamPort] = true
+	}
+	var dropped []*upstream
+	for port, u := range f.upstreams {
+		if !inUse[port] {
+			delete(f.upstreams, port)
+			dropped = append(dropped, u)
+		}
+	}
+	return dropped
+}
+
+func closeIdle(ups []*upstream) {
+	for _, u := range ups {
+		u.transport.CloseIdleConnections()
+	}
 }
 
 // HasRoute reports whether a route exists for namespace/mount.
@@ -388,6 +446,14 @@ func (f *Facade) Close() error {
 			firstErr = err
 		}
 	}
+	f.mu.Lock()
+	ups := make([]*upstream, 0, len(f.upstreams))
+	for _, u := range f.upstreams {
+		ups = append(ups, u)
+	}
+	f.upstreams = nil
+	f.mu.Unlock()
+	closeIdle(ups)
 	if f.unixLn != nil {
 		_ = f.unixLn.Close()
 	}
@@ -929,6 +995,7 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 // proxyHTTP forwards plain HTTP (including SSE).
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
+	up := f.upstreamFor(route.UpstreamPort)
 
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no
 	// body). Use limitedBody rather than http.MaxBytesReader: MaxBytesReader
@@ -980,12 +1047,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			w.Header().Set("X-Omac-Reason", reason)
 			http.Error(w, "omac: "+reason, code)
 		},
-		// Short connect timeout; liberal overall IO.
-		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-			DisableCompression:    true,
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
+		Transport: up.transport,
 	}
 
 	// Wrap ResponseWriter so we capture the upstream status for logging.
