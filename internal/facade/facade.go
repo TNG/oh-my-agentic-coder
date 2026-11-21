@@ -188,6 +188,8 @@ type Facade struct {
 	upstreams map[int]*upstream
 	// upstreamIdle overrides upstreamIdleTimeout in tests; zero uses the constant.
 	upstreamIdle time.Duration
+	// queueWait overrides upstreamQueueWait in tests; zero uses the constant.
+	queueWait time.Duration
 
 	server      *http.Server
 	unixLn      net.Listener
@@ -997,6 +999,25 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
 	up := f.upstreamFor(route.UpstreamPort)
 
+	// The slot bounds how many requests wait on the sidecar at once. It is
+	// released when the response has been copied, or as soon as an SSE
+	// response starts so that open streams do not use up the slots.
+	wait := f.queueWait
+	if wait == 0 {
+		wait = upstreamQueueWait
+	}
+	release, err := up.acquire(r.Context(), wait)
+	if err != nil {
+		if errors.Is(err, errSidecarBusy) {
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("X-Omac-Reason", "sidecar-busy")
+			http.Error(w, fmt.Sprintf("omac: sidecar-busy: %d requests to this skill are already in progress; retry later", maxConnsPerSidecar), http.StatusServiceUnavailable)
+			f.logAccess(r, route, rest, http.StatusServiceUnavailable, 0, time.Since(started))
+		}
+		return
+	}
+	defer release()
+
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no
 	// body). Use limitedBody rather than http.MaxBytesReader: MaxBytesReader
 	// stores the ResponseWriter and calls requestTooLarge() on it from whatever
@@ -1028,6 +1049,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		ModifyResponse: func(resp *http.Response) error {
 			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
 				resp.Header.Set("X-Accel-Buffering", "no")
+				release()
 			}
 			return nil
 		},
