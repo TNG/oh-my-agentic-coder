@@ -926,6 +926,17 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// sharedProxyTransport is shared by every proxied request so upstream TCP
+// connections are pooled and reused. Constructing a Transport per request
+// leaks one open connection per request: each discarded Transport keeps its
+// idle connections open until they are garbage collected, which exhausts a
+// sidecar's file-descriptor table after a few hundred requests.
+var sharedProxyTransport = &http.Transport{
+	DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+	DisableCompression:    true,
+	ResponseHeaderTimeout: 30 * time.Second,
+}
+
 // proxyHTTP forwards plain HTTP (including SSE).
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
@@ -981,11 +992,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			http.Error(w, "omac: "+reason, code)
 		},
 		// Short connect timeout; liberal overall IO.
-		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-			DisableCompression:    true,
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
+		Transport: sharedProxyTransport,
 	}
 
 	// Wrap ResponseWriter so we capture the upstream status for logging.
