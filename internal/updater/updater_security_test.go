@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -108,6 +109,28 @@ func securityHasDescriptorArg(args []byte) bool {
 	return strings.Contains(a, "/proc/self/fd/") || strings.Contains(a, "/dev/fd/")
 }
 
+// securityDownloadedArtifacts returns whatever Check left in the configured
+// temp directory. A fixed implementation may hold the verified bytes in memory
+// or in a descriptor and leave no path behind, so callers must tolerate an
+// empty result.
+func securityDownloadedArtifacts(t *testing.T, dir string) []string {
+	t.Helper()
+
+	var paths []string
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			paths = append(paths, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan temp dir %q: %v", dir, err)
+	}
+	return paths
+}
+
 // TestSecurityUpdateBindsArtifactToVerifiedDescriptor asserts that the package
 // manager receives the artifact whose digest was verified, even if the download
 // path is reused before Apply.
@@ -157,9 +180,13 @@ func TestSecurityUpdateBindsArtifactToVerifiedDescriptor(t *testing.T) {
 				t.Fatalf("Check: %v", err)
 			}
 
-			if plan.LocalPath != "" {
-				if err := os.WriteFile(plan.LocalPath, replacement, 0o600); err != nil {
-					t.Fatalf("replace download %q: %v", plan.LocalPath, err)
+			artifacts := securityDownloadedArtifacts(t, deps.TempDir)
+			for _, path := range artifacts {
+				if err := os.Chmod(path, 0o600); err != nil {
+					t.Fatalf("make download writable %q: %v", path, err)
+				}
+				if err := os.WriteFile(path, replacement, 0o600); err != nil {
+					t.Fatalf("replace download %q: %v", path, err)
 				}
 			}
 
@@ -182,8 +209,10 @@ func TestSecurityUpdateBindsArtifactToVerifiedDescriptor(t *testing.T) {
 			if !securityHasDescriptorArg(args) {
 				t.Fatalf("installer arguments %q did not include an inherited descriptor path", args)
 			}
-			if plan.LocalPath != "" && strings.Contains(string(args), plan.LocalPath) {
-				t.Fatalf("installer arguments %q include the mutable download path %q", args, plan.LocalPath)
+			for _, path := range artifacts {
+				if strings.Contains(string(args), path) {
+					t.Fatalf("installer arguments %q include the mutable download path %q", args, path)
+				}
 			}
 		})
 	}
@@ -201,6 +230,9 @@ func TestSecurityUpdateRejectsPathSwapBeforeApply(t *testing.T) {
 			name: "overwritten",
 			swap: func(t *testing.T, path string, replacement []byte) {
 				t.Helper()
+				if err := os.Chmod(path, 0o600); err != nil {
+					t.Fatalf("make download writable %q: %v", path, err)
+				}
 				if err := os.WriteFile(path, replacement, 0o600); err != nil {
 					t.Fatalf("overwrite download %q: %v", path, err)
 				}
@@ -250,11 +282,10 @@ func TestSecurityUpdateRejectsPathSwapBeforeApply(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Check: %v", err)
 			}
-			if plan.LocalPath == "" {
-				t.Fatal("Check did not record a download path")
-			}
 
-			tc.swap(t, plan.LocalPath, replacementArchive)
+			for _, path := range securityDownloadedArtifacts(t, deps.TempDir) {
+				tc.swap(t, path, replacementArchive)
+			}
 
 			applyErr := Apply(context.Background(), plan, deps)
 			installed, readErr := os.ReadFile(target)
