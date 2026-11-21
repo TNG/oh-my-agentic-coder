@@ -1453,7 +1453,12 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 	lock := s.dirActLock(absDir)
 	lock.Lock()
 	defer lock.Unlock()
+	return s.activateLocked(absDir, "")
+}
 
+// activateLocked is activate with the per-directory lock already held. A
+// non-empty reuseToken preserves the namespace across an in-place reload.
+func (s *serveServer) activateLocked(absDir, reuseToken string) (map[string]any, error) {
 	s.mu.RLock()
 	existing, already := s.dirs[absDir]
 	s.mu.RUnlock()
@@ -1474,8 +1479,18 @@ func (s *serveServer) activate(absDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("directory %s is not under any allowed --root", absDir)
 	}
 
-	token := mintToken()
-	d := &dirState{Dir: absDir, Token: token, scope: projectScope(absDir), State: "activating", Skills: map[string]*skillRoute{}}
+	token := reuseToken
+	if token == "" {
+		token = mintToken()
+	}
+	d := &dirState{
+		Dir:          absDir,
+		Token:        token,
+		scope:        projectScope(absDir),
+		State:        "activating",
+		Skills:       map[string]*skillRoute{},
+		tokenEmitted: reuseToken != "",
+	}
 	s.mu.Lock()
 	// Clear flat aliases before the second dir becomes visible so there is
 	// no instant at which len(s.dirs) >= 2 and a token-less alias from the
@@ -2033,25 +2048,33 @@ func (s *serveServer) clearFlatAliases() {
 func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	d.mu.Lock()
 	state := d.State
+	// Emit dir_token and namespace-bearing URLs on the first activation only.
+	// A caller that already received the token and re-activates the same
+	// directory must not receive either again: nothing about a later POST
+	// identifies its sender.
+	first := !d.tokenEmitted
+	if first {
+		d.tokenEmitted = true
+	}
 	// Non-nil so an empty manifest serializes as `"skills": []`, not null
 	// (clients otherwise crash on a null skills list).
 	skills := make([]map[string]any, 0, len(d.Skills))
 	for _, sr := range d.Skills {
-		skills = append(skills, s.skillJSON(sr, "workdir"))
-	}
-	// Emit dir_token exactly once (first activation). A caller that already
-	// received the token and re-activates the same directory must not receive
-	// it again: nothing about a second POST identifies its sender, so
-	// re-issuing the token hands the namespace key to whoever asked.
-	emitToken := !d.tokenEmitted
-	if emitToken {
-		d.tokenEmitted = true
+		sk := s.skillJSON(sr, "workdir")
+		if !first {
+			redactSkillURLs(sk)
+		}
+		skills = append(skills, sk)
 	}
 	d.mu.Unlock()
 
 	s.mu.RLock()
 	for _, sr := range s.global {
-		skills = append(skills, s.skillJSON(sr, "global"))
+		sk := s.skillJSON(sr, "global")
+		if !first {
+			redactSkillURLs(sk)
+		}
+		skills = append(skills, sk)
 	}
 	s.mu.RUnlock()
 
@@ -2063,10 +2086,15 @@ func (s *serveServer) manifestFor(d *dirState) map[string]any {
 		"state":  state,
 		"skills": skills,
 	}
-	if emitToken {
+	if first {
 		out["dir_token"] = d.Token
 	}
 	return out
+}
+
+func redactSkillURLs(sk map[string]any) {
+	delete(sk, "base")
+	delete(sk, "socket_base")
 }
 
 func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
@@ -2090,6 +2118,30 @@ func (s *serveServer) skillJSON(sr *skillRoute, scope string) map[string]any {
 }
 
 // ---- control plane ----
+
+const dirTokenHeader = "X-Omac-Dir-Token"
+
+// authorizeDirMutation checks the directory token for a mutating request.
+// A directory that is not active yet has no token to present, so its first
+// activation stays path-only. Once active, the request must carry the exact
+// token issued for that directory; the returned token lets reload preserve
+// the namespace across its teardown/rebuild cycle.
+func (s *serveServer) authorizeDirMutation(r *http.Request, absDir string) (string, bool) {
+	s.mu.RLock()
+	d, active := s.dirs[absDir]
+	s.mu.RUnlock()
+	if !active {
+		return "", true
+	}
+	d.mu.Lock()
+	want := d.Token
+	d.mu.Unlock()
+	got := r.Header.Get(dirTokenHeader)
+	if got == "" || want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		return "", false
+	}
+	return want, true
+}
 
 // requireControlToken is middleware that enforces the per-session control token
 // on all /__omac__/* endpoints. Callers must include it as X-Omac-Control-Token.
@@ -2163,7 +2215,15 @@ func (s *serveServer) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	manifest, err := s.activate(abs)
+	lock := s.dirActLock(abs)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, ok := s.authorizeDirMutation(r, abs); !ok {
+		s.aud().Emit(audit.ControlMutation("activate", abs, "error: forbidden"))
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+	manifest, err := s.activateLocked(abs, "")
 	if err != nil {
 		s.aud().Emit(audit.ControlMutation("activate", abs, "error: "+err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -2183,6 +2243,14 @@ func (s *serveServer) handleDeactivate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	lock := s.dirActLock(abs)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, ok := s.authorizeDirMutation(r, abs); !ok {
+		s.aud().Emit(audit.ControlMutation("deactivate", abs, "error: forbidden"))
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 	s.deactivate(abs)
 	s.aud().Emit(audit.ControlMutation("deactivate", abs, "ok"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deactivated", "dir": abs})
@@ -2198,10 +2266,20 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	lock := s.dirActLock(abs)
+	lock.Lock()
+	defer lock.Unlock()
+	token, ok := s.authorizeDirMutation(r, abs)
+	if !ok {
+		s.aud().Emit(audit.ControlMutation("reload", abs, "error: forbidden"))
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
 	// Reload = re-run activation logic for an already-known dir: drop and
-	// re-activate so pending-credentials skills get promoted.
+	// re-activate so pending-credentials skills get promoted. Reusing the
+	// token keeps live routes and the caller's env working across the cycle.
 	s.deactivate(abs)
-	manifest, err := s.activate(abs)
+	manifest, err := s.activateLocked(abs, token)
 	if err != nil {
 		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

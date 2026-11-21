@@ -112,6 +112,10 @@ async function createBridge(
   const sessionDir = new Map<string, string>()
   // absolute directory -> latest manifest (cache; refreshed on activate/reload).
   const manifests = new Map<string, DirManifest>()
+  // absolute directory -> dir token issued by the control plane. Tokens are
+  // credentials, so they stay keyed to this bridge (and thus its origin) and
+  // are dropped on deactivate.
+  const dirTokens = new Map<string, string>()
   // directories we've already issued an activate for (dedupe; omac itself is
   // idempotent, but this avoids needless round-trips).
   const activated = new Set<string>()
@@ -123,7 +127,7 @@ async function createBridge(
     return typeof controlBase === "string" && controlBase.length > 0
   }
 
-  async function controlPost(path: string, body: unknown): Promise<DirManifest | null> {
+  async function controlPost(path: string, body: unknown, dir?: string): Promise<DirManifest | null> {
     if (!enabled()) return null
     // One controller serves both bounds: the request timeout and plugin
     // shutdown. This avoids depending on AbortSignal.any, which older type
@@ -140,6 +144,8 @@ async function createBridge(
       if (process.env.OMAC_CONTROL_TOKEN) {
         headers["X-Omac-Control-Token"] = process.env.OMAC_CONTROL_TOKEN
       }
+      const dirToken = dir ? dirTokens.get(dir) : undefined
+      if (dirToken) headers["X-Omac-Dir-Token"] = dirToken
       const res = await fetch(`${controlBase}${path}`, {
         method: "POST",
         headers,
@@ -176,14 +182,26 @@ async function createBridge(
     if (!force && activated.has(dir)) {
       return manifests.get(dir) ?? null
     }
-    const m = await controlPost("/__omac__/activate", { dir })
+    const previous = manifests.get(dir)
+    const m = await controlPost("/__omac__/activate", { dir }, dir)
     if (m) {
-      // The server emits dir_token only on the first activation. A refresh
-      // response therefore omits it; carry the token learned earlier forward,
-      // or the env names built from it break.
-      if (!m.dir_token) {
-        const cached = manifests.get(dir)?.dir_token
-        if (cached) m.dir_token = cached
+      // The server emits dir_token only on the first activation. Remember it
+      // for later control-plane calls, and carry it forward on refreshes so
+      // the env names built from it keep working.
+      if (m.dir_token) dirTokens.set(dir, m.dir_token)
+      const token = dirTokens.get(dir)
+      if (token) m.dir_token = token
+      // Refreshes redact namespace-bearing URLs, but the plugin still needs
+      // them to inject env; carry them forward for skills that stayed ready.
+      if (previous) {
+        const prevByMount = new Map(previous.skills.map((sk) => [sk.mount, sk]))
+        for (const sk of m.skills) {
+          if (sk.state !== "ready") continue
+          const old = prevByMount.get(sk.mount)
+          if (!old || old.state !== "ready") continue
+          if (!sk.base && old.base) sk.base = old.base
+          if (!sk.socket_base && old.socket_base) sk.socket_base = old.socket_base
+        }
       }
       manifests.set(dir, m)
       activated.add(dir)
@@ -197,7 +215,8 @@ async function createBridge(
     for (const d of sessionDir.values()) {
       if (d === dir) return
     }
-    await controlPost("/__omac__/deactivate", { dir })
+    await controlPost("/__omac__/deactivate", { dir }, dir)
+    dirTokens.delete(dir)
     manifests.delete(dir)
     activated.delete(dir)
   }

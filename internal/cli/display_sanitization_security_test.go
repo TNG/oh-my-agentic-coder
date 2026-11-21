@@ -168,17 +168,20 @@ func TestSkillMetadataToActivationBridges(t *testing.T) {
 		}
 	})
 	// The real authenticated handler is used again by each shell hook, not a curl stub.
-	srv := httptest.NewServer(s.controlMux())
-	defer srv.Close()
+	// Each hook gets a fresh server so its path-only SessionStart activation is the
+	// directory's first, as it is for a new session.
 	for _, harness := range []string{"claude", "codex", "copilot"} {
 		t.Run(harness, func(t *testing.T) {
 			// Without jq the hooks emit no manifest at all, so there is nothing to check.
 			if _, err := exec.LookPath("jq"); err != nil {
 				t.Skip("jq is required by the shell hooks")
 			}
+			hookServer := newServeServerForTest(t)
+			srv := httptest.NewServer(hookServer.controlMux())
+			defer srv.Close()
 			cmd := exec.Command("bash", "../../."+harness+"/hooks/omac-bridge.sh")
 			t.Setenv("OMAC_CONTROL_BASE", srv.URL)
-			t.Setenv("OMAC_CONTROL_TOKEN", s.controlToken)
+			t.Setenv("OMAC_CONTROL_TOKEN", hookServer.controlToken)
 			cmd.Env = os.Environ()
 			payload, _ := json.Marshal(map[string]string{"hook_event_name": "SessionStart", "cwd": wd})
 			cmd.Stdin = bytes.NewReader(payload)
