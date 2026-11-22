@@ -50,7 +50,7 @@ func TestScanFillsEntryDetailsWithoutValues(t *testing.T) {
   "rem": {"type": "remote", "url": "https://h", "headers": {"X-Key": "`+headerValue+`"}}
 }}`)
 
-	ex, _, err := Scan(config.MCPInjectClaudeFlag, hostFor(workdir, home))
+	ex, _, err := Scan(config.MCPScanClaude, hostFor(workdir, home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestScanFillsEntryDetailsWithoutValues(t *testing.T) {
 		t.Fatalf("user = %+v", u)
 	}
 
-	ex, _, err = Scan(config.MCPInjectOpenCodeEnv, hostFor(workdir, home))
+	ex, _, err = Scan(config.MCPScanOpenCode, hostFor(workdir, home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,15 +99,15 @@ func TestEvaluateRefusalHintsHaveNoValues(t *testing.T) {
 }}`)
 
 	for _, tt := range []struct {
-		kind config.MCPInjectionKind
+		kind config.MCPScanKind
 		want []string
 	}{
-		{config.MCPInjectClaudeFlag, []string{
+		{config.MCPScanClaude, []string{
 			"omac mcp add --scope project --harness claude-code --secret GITHUB_TOKEN gh -- npx -y server",
 			"remote MCP servers are not supported yet",
 			"Check the copied arguments for tokens",
 		}},
-		{config.MCPInjectOpenCodeEnv, []string{
+		{config.MCPScanOpenCode, []string{
 			"omac mcp add --scope project --harness opencode --secret TOKEN loc -- node s.js",
 			"Check the copied arguments for tokens",
 		}},

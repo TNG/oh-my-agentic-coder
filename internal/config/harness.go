@@ -167,6 +167,41 @@ type Harness struct {
 	// MCPInjection selects how omac hands registered MCP servers to this
 	// harness. MCPInjectNone means the harness gets no MCP injection.
 	MCPInjection MCPInjectionKind
+
+	// MCPScan selects how omac reads the MCP servers this harness already
+	// knows. It is set for every harness, including those without MCPInjection.
+	MCPScan MCPScanKind
+}
+
+// MCPScanKind selects the config layout omac scans for existing MCP servers.
+type MCPScanKind int
+
+const (
+	// MCPScanNone: omac does not know where this harness keeps MCP servers.
+	MCPScanNone MCPScanKind = iota
+	MCPScanOpenCode
+	MCPScanClaude
+	MCPScanCodex
+	MCPScanCopilot
+	MCPScanPi
+	MCPScanCodeWhale
+)
+
+// CanReceiveMCP reports whether omac can hand registered MCP servers to the harness.
+func (h Harness) CanReceiveMCP() bool {
+	return h.MCPInjection != MCPInjectNone
+}
+
+// MCPCapableHarnessNames returns the canonical names of the harnesses that can
+// receive registered MCP servers, in registry order.
+func MCPCapableHarnessNames() []string {
+	var names []string
+	for _, h := range harnessRegistry() {
+		if h.CanReceiveMCP() {
+			names = append(names, h.Name)
+		}
+	}
+	return names
 }
 
 // MCPInjectionKind selects the mechanism that injects MCP servers.
@@ -290,6 +325,7 @@ func harnessRegistry() []Harness {
 	return []Harness{
 		{
 			Name:         "opencode",
+			MCPScan:      MCPScanOpenCode,
 			Aliases:      []string{"oc"},
 			InnerCmd:     []string{"opencode"},
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, PortFlag: "--port", AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
@@ -332,6 +368,7 @@ func harnessRegistry() []Harness {
 		},
 		{
 			Name:    "claude-code",
+			MCPScan: MCPScanClaude,
 			Aliases: []string{"claude", "cc"},
 			// Claude Code's CLI executable is `claude`.
 			InnerCmd: []string{"claude"},
@@ -376,6 +413,7 @@ func harnessRegistry() []Harness {
 		},
 		{
 			Name:    "codex",
+			MCPScan: MCPScanCodex,
 			Aliases: []string{"cx"},
 			// OpenAI Codex CLI executable is `codex`.
 			InnerCmd: []string{"codex"},
@@ -407,6 +445,7 @@ func harnessRegistry() []Harness {
 		},
 		{
 			Name:    "copilot",
+			MCPScan: MCPScanCopilot,
 			Aliases: []string{"co"},
 			// GitHub Copilot CLI executable is `copilot` (standalone binary,
 			// not the `gh copilot` extension).
@@ -465,6 +504,7 @@ func harnessRegistry() []Harness {
 		},
 		{
 			Name:    "pi",
+			MCPScan: MCPScanPi,
 			Aliases: []string{},
 			// Pi coding agent CLI executable is `pi` (pi.dev).
 			InnerCmd: []string{"pi"},
@@ -508,6 +548,7 @@ func harnessRegistry() []Harness {
 		},
 		{
 			Name:    "codewhale",
+			MCPScan: MCPScanCodeWhale,
 			Aliases: []string{"cw"},
 			// CodeWhale CLI executable is `codewhale` (Rust; npm package
 			// "codewhale"). Headless runs use `codewhale exec "<prompt>"`.

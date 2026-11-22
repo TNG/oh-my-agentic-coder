@@ -71,7 +71,7 @@ func TestScanOpenCode(t *testing.T) {
 }`)
 	write(t, filepath.Join(workdir, "opencode.json"), `{"mcp": {"proj": {"type":"remote","url":"https://h.example/x"}}}`)
 
-	ex, f, err := Scan(config.MCPInjectOpenCodeEnv, hostFor(workdir, home))
+	ex, f, err := Scan(config.MCPScanOpenCode, hostFor(workdir, home))
 	if err != nil || len(f) != 0 {
 		t.Fatalf("err = %v, findings = %v", err, f)
 	}
@@ -84,7 +84,7 @@ func TestScanOpenCodeHonorsXDG(t *testing.T) {
 	home, workdir, xdg := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	write(t, filepath.Join(xdg, "opencode", "opencode.json"), `{"mcp": {"x": {"type":"local","command":["x"]}}}`)
-	ex, _, err := Scan(config.MCPInjectOpenCodeEnv, hostFor(workdir, home))
+	ex, _, err := Scan(config.MCPScanOpenCode, hostFor(workdir, home))
 	if err != nil || len(ex) != 1 || ex[0].Name != "x" || ex[0].Harness != "opencode" {
 		t.Fatalf("ex = %+v, err = %v", ex, err)
 	}
@@ -103,7 +103,7 @@ func TestScanClaude(t *testing.T) {
 	write(t, filepath.Join(workdir, ".mcp.json"), `{"mcpServers": {"shared": {"type":"sse","url":"https://h/"}}}`)
 	write(t, filepath.Join(workdir, ".claude", "settings.json"), `{"mcpServers": {"fromsettings": {"command": "z"}}}`)
 
-	ex, f, err := Scan(config.MCPInjectClaudeFlag, hostFor(workdir, home))
+	ex, f, err := Scan(config.MCPScanClaude, hostFor(workdir, home))
 	if err != nil || len(f) != 0 {
 		t.Fatalf("err = %v, findings = %v", err, f)
 	}
@@ -116,7 +116,7 @@ func TestScanReportsUnparseableFile(t *testing.T) {
 	home, workdir := t.TempDir(), t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	write(t, filepath.Join(home, ".claude.json"), `{ not json`)
-	_, f, err := Scan(config.MCPInjectClaudeFlag, hostFor(workdir, home))
+	_, f, err := Scan(config.MCPScanClaude, hostFor(workdir, home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestScanReportsUnparseableFile(t *testing.T) {
 }
 
 func TestScanMissingFilesAreEmpty(t *testing.T) {
-	ex, f, err := Scan(config.MCPInjectClaudeFlag, hostFor(t.TempDir(), t.TempDir()))
+	ex, f, err := Scan(config.MCPScanClaude, hostFor(t.TempDir(), t.TempDir()))
 	if err != nil || len(ex) != 0 || len(f) != 0 {
 		t.Fatalf("ex=%v f=%v err=%v", ex, f, err)
 	}

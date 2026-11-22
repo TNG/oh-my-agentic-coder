@@ -3,6 +3,8 @@ package mcpinject
 import (
 	"regexp"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
 const (
@@ -15,8 +17,12 @@ var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 // AddCommand returns the "omac mcp add" command equivalent to e. The
 // arguments are copied as they are and every environment key becomes a
 // --secret; values are never part of it. A remote entry yields one line
-// saying remote servers are not supported.
+// saying remote servers are not supported. A harness that cannot receive MCP
+// servers yields no command.
 func AddCommand(e Existing) string {
+	if h, ok := config.LookupHarness(e.Harness); !ok || !h.CanReceiveMCP() {
+		return ""
+	}
 	if e.Transport != "" && e.Transport != "stdio" {
 		return remoteUnsupported
 	}

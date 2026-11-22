@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpinject"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 )
@@ -88,10 +89,13 @@ func parseHarnessList(csv string) ([]string, error) {
 		if !ok {
 			return nil, config.UnknownHarnessError(tok)
 		}
+		if !h.CanReceiveMCP() {
+			return nil, errors.New(mcpinject.UnsupportedHarnessMessage(h.Name))
+		}
 		out = append(out, h.Name)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("--harness is required (%s)", strings.Join(config.HarnessNames(), ", "))
+		return nil, fmt.Errorf("--harness is required (%s)", strings.Join(config.MCPCapableHarnessNames(), ", "))
 	}
 	return out, nil
 }

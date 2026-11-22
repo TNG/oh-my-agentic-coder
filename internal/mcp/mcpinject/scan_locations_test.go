@@ -21,7 +21,7 @@ func fakeEnv(vars map[string]string) func(string) string {
 
 type found struct{ name, file string }
 
-func scanFound(t *testing.T, kind config.MCPInjectionKind, host Host, managed managedDirs) ([]Existing, []Finding) {
+func scanFound(t *testing.T, kind config.MCPScanKind, host Host, managed managedDirs) ([]Existing, []Finding) {
 	t.Helper()
 	ex, f, err := scan(kind, host, managed)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestScanOpenCodeLocations(t *testing.T) {
 		"OPENCODE_CONFIG_DIR":     customDir,
 		"OPENCODE_CONFIG_CONTENT": `{"mcp":{"servers":{"inline":{"type":"local","command":["i"],"environment":{"K":"secret"}}}}}`,
 	})}
-	ex, f := scanFound(t, config.MCPInjectOpenCodeEnv, host, managedDirs{openCode: []string{managed}})
+	ex, f := scanFound(t, config.MCPScanOpenCode, host, managedDirs{openCode: []string{managed}})
 	if len(f) != 0 {
 		t.Fatalf("findings = %+v", f)
 	}
@@ -107,7 +107,7 @@ func TestScanOpenCodeShapes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			workdir := t.TempDir()
 			write(t, filepath.Join(workdir, "opencode.json"), tt.json)
-			ex, f := scanFound(t, config.MCPInjectOpenCodeEnv, Host{Workdir: workdir, Home: t.TempDir()}, managedDirs{})
+			ex, f := scanFound(t, config.MCPScanOpenCode, Host{Workdir: workdir, Home: t.TempDir()}, managedDirs{})
 			if len(f) != 0 {
 				t.Fatalf("findings = %+v", f)
 			}
@@ -154,7 +154,7 @@ func TestScanClaudeLocations(t *testing.T) {
 			"--add-dir", addDir, "--agents", `{"rev":{"description":"d","mcpServers":[{"cli":{"command":"c"}}]}}`,
 			"--plugin-dir=" + pluginDir, "-p", "prompt"},
 	}
-	ex, f := scanFound(t, config.MCPInjectClaudeFlag, host, managedDirs{claude: []string{managed}})
+	ex, f := scanFound(t, config.MCPScanClaude, host, managedDirs{claude: []string{managed}})
 	if len(f) != 0 {
 		t.Fatalf("findings = %+v", f)
 	}
@@ -216,7 +216,7 @@ func TestScanFindingsForBrokenFiles(t *testing.T) {
 	}
 	write(t, filepath.Join(workdir, ".claude", "agents", "bad.md"), "---\nmcpServers: [unclosed\n---\n")
 	host := Host{Workdir: workdir, Home: filepath.Join(root, "home"), InnerArgs: []string{"--mcp-config", `{"mcpServers": `}}
-	_, f := scanFound(t, config.MCPInjectClaudeFlag, host, managedDirs{claude: []string{managed}})
+	_, f := scanFound(t, config.MCPScanClaude, host, managedDirs{claude: []string{managed}})
 	kinds := map[string]string{}
 	managedFlag := map[string]bool{}
 	for _, finding := range f {

@@ -15,7 +15,7 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
 | An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac refuses to start with a harness MCP entry by default, so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
-If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration.
+If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
 
 ## How it works
 
@@ -199,9 +199,23 @@ The scan reads server names, transport, command, arguments and the names (never 
 | Claude Code | `mcpServers` in the frontmatter of agent files in `.claude/agents/` (current directory and parents), `~/.claude/agents/`, `$CLAUDE_CONFIG_DIR/agents/` and `.claude/agents/` of `--add-dir` directories; `--agents` JSON | scanned |
 | Claude Code | a plugin directory passed with `--plugin-dir`: its `.mcp.json` and `mcpServers` in `.claude-plugin/plugin.json` (inline or a `.json` file) | scanned (not for `.zip` files, `.mcpb` bundles or URLs) |
 | Claude Code | `managed-mcp.json` and `managedMcpServers` in `managed-settings.json` under `/Library/Application Support/ClaudeCode/` and `/etc/claude-code/` | scanned, reported as administrator-managed; the settings file name is unverified because the pages we read name only the directory |
-| Claude Code | installed plugins (`~/.claude/plugins`) | not scanned: the documentation does not describe a stable file layout for installed and enabled plugins |
+| Claude Code | plugin directories in `~/.claude/plugins` and `$CLAUDE_CONFIG_DIR/plugins`: every `.mcp.json` and `.claude-plugin/plugin.json` (`mcpServers`) under `synced/`, and the plugin install paths listed in `installed_plugins.json` when that file exists. Reported as provided by a plugin | scanned. The layout is observed on one machine, not documented, and the shape of `installed_plugins.json` is unverified: omac reads every `installPath` string in it, and a file whose `plugins` entry yields no path is reported as unparseable |
+| Claude Code | `plugins/marketplaces/` | not scanned (a catalog of plugins you can install, not plugins Claude Code loads) |
+| Codex | `config.toml` in `$CODEX_HOME` (default `~/.codex`); `.codex/config.toml` in the current directory and each parent up to the git root; administrator file `/etc/codex/config.toml` (reported as administrator-managed). Tables `[mcp_servers.<name>]` and `[plugins."<plugin>".mcp_servers.<name>]` | scanned |
+| Codex | `-c mcp_servers.*` and `--config mcp_servers.*` that you pass after the omac flags | scanned |
+| Codex | `<name>.config.toml` profile files, cloud-managed config, MCP servers inside plugin bundles | not scanned (profile files: unverified whether they may hold `mcp_servers`) |
+| Copilot CLI | `mcp-config.json` in `$COPILOT_HOME` (default `~/.copilot`); `.mcp.json` and `.github/mcp.json` in the current directory and each parent up to the git root | scanned |
+| Copilot CLI | `--additional-mcp-config` as inline JSON or `@file` that you pass after the omac flags | scanned |
+| Copilot CLI | `mcp.json` files under `<copilot home>/installed-plugins/`. Reported as provided by a plugin | scanned (inline `mcpServers` in a plugin manifest and in agent frontmatter are not read) |
+| Copilot CLI | the built-in GitHub server, account and organization policy | not scanned (not files) |
+| pi | `mcp.json` in `$PI_CODING_AGENT_DIR` (default `~/.pi/agent`) and `.pi/mcp.json` in the current directory (parents are not searched) | scanned; both the `mcpServers` and the `servers` key are read because the key pi uses is unverified |
+| pi | servers an extension registers in code, the `pi-mcp-adapter` extension's own config | not scanned |
+| CodeWhale | the file named by `$CODEWHALE_MCP_CONFIG` or the legacy `$DEEPSEEK_MCP_CONFIG`; `~/.codewhale/mcp.json` and `$CODEWHALE_HOME/mcp.json` (whether the file follows `$CODEWHALE_HOME` is unverified); `~/.deepseek/mcp.json` only when `~/.codewhale/mcp.json` does not exist; `.codewhale/mcp.json` in the current directory; the file `mcp_config_path` names in `config.toml` | scanned; both the `servers` and the `mcpServers` key are read, and a file with both is reported as unparseable, as CodeWhale does |
+| CodeWhale | servers from plugin bundles | not scanned |
 | Claude Code | claude.ai connectors | not scanned (fetched from your account over the network); turn them off with `ENABLE_CLAUDEAI_MCP_SERVERS=false` or the setting `disableClaudeAiConnectors` |
 | Claude Code | server-managed settings, MDM and registry policy, Windows paths | not scanned (not a file omac can read at start) |
+
+"Up to the git root" means the current directory and each parent up to the first directory that contains `.git`; without a git root only the current directory counts.
 
 Environment variables and `--mcp-config` files are scanned whenever they are set on the host, even if the harness would ignore them (for example with `--strict-mcp-config`). To get past such a finding, unset the variable, drop the flag or use `--mcp-unregistered=allow`. An entry from an administrator-managed file cannot be removed by you, so `--mcp-unregistered=allow` is the way past it.
 
@@ -242,6 +256,34 @@ mcp:
 - **Where it is read from.** `~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml` when that variable is set. The registry uses the same directory.
 - **One run:** `omac start --mcp-unregistered=<allow|warn|refuse>` overrides the setting for that run. This is the way past a refusal caused by a checked-in `.mcp.json`.
 - `mcp.unregistered` applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not look at your MCP config.
+
+## Other harnesses
+
+omac supports six harnesses, but only OpenCode and Claude Code can receive registered servers. For Codex, Copilot CLI, pi and CodeWhale omac cannot hand a registered server to the harness yet, so `omac mcp add`, `add-json` and `register` reject them:
+
+```text
+omac mcp register: omac cannot provide MCP servers to codex yet (supported: opencode, claude-code)
+```
+
+What happens when you start such a harness depends on your registrations. Registrations of any harness and scope that apply to this directory count, because none of them would be available:
+
+- **Nothing registered and `mcp.unregistered` not set:** nothing changes.
+- **A server is registered, or `mcp.unregistered` is set:** omac applies `mcp.unregistered` before anything starts. With `refuse` (the default) it stops with the message below. With `warn` it prints the same as a warning and starts the harness without MCP servers. With `allow` it starts silently. omac never injects anything into these harnesses.
+
+```text
+omac start: MCP policy refuses this start:
+  omac cannot provide MCP servers to codex yet (supported: opencode, claude-code). Registered servers that will not be available: jira.
+Use a supported harness, or run once with --mcp-unregistered=warn (start without the registered servers) or --mcp-unregistered=allow.
+```
+
+The harness's own MCP config is scanned under the same policy, at the places in the [table above](#where-omac-looks). An entry found there is an unregistered entry, listed like those of OpenCode and Claude Code but without an `omac mcp add` line, because `add` would reject the harness. `omac mcp diagnose` lists these entries too and flags a registered server whose harness list names a harness that cannot receive MCP.
+
+Not covered:
+
+- Command-line config overrides other than the ones the table names, such as Copilot CLI's `--plugin-dir` and the disable switches.
+- Cloud, account and organization sources: Codex cloud-managed config, Copilot's built-in and policy-derived servers, CodeWhale plugin bundles.
+- Servers an extension or plugin registers in code (pi extensions) or that sit in bundles omac cannot read from the host.
+- Unverified: whether Codex profile files can hold `mcp_servers`, which key pi uses in `mcp.json`, and whether CodeWhale's `mcp.json` follows `$CODEWHALE_HOME`. The locations come from each harness's public documentation, not from running the harness.
 
 ## Diagnosing problems
 
@@ -331,7 +373,7 @@ Before you register a server, and before you review a changed tool list:
 - **`omac serve`** does not run or inject MCP servers.
 - **Argument-level rules live in the server.** omac decides per tool, as it does for skill sidecars.
 - **OAuth tokens in a harness's own state directory** (for example from a login inside the harness) are not protected by omac, and the scan of harness config files does not see them.
-- **Servers provided by installed harness plugins**, **claude.ai connectors**, remote organization config and servers an OpenCode plugin registers in code are not seen by the scan. See [Where omac looks](#where-omac-looks).
+- **Servers provided by harness plugins that omac cannot read from the host**, **claude.ai connectors**, remote organization config and servers an OpenCode plugin registers in code are not seen by the scan. See [Where omac looks](#where-omac-looks).
 - **Credentials already in readable harness config files** may already be exposed to agents that ran earlier. Rotate them.
 - **Third-party server code and its dependencies** run with your credential. A compromised package is a compromised credential.
 

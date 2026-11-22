@@ -376,18 +376,6 @@ func TestMCPInactiveWithNothingRegisteredChangesNothing(t *testing.T) {
 	}
 }
 
-func TestMCPPrepareSkipsHarnessWithoutInjection(t *testing.T) {
-	r := newMCPRig(t)
-	r.register("demo", true, "claude-code")
-	harness, _ := config.LookupHarness("claude")
-	harness.MCPInjection = config.MCPInjectNone
-	env, stderr := launchTestEnv(t, r.wd)
-	plan, code := prepareMCP(env, harness, config.LauncherConfig{}, launchOpts{label: "start"})
-	if plan != nil || code != ExitOK || stderr() != "" {
-		t.Fatalf("plan=%v code=%d stderr=%q", plan, code, stderr())
-	}
-}
-
 func TestMCPClaudeInjectionReachesInnerArgsAndEnv(t *testing.T) {
 	r := newMCPRig(t)
 	r.register("demo", true, "claude-code")

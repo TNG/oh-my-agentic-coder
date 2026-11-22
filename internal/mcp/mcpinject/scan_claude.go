@@ -80,6 +80,9 @@ func claudeSources(host Host, managedDirs []string) []source {
 	for _, value := range flagValues(host.InnerArgs, agentsFlag) {
 		out = append(out, jsonOrFileSource(host.Workdir, value, parseCLIAgents, agentsFlag+" (inline JSON)"))
 	}
+	for _, home := range homes {
+		out = append(out, claudePluginSources(home)...)
+	}
 	for _, dir := range flagValues(host.InnerArgs, pluginDirFlag) {
 		out = append(out, pluginDirSources(absolute(host.Workdir, dir))...)
 	}
@@ -220,12 +223,14 @@ func jsonCompatible(v any) any {
 // given inline or as a .json file path inside the plugin.
 func pluginDirSources(dir string) []source {
 	manifest := filepath.Join(dir, ".claude-plugin", "plugin.json")
-	return []source{
-		fileSource(filepath.Join(dir, ".mcp.json"), "mcpServers", nil, decodeClaudeEntry),
-		{file: manifest, load: readSource(manifest, func(raw []byte) ([]Existing, error) {
-			return parsePluginManifest(dir, raw)
-		})},
+	out := []source{
+		parsedFileSource(filepath.Join(dir, ".mcp.json"), parsePluginServersFile),
+		parsedFileSource(manifest, func(raw []byte) ([]Existing, error) { return parsePluginManifest(dir, raw) }),
 	}
+	for i := range out {
+		out[i].pluginProvided = true
+	}
+	return out
 }
 
 func parsePluginManifest(dir string, raw []byte) ([]Existing, error) {
@@ -271,10 +276,15 @@ func parsePluginServersFile(raw []byte) ([]Existing, error) {
 	if err != nil {
 		return nil, err
 	}
-	servers := doc
+	servers := map[string]json.RawMessage{}
 	if nested, ok := doc["mcpServers"]; ok {
-		servers = nil
 		_ = json.Unmarshal(nested, &servers)
+	} else {
+		for name, entry := range doc {
+			if isJSONObject(entry) {
+				servers[name] = entry
+			}
+		}
 	}
 	return entriesOf(servers, decodeClaudeEntry), nil
 }

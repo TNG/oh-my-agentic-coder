@@ -362,6 +362,30 @@ func Effective(workdir, harness string) (entries []*Entry, shadowed []string, er
 	return entries, shadowed, nil
 }
 
+// Applicable returns the registrations that apply to workdir for any harness:
+// global and project entries merged by name, the project entry winning,
+// sorted by name.
+func Applicable(workdir string) ([]*Entry, error) {
+	global, err := List(GlobalScope())
+	if err != nil {
+		return nil, err
+	}
+	project, err := List(ScopeFor(workdir))
+	if err != nil {
+		return nil, err
+	}
+	byName := map[string]*Entry{}
+	for _, e := range append(global, project...) {
+		byName[e.Name] = e
+	}
+	entries := make([]*Entry, 0, len(byName))
+	for _, e := range byName {
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, nil
+}
+
 // AppendSecretsStored adds names to the record's append-only SecretsStored list.
 func AppendSecretsStored(s Scope, name string, names []string) error {
 	dir, err := serverDir(s, name)

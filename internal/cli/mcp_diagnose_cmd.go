@@ -109,6 +109,11 @@ func diagnoseScopes(scopeFlag string, all bool, env *Env) ([]mcpreg.Scope, error
 
 func diagnoseEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string {
 	var problems []string
+	for _, name := range e.Harnesses {
+		if h, ok := config.LookupHarness(name); !ok || !h.CanReceiveMCP() {
+			problems = append(problems, mcpinject.UnsupportedHarnessMessage(name)+"; this server will not be available there")
+		}
+	}
 	var missing []string
 	for _, name := range e.Def.Secrets {
 		v, err := mcpreg.GetSecret(scope, e.Name, name)
@@ -212,10 +217,10 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 	}
 	for _, hn := range config.HarnessNames() {
 		h, _ := config.LookupHarness(hn)
-		if h.MCPInjection == config.MCPInjectNone {
+		if h.MCPScan == config.MCPScanNone {
 			continue
 		}
-		existing, findings, err := mcpinject.Scan(h.MCPInjection, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
+		existing, findings, err := mcpinject.Scan(h.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
 		if err != nil {
 			fmt.Fprintf(env.Stderr, "omac mcp diagnose: MCP config scan: %v\n", err)
 			return problems, ExitIOError
@@ -227,8 +232,12 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 			if ex.AlsoRegistered {
 				also = " (a server of this name is registered, but this entry still runs inside the sandbox)"
 			}
-			fmt.Fprintf(env.Stdout, "  - %s: %q in %s is not managed by omac%s%s\n", ex.Harness,
-				stripControlChars(ex.Name), stripControlChars(ex.File), also, managedSuffix(ex.Managed))
+			plugin := ""
+			if ex.PluginProvided {
+				plugin = " (provided by a plugin)"
+			}
+			fmt.Fprintf(env.Stdout, "  - %s: %q in %s is not managed by omac%s%s%s%s\n", ex.Harness,
+				stripControlChars(ex.Name), stripControlChars(ex.File), plugin, also, managedSuffix(ex.Managed), unsupportedSuffix(h))
 			if hint := mcpinject.AddCommand(ex); hint != "" {
 				fmt.Fprintf(env.Stdout, "    register it: %s\n", stripControlChars(hint))
 			}
@@ -241,6 +250,14 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 		}
 	}
 	return problems, ExitOK
+}
+
+// unsupportedSuffix explains that a harness without MCP support refuses its own entries too.
+func unsupportedSuffix(h config.Harness) string {
+	if h.CanReceiveMCP() {
+		return ""
+	}
+	return fmt.Sprintf(" (omac cannot provide registered MCP servers to %s, so it cannot replace this entry)", h.Name)
 }
 
 func managedSuffix(managed bool) string {

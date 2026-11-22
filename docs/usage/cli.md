@@ -34,7 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
-| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn` or `refuse`. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config). |
+| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn` or `refuse`. With a harness that cannot receive MCP servers (codex, copilot, pi, codewhale), `warn` starts it without the registered servers. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config) and [Other harnesses](./mcp.md#other-harnesses). |
 
 For all flags: `omac start --help`.
 
@@ -170,12 +170,12 @@ omac mcp diagnose --probe
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until its tools are reviewed. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
-| `omac mcp add-json <name> '<json>'`, `omac mcp add-json --file <f> [names...]` | Registers from an `mcpServers` entry with `command`, `args` and `env`. Remote entries and unknown keys are refused. | `--scope`, `--harness`, `--secret NAME` (names the `env` keys that are secrets), `--replace`, `--file` |
-| `omac mcp register <file>` | Registers a definition file exactly as written, including any `tools`, `approvals` and `reviewed` in it. | `--scope`, `--harness` (required) |
+| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until its tools are reviewed. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server; only `opencode` and `claude-code`, other harnesses are rejected), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
+| `omac mcp add-json <name> '<json>'`, `omac mcp add-json --file <f> [names...]` | Registers from an `mcpServers` entry with `command`, `args` and `env`. Remote entries and unknown keys are refused. | `--scope`, `--harness` (only `opencode` and `claude-code`), `--secret NAME` (names the `env` keys that are secrets), `--replace`, `--file` |
+| `omac mcp register <file>` | Registers a definition file exactly as written, including any `tools`, `approvals` and `reviewed` in it. | `--scope`, `--harness` (required; only `opencode` and `claude-code`) |
 | `omac mcp tools <name>` | Starts the server on the host and lists its tools with a proposed class, current class and review status. | `--scope`, `--classify`, `--set NAME=CLASS` (repeatable), `--rest CLASS` (default `off`) |
 | `omac mcp review <name>` | Shows which tools were added, removed or changed since the last review, refuses while a live tool has no class, asks `[y/N]` and records the current tools as reviewed. | `--scope`, `--yes` |
-| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, tools not reviewed yet and harness entries omac does not manage. Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
+| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, tools not reviewed yet, registrations for a harness that cannot receive MCP, and harness entries omac does not manage (for every harness with a known config location). Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
 | `omac mcp list` | Shows registered servers with tool count, classified count and `reviewed` or `not reviewed`. | `--all` includes stale project scopes |
 | `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, when the tools were last reviewed and every tool with its class. Never secret or environment values. | `--scope` |
 | `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |

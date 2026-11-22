@@ -36,6 +36,8 @@ type Existing struct {
 	UserLevel bool
 	// Managed is set for a file an administrator deploys; the user cannot remove its entries.
 	Managed bool
+	// PluginProvided is set for a server a plugin brings along.
+	PluginProvided bool
 	// Transport is the server's transport as the config declares it, such as stdio or http.
 	Transport string
 	Command   string
@@ -60,6 +62,8 @@ type Finding struct {
 	Detail string
 	// Managed is set for a file an administrator deploys.
 	Managed bool
+	// PluginProvided is set for a file a plugin brings along.
+	PluginProvided bool
 }
 
 // Server is a registered server as the harness is told to start it.

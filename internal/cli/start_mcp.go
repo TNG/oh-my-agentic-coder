@@ -60,10 +60,10 @@ func mcpSpawnAuthorizer(spec supervisor.SidecarSpec) error {
 // unregistered-entry policy. A non-zero exit code means the launch must stop;
 // nothing has been spawned at that point.
 func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts launchOpts) (*mcpPlan, int) {
-	if harness.MCPInjection == config.MCPInjectNone {
-		return nil, ExitOK
-	}
 	prefix := "omac " + opts.label
+	if !harness.CanReceiveMCP() {
+		return nil, prepareUnsupportedHarnessMCP(env, harness, lc, opts, prefix)
+	}
 	entries, shadowed, err := mcpreg.Effective(env.Workdir, harness.Name)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": MCP registry:", err)
@@ -82,7 +82,7 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 	}
 
 	home, _ := os.UserHomeDir()
-	existing, findings, err := mcpinject.Scan(harness.MCPInjection, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv, InnerArgs: opts.innerArgs})
+	existing, findings, err := mcpinject.Scan(harness.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv, InnerArgs: opts.innerArgs})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
 		return nil, ExitIOError
@@ -103,6 +103,48 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		return nil, ExitConfigInvalid
 	}
 	return &mcpPlan{policy: policy, entries: entries, harness: harness.Name, stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
+}
+
+// prepareUnsupportedHarnessMCP applies the unregistered-entry policy to a
+// harness omac cannot provide MCP servers to. Registrations of any harness
+// count, because none of them will be available. Nothing is injected.
+func prepareUnsupportedHarnessMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts launchOpts, prefix string) int {
+	entries, err := mcpreg.Applicable(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": MCP registry:", err)
+		return ExitIOError
+	}
+	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(entries))
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
+	if !policy.Active {
+		return ExitOK
+	}
+	var existing []mcpinject.Existing
+	var findings []mcpinject.Finding
+	if harness.MCPScan != config.MCPScanNone {
+		home, _ := os.UserHomeDir()
+		existing, findings, err = mcpinject.Scan(harness.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv, InnerArgs: opts.innerArgs})
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
+			return ExitIOError
+		}
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	warnings, refusal := mcpinject.EvaluateUnsupported(policy, harness.Name, names, existing, findings)
+	for _, w := range warnings {
+		fmt.Fprintf(env.Stderr, "%s: warning: %s\n", prefix, w)
+	}
+	if refusal != nil {
+		fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, refusal)
+		return ExitConfigInvalid
+	}
+	return ExitOK
 }
 
 // launchMCPGateways starts one gateway per registered server on the host and

@@ -14,6 +14,10 @@ import (
 const (
 	harnessOpenCode   = "opencode"
 	harnessClaudeCode = "claude-code"
+	harnessCodex      = "codex"
+	harnessCopilot    = "copilot"
+	harnessPi         = "pi"
+	harnessCodeWhale  = "codewhale"
 )
 
 // Host is what the scan needs to know about the machine and the launch.
@@ -37,31 +41,41 @@ func (h Host) env(name string) string {
 type managedDirs struct {
 	openCode []string
 	claude   []string
+	codex    []string
 }
 
 var systemManagedDirs = managedDirs{
 	openCode: []string{"/Library/Application Support/opencode", "/etc/opencode"},
 	claude:   []string{"/Library/Application Support/ClaudeCode", "/etc/claude-code"},
+	codex:    []string{"/etc/codex"},
 }
 
 // Scan lists the MCP servers the harness already knows on this host. Files
 // that exist but cannot be read or parsed are reported as findings.
-func Scan(kind config.MCPInjectionKind, host Host) ([]Existing, []Finding, error) {
+func Scan(kind config.MCPScanKind, host Host) ([]Existing, []Finding, error) {
 	return scan(kind, host, systemManagedDirs)
 }
 
-func scan(kind config.MCPInjectionKind, host Host, managed managedDirs) ([]Existing, []Finding, error) {
+func scan(kind config.MCPScanKind, host Host, managed managedDirs) ([]Existing, []Finding, error) {
 	var (
 		harness string
 		sources []source
 	)
 	switch kind {
-	case config.MCPInjectOpenCodeEnv:
+	case config.MCPScanOpenCode:
 		harness, sources = harnessOpenCode, openCodeSources(host, managed.openCode)
-	case config.MCPInjectClaudeFlag:
+	case config.MCPScanClaude:
 		harness, sources = harnessClaudeCode, claudeSources(host, managed.claude)
+	case config.MCPScanCodex:
+		harness, sources = harnessCodex, codexSources(host, managed.codex)
+	case config.MCPScanCopilot:
+		harness, sources = harnessCopilot, copilotSources(host)
+	case config.MCPScanPi:
+		harness, sources = harnessPi, piSources(host)
+	case config.MCPScanCodeWhale:
+		harness, sources = harnessCodeWhale, codeWhaleSources(host)
 	default:
-		return nil, nil, fmt.Errorf("MCP injection kind %d has no config scan", kind)
+		return nil, nil, fmt.Errorf("MCP scan kind %d has no config scan", kind)
 	}
 
 	var existing []Existing
@@ -85,12 +99,12 @@ func scan(kind config.MCPInjectionKind, host Host, managed managedDirs) ([]Exist
 			if errors.Is(err, errParse) {
 				kind = FindingParseError
 			}
-			findings = append(findings, Finding{File: src.file, Kind: kind, Detail: err.Error(), Managed: src.managed})
+			findings = append(findings, Finding{File: src.file, Kind: kind, Detail: err.Error(), Managed: src.managed, PluginProvided: src.pluginProvided})
 			continue
 		}
 		sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 		for _, e := range servers {
-			e.Harness, e.File, e.UserLevel, e.Managed = harness, src.file, src.userLevel, src.managed
+			e.Harness, e.File, e.UserLevel, e.Managed, e.PluginProvided = harness, src.file, src.userLevel, src.managed, e.PluginProvided || src.pluginProvided
 			existing = append(existing, e)
 		}
 	}
@@ -104,7 +118,9 @@ type source struct {
 	id        string
 	userLevel bool
 	managed   bool
-	load      func() ([]Existing, error)
+	// pluginProvided marks a file that a plugin, not the user, brought along.
+	pluginProvided bool
+	load           func() ([]Existing, error)
 }
 
 var errParse = errors.New("parse")
