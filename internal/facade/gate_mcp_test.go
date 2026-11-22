@@ -487,3 +487,14 @@ func mustParse(t *testing.T, body string) (mcppolicy.Call, []byte) {
 	}
 	return c, canonical
 }
+
+func TestMCPGate_AnyContentEncodingHeaderIsRefused(t *testing.T) {
+	f, _, up := mcpFacade(t, nil, nil)
+	req := httptest.NewRequest("POST", "/srv/mcp", strings.NewReader(callBody("1", "get", `{}`)))
+	req.Header["Content-Encoding"] = []string{"", "gzip"}
+	w := httptest.NewRecorder()
+	f.handle(w, req)
+	if w.Code != http.StatusUnsupportedMediaType || len(up.seen()) != 0 {
+		t.Errorf("status %d, upstream %v", w.Code, up.seen())
+	}
+}

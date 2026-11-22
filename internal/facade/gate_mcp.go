@@ -63,7 +63,9 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		http.Error(w, "omac: "+reason, code)
 		f.logAccess(r, route, mcpRest, code, 0, time.Since(started))
 	}
-	if r.Header.Get("Content-Encoding") != "" {
+	// Any Content-Encoding header, also an empty first one before "gzip",
+	// would let a server decode bytes the facade did not check.
+	if _, ok := r.Header["Content-Encoding"]; ok {
 		reject(http.StatusUnsupportedMediaType, "mcp-content-encoding")
 		return
 	}
