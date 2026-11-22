@@ -64,7 +64,7 @@ The JSON is one entry, or an `{"mcpServers": {...}}` object. With `--file`, name
 omac mcp register ./mcp.yaml --harness opencode,claude-code
 ```
 
-`register` stores the file exactly as written. Classes, approvals and a review record that are not in the file are gone, so to change only the command or environment of a registered server use `omac mcp add --replace` instead. The [definition reference](#definition-reference) lists the fields.
+`register` stores the file exactly as written, including its classes, approvals and `reviewed` record. A file with a `reviewed` record that matches the server's tools makes them callable without `omac mcp tools --classify`, so read a definition file before you register it, above all one from a repository or written by an agent. Classes, approvals and a review record that are not in the file are gone, so to change only the command or environment of a registered server use `omac mcp add --replace` instead. The [definition reference](#definition-reference) lists the fields.
 
 Options shared by all three:
 
@@ -357,7 +357,7 @@ With `--probe` (host terminal only) it also starts each server and reports tools
 The agent can call the tools that are classified `read`, `write` or `delete`, are allowed by the server's `access` mode, and still match the last review. Everything else is refused. In detail:
 
 - **Closed world.** A tool that has no class is not listed and not callable. A tool classified `off` is not listed and not callable either.
-- **Methods.** `initialize`, `ping`, `tools/list`, `tools/call` and notifications pass. `resources/*`, `prompts/*` and every other method are refused.
+- **Methods.** `initialize`, `ping`, `tools/list`, `tools/call`, notifications and the agent's answers to requests the server makes (for example `sampling/createMessage` or `elicitation/create`) pass. `resources/*`, `prompts/*` and every other method are refused.
 - **Strict parsing.** The proxy parses every `tools/call`. It refuses batches, duplicate or case-variant keys (`Name` for `name`), encoded bodies and anything it cannot parse. It forwards exactly the bytes it checked, so the server cannot read the message differently from the proxy.
 - **Checked twice.** The gateway, which runs separately, applies the same policy again on its own, so one bug in one place does not open a tool.
 - **Approvals.** Classes whose `approvals` mode is `required` (by default `write` and `delete`) raise a native dialog before the call. It shows the server, the tool, the class and a summary of the arguments, and offers **Allow once**, **Allow for this session**, **Allow always (this tool of this server)**, **Deny for this session (this tool of this server)** and **Deny**. **Deny** refuses only this call, so an agent that retries sees the dialog again. No answer within 60 seconds is a deny.
