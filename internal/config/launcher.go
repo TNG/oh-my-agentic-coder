@@ -22,6 +22,7 @@ type LauncherConfig struct {
 	Facade  FacadeConfig  `yaml:"facade"  json:"facade"`
 	Audit   AuditConfig   `yaml:"audit"   json:"audit"`
 	Cache   CacheConfig   `yaml:"cache"   json:"cache"`
+	MCP     MCPConfig     `yaml:"mcp"     json:"mcp"`
 }
 
 // CacheScope selects how the persistent tool cache is partitioned.
@@ -76,6 +77,13 @@ type AuditConfig struct {
 	Path    string `yaml:"path"    json:"path"`   // "" => audit.DefaultPath()
 	Syslog  bool   `yaml:"syslog"  json:"syslog"` // mirror to system log (Unix)
 	Strict  bool   `yaml:"strict"  json:"strict"` // fail-closed on write failure
+}
+
+// MCPConfig controls how omac treats MCP servers that are not registered.
+// Empty values select the defaults chosen when the config is resolved.
+type MCPConfig struct {
+	Unregistered       string `yaml:"unregistered"        json:"unregistered"`
+	LiteralCredentials string `yaml:"literal_credentials" json:"literal_credentials"`
 }
 
 // AuditEnabled reports whether auditing is on, treating unset as true.
