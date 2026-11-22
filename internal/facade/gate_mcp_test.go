@@ -19,10 +19,11 @@ import (
 )
 
 type mcpUpstream struct {
-	mu   sync.Mutex
-	reqs []string // method + " " + body
-	body [][]byte
-	cl   []int64
+	mu        sync.Mutex
+	reqs      []string // method + " " + body
+	body      [][]byte
+	cl        []int64
+	failFirst int // answer this many requests with 503 before succeeding
 }
 
 func (u *mcpUpstream) seen() []string {
@@ -40,7 +41,15 @@ func mcpFacade(t *testing.T, ap Approver, mutate func(*mcppolicy.Policy)) (*Faca
 		u.reqs = append(u.reqs, r.Method+" "+r.URL.Path)
 		u.body = append(u.body, b)
 		u.cl = append(u.cl, r.ContentLength)
+		fail := u.failFirst > 0
+		if fail {
+			u.failFirst--
+		}
 		u.mu.Unlock()
+		if fail {
+			http.Error(w, "gateway restarting", http.StatusServiceUnavailable)
+			return
+		}
 		io.WriteString(w, "upstream")
 	}))
 	t.Cleanup(up.Close)
@@ -275,14 +284,16 @@ func allowOnce() *fakeApprover {
 	return &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}}
 }
 
-func TestMCPGate_RetryOfAllowedCallAsksOnce(t *testing.T) {
+func TestMCPGate_RetryAfterAFailedAttemptAsksOnceEvenWithANewSession(t *testing.T) {
 	ap := allowOnce()
 	f, rec, up := mcpFacade(t, ap, nil)
+	up.failFirst = 1
 	body := callBody("7", "put", `{"path":"/x"}`)
-	for i := 0; i < 2; i++ {
-		if w := mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", "s1"); w.Code != 200 || w.Body.String() != "upstream" {
-			t.Fatalf("attempt %d: %d %q", i, w.Code, w.Body)
-		}
+	if w := mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", "s1"); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first attempt: %d", w.Code)
+	}
+	if w := mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", "s2"); w.Code != 200 || w.Body.String() != "upstream" {
+		t.Fatalf("retry on a new session: %d %q", w.Code, w.Body)
 	}
 	if len(ap.calls) != 1 || len(up.seen()) != 2 {
 		t.Fatalf("approver %d upstream %d", len(ap.calls), len(up.seen()))
@@ -293,18 +304,32 @@ func TestMCPGate_RetryOfAllowedCallAsksOnce(t *testing.T) {
 	}
 }
 
+func TestMCPGate_ASuccessfulForwardConsumesTheAllowance(t *testing.T) {
+	ap := allowOnce()
+	f, _, up := mcpFacade(t, ap, nil)
+	body := callBody("7", "put", `{"path":"/x"}`)
+	for i := 0; i < 2; i++ {
+		if w := mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", "s1"); w.Code != 200 {
+			t.Fatalf("attempt %d: %d", i, w.Code)
+		}
+	}
+	if len(ap.calls) != 2 || len(up.seen()) != 2 {
+		t.Errorf("a repeat after a success must ask again: approver %d upstream %d", len(ap.calls), len(up.seen()))
+	}
+}
+
 func TestMCPGate_RetryNeverMatchesAChangedCall(t *testing.T) {
 	ap := allowOnce()
-	f, _, _ := mcpFacade(t, ap, nil)
-	mcpPost(f, "/srv/mcp", callBody("7", "put", `{"path":"/x"}`), "Mcp-Session-Id", "s1")
-	for name, c := range map[string]struct{ body, session string }{
-		"id":        {callBody("8", "put", `{"path":"/x"}`), "s1"},
-		"tool":      {callBody("7", "rm", `{"path":"/x"}`), "s1"},
-		"arguments": {callBody("7", "put", `{"path":"/y"}`), "s1"},
-		"session":   {callBody("7", "put", `{"path":"/x"}`), "s2"},
+	f, _, up := mcpFacade(t, ap, nil)
+	up.failFirst = 100
+	mcpPost(f, "/srv/mcp", callBody("7", "put", `{"path":"/x"}`))
+	for name, body := range map[string]string{
+		"id":        callBody("8", "put", `{"path":"/x"}`),
+		"tool":      callBody("7", "rm", `{"path":"/x"}`),
+		"arguments": callBody("7", "put", `{"path":"/y"}`),
 	} {
 		before := len(ap.calls)
-		mcpPost(f, "/srv/mcp", c.body, "Mcp-Session-Id", c.session)
+		mcpPost(f, "/srv/mcp", body)
 		if len(ap.calls) != before+1 {
 			t.Errorf("changed %s did not ask", name)
 		}
@@ -313,7 +338,8 @@ func TestMCPGate_RetryNeverMatchesAChangedCall(t *testing.T) {
 
 func TestMCPGate_AllowanceExpiresAfterTTL(t *testing.T) {
 	ap := allowOnce()
-	f, _, _ := mcpFacade(t, ap, nil)
+	f, _, up := mcpFacade(t, ap, nil)
+	up.failFirst = 100
 	now := time.Unix(1000, 0)
 	f.mcpAllowances.now = func() time.Time { return now }
 	body := callBody("7", "put", `{}`)

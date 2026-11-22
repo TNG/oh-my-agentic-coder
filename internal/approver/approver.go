@@ -252,7 +252,7 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 		a.mu.Lock()
 		a.denyTool[id] = true
 		a.mu.Unlock()
-		return facade.ApprovalDecision{Scope: facade.ScopeSession, Source: SourceSessionDeny}
+		return facade.ApprovalDecision{Scope: facade.ScopeSession, Source: facade.SourcePrompt}
 	case LabelDenyAll:
 		a.mu.Lock()
 		a.denyAll[skillKey] = true

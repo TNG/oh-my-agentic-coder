@@ -114,7 +114,7 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		refuse(d.Reason, d.Detail, policySource(d.Reason), "")
 		return
 	}
-	retryKey := mcpAllowanceKeyFor(r, route, call, canonical)
+	retryKey := mcpAllowanceKeyFor(route, call, canonical)
 	if d.NeedsApproval && isTool && f.mcpAllowances.has(retryKey) {
 		rec.Result, rec.Source = "allow", string(SourceRetry)
 		f.auditApproval(rec)
@@ -140,7 +140,11 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 	r.ContentLength = int64(len(canonical))
 	r.TransferEncoding = nil
 	r.Header.Set("Content-Length", strconv.Itoa(len(canonical)))
-	f.proxyHTTP(w, r, route, mcpRest, started)
+	forwarded := &statusCaptureWriter{ResponseWriter: w, status: http.StatusOK}
+	f.proxyHTTP(forwarded, r, route, mcpRest, started)
+	if isTool && forwarded.status/100 == 2 {
+		f.mcpAllowances.forget(retryKey)
+	}
 }
 
 type mcpVerdict struct {

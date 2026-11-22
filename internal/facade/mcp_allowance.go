@@ -2,7 +2,6 @@ package facade
 
 import (
 	"crypto/sha256"
-	"net/http"
 	"sync"
 	"time"
 
@@ -15,29 +14,29 @@ const (
 )
 
 // mcpAllowanceKey identifies one logical tool call: the bridge retries a
-// failed attempt with the same session, id, tool and bytes.
+// failed attempt with the same id, tool and bytes. The session id is not part
+// of it, because after a gateway restart the bridge initializes a new session
+// and then retries the call.
 type mcpAllowanceKey struct {
-	route, session, id, tool string
-	digest                   [sha256.Size]byte
+	route, id, tool string
+	digest          [sha256.Size]byte
 }
 
 // mcpAllowanceKeyFor returns the zero key for a call without an id, which
 // is never remembered.
-func mcpAllowanceKeyFor(r *http.Request, route *Route, call mcppolicy.Call, canonical []byte) mcpAllowanceKey {
+func mcpAllowanceKeyFor(route *Route, call mcppolicy.Call, canonical []byte) mcpAllowanceKey {
 	if len(call.ID) == 0 {
 		return mcpAllowanceKey{}
 	}
-	return mcpAllowanceKey{
-		route: route.key(), session: r.Header.Get("Mcp-Session-Id"), id: string(call.ID), tool: call.Tool,
-		digest: sha256.Sum256(canonical),
-	}
+	return mcpAllowanceKey{route: route.key(), id: string(call.ID), tool: call.Tool, digest: sha256.Sum256(canonical)}
 }
 
 // mcpAllowanceCache holds allowed tool calls for a short time so that
 // transport retries of one call ask the user once. The zero value is ready.
-// An allowance is not consumed by use. Concurrent identical calls that
-// arrive before the first answer each ask; every allowance still comes from
-// an approver answer.
+// Retries of a failed attempt reuse an allowance, a successful forward
+// consumes it, so a deliberate repeat of the same call asks again. Concurrent
+// identical calls that arrive before the first answer each ask; every
+// allowance still comes from an approver answer.
 type mcpAllowanceCache struct {
 	mu      sync.Mutex
 	until   map[mcpAllowanceKey]time.Time
@@ -75,6 +74,12 @@ func (c *mcpAllowanceCache) has(k mcpAllowanceKey) bool {
 	defer c.mu.Unlock()
 	exp, ok := c.until[k]
 	return ok && c.clock().Before(exp)
+}
+
+func (c *mcpAllowanceCache) forget(k mcpAllowanceKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.until, k)
 }
 
 func (c *mcpAllowanceCache) remember(k mcpAllowanceKey) {

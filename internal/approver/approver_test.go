@@ -631,7 +631,7 @@ func TestMCPDenyForSessionAnswersWithoutDialogForThatToolOnly(t *testing.T) {
 	c := &fakeChooser{answers: []string{LabelDenyTool, LabelDeny}}
 	a := newApprover(t, c)
 	d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "a=1"))
-	if d.Allow || d.Source != SourceSessionDeny || d.Scope != facade.ScopeSession {
+	if d.Allow || d.Source != facade.SourcePrompt || d.Scope != facade.ScopeSession {
 		t.Fatalf("deny for session: %+v", d)
 	}
 	if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "other=2")); d.Allow || d.Source != SourceSessionDeny || c.asked() != 1 {
@@ -661,7 +661,7 @@ func TestMCPDenyForSessionReachesWaitingCopiesAndIsNotStored(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "id=1")); !d.Allow && d.Source == SourceSessionDeny {
+			if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "id=1")); !d.Allow && d.Scope == facade.ScopeSession {
 				atomic.AddInt32(&denied, 1)
 			}
 		}()
