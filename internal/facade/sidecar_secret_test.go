@@ -107,7 +107,7 @@ func TestSidecarSeesOnlyRouteSecretOverUpgrade(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := startSidecar(t, reply)
 			port := startSecretFacade(t, s)
-			c := dialFacade(t, port, "GET /skill/ws HTTP/1.1\r\nHost: facade\r\nConnection: upgrade\r\nUpgrade: websocket\r\n"+agentHeaders+"\r\n")
+			c := dialFacade(t, port, "GET /skill/ws HTTP/1.1\r\nHost: facade\r\nConnection: upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"+agentHeaders+"\r\n")
 			resp := readAll(t, c)
 			time.Sleep(100 * time.Millisecond)
 
