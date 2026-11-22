@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,21 @@ type AuditConfig struct {
 type MCPConfig struct {
 	Unregistered       string `yaml:"unregistered"        json:"unregistered"`
 	LiteralCredentials string `yaml:"literal_credentials" json:"literal_credentials"`
+}
+
+// Validate rejects values that are not a known mode. Empty values are valid.
+func (m MCPConfig) Validate() error {
+	switch m.Unregistered {
+	case "", "allow", "warn", "ignore", "refuse":
+	default:
+		return fmt.Errorf("mcp.unregistered must be allow, warn, ignore or refuse, got %q", m.Unregistered)
+	}
+	switch m.LiteralCredentials {
+	case "", "allow", "warn", "refuse":
+	default:
+		return fmt.Errorf("mcp.literal_credentials must be allow, warn or refuse, got %q", m.LiteralCredentials)
+	}
+	return nil
 }
 
 // AuditEnabled reports whether auditing is on, treating unset as true.
@@ -397,7 +413,8 @@ func boolPtr(b bool) *bool { return &b }
 // LoadLauncher loads the launcher config for workdir.
 //
 // It reads both the workdir-local config (<workdir>/.opencode/oh-my-agentic-coder.yaml)
-// and the user-global config (~/.config/omac/config.yaml) when both exist.
+// and the user-global config (~/.config/omac/config.yaml, honoring
+// $XDG_CONFIG_HOME) when both exist.
 // Security-sensitive fields (sandbox profiles/selection, audit settings,
 // facade env passthrough) come exclusively from the global config or
 // compiled-in defaults — the workdir file may only contribute operational
@@ -409,8 +426,8 @@ func boolPtr(b bool) *bool { return &b }
 func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 	workdirFile := filepath.Join(workdir, ".opencode", "oh-my-agentic-coder.yaml")
 	var globalFile string
-	if home, err := os.UserHomeDir(); err == nil {
-		globalFile = filepath.Join(home, ".config", "omac", "config.yaml")
+	if dir := globaldir.Dir(); dir != "" {
+		globalFile = filepath.Join(dir, "config.yaml")
 	}
 
 	// Load the global config (trusted source for security fields).
@@ -439,6 +456,9 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 		if err := merged.Sandbox.MidsessionWatch.validate(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
 		}
+		if err := merged.MCP.Validate(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
+		}
 		return merged, localPath, nil
 	case localPath != "":
 		// Workdir file only: strip all security-sensitive fields; fill
@@ -455,6 +475,9 @@ func LoadLauncher(workdir string) (LauncherConfig, string, error) {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
 		}
 		if err := lc.Sandbox.MidsessionWatch.validate(); err != nil {
+			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
+		}
+		if err := lc.MCP.Validate(); err != nil {
 			return LauncherConfig{}, "", fmt.Errorf("parse %s: %w", globalPath, err)
 		}
 		return lc, globalPath, nil
@@ -490,6 +513,7 @@ func stripSecurityFields(lc LauncherConfig) LauncherConfig {
 	lc.Sandbox = SandboxConfig{}
 	lc.Audit = AuditConfig{}
 	lc.Facade.BaseEnvPassthrough = nil
+	lc.MCP = MCPConfig{}
 	return lc
 }
 

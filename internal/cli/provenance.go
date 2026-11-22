@@ -187,10 +187,6 @@ func classifyProfilePath(profPath, workdir string) string {
 	if rel, err := filepath.Rel(filepath.Join(workdir, ".opencode"), profPath); err == nil && !strings.HasPrefix(rel, "..") {
 		return "workdir"
 	}
-	home, err := os.UserHomeDir()
-	if err == nil && strings.HasPrefix(profPath, filepath.Join(home, ".config", "omac")) {
-		return "global"
-	}
 	return "global"
 }
 

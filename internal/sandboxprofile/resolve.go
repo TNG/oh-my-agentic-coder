@@ -2,7 +2,9 @@ package sandboxprofile
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,13 +81,14 @@ func DefaultProfile() *Profile {
 	}
 }
 
-// ProfileDir returns ~/.config/omac/sandbox-profiles.
+// ProfileDir returns the sandbox-profiles directory under the omac config
+// directory (~/.config/omac, honoring $XDG_CONFIG_HOME).
 func ProfileDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	dir := globaldir.Dir()
+	if dir == "" {
+		return "", errors.New("no omac config directory (set $HOME or $XDG_CONFIG_HOME)")
 	}
-	return filepath.Join(home, ".config", "omac", "sandbox-profiles"), nil
+	return filepath.Join(dir, "sandbox-profiles"), nil
 }
 
 // ProfilePath returns the on-disk path for a named profile.
