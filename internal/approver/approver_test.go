@@ -540,8 +540,8 @@ func TestMCPSkillAndServerOfTheSameNameDoNotCollide(t *testing.T) {
 	dir := t.TempDir()
 	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
 	a.Approve(context.Background(), req("/send"))
-	call := mcpReq("tng-slack", "POST /send", mcppolicy.Write, "")
-	skillID := VerdictID("wd-test", "tng-slack", "POST /send", KindRequired)
+	call := mcpReq("chat-skill", "POST /send", mcppolicy.Write, "")
+	skillID := VerdictID("wd-test", "chat-skill", "POST /send", KindRequired)
 	mcpSkill, mcpMatch := verdictSubject(call)
 	if skillID == VerdictID("wd-test", mcpSkill, mcpMatch, ruleKind(call)) {
 		t.Fatal("skill and MCP verdict ids collide")

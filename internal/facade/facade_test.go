@@ -437,7 +437,7 @@ func TestWriteStatusHidesPerDirTokens(t *testing.T) {
 	f := New("", "", []Route{
 		{Mount: "echo", Namespace: "", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 1}},
 		{Mount: "skill-marketplace", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: 2}},
-		{Mount: "tng-email", Namespace: "d31b174d117e4bb9739f8a96f3b0b66d", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 3}},
+		{Mount: "mail-skill", Namespace: "d31b174d117e4bb9739f8a96f3b0b66d", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 3}},
 		{Mount: "apple-calendar", Namespace: "34e8502d4fbd9ae9fd054d3f89e34b61", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 4}},
 	}, 1<<20, 0, "", "test")
 
