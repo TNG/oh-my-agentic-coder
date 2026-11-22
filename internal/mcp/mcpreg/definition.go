@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -129,11 +130,41 @@ func CheckCommandOutsideWorkdir(def *Definition, workdir string) error {
 	if !filepath.IsAbs(prog) || workdir == "" {
 		return nil
 	}
-	rel, err := filepath.Rel(resolveExisting(workdir), resolveExisting(prog))
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if insideDir(prog, workdir) {
 		return fmt.Errorf("server.command %q is inside the workdir %q, which the agent can modify", prog, workdir)
 	}
 	return nil
+}
+
+// ResolveCommand returns the absolute path of the server's program as the
+// host would run it: looked up on PATH for a bare name. It refuses a program
+// that resolves into workdir, which happens when PATH names a directory of
+// the project (for example node_modules/.bin): the agent could plant the
+// program there and have it run outside the sandbox with the secrets.
+// Callers run the returned path, so a later PATH lookup cannot pick up a
+// program the agent creates afterwards.
+func ResolveCommand(def *Definition, workdir string) (string, error) {
+	prog := def.Server.Command[0]
+	path, err := exec.LookPath(prog)
+	if err != nil {
+		return "", fmt.Errorf("server command %q not found: %w", prog, err)
+	}
+	if !filepath.IsAbs(path) {
+		if path, err = filepath.Abs(path); err != nil {
+			return "", err
+		}
+	}
+	if workdir != "" && insideDir(path, workdir) {
+		return "", fmt.Errorf("server command %q resolves to %q inside the workdir %q, which the agent can modify; use an absolute path outside it", prog, path, workdir)
+	}
+	return path, nil
+}
+
+// insideDir reports whether path is dir or lies below it, both with symlinks
+// resolved.
+func insideDir(path, dir string) bool {
+	rel, err := filepath.Rel(resolveExisting(dir), resolveExisting(path))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // resolveExisting resolves symlinks in the longest existing prefix of path,

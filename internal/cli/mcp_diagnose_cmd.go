@@ -2,10 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -61,7 +61,7 @@ func runMCPDiagnose(args []string, env *Env) int {
 			registered[r.Name] = true
 			problems := diagnoseEntry(scope, r.Entry, env.Workdir)
 			if *probe {
-				problems = append(problems, probeEntry(scope, r.Entry)...)
+				problems = append(problems, probeEntry(scope, r.Entry, env.Workdir)...)
 			}
 			servers = append(servers, diagnosedServer{label, problems})
 		}
@@ -139,12 +139,11 @@ func diagnoseEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string
 }
 
 func checkMCPCommand(def *mcpreg.Definition, workdir string) error {
-	prog := def.Server.Command[0]
 	if err := mcpreg.CheckCommandOutsideWorkdir(def, workdir); err != nil {
 		return err
 	}
-	if _, err := exec.LookPath(prog); err != nil {
-		return fmt.Errorf("command %q not found: %v", stripControlChars(prog), err)
+	if _, err := mcpreg.ResolveCommand(def, workdir); err != nil {
+		return errors.New(stripControlChars(err.Error()))
 	}
 	return nil
 }
@@ -165,7 +164,12 @@ func unclassifiedTools(def *mcpreg.Definition) []string {
 	return out
 }
 
-func probeEntry(scope mcpreg.Scope, e *mcpreg.Entry) []string {
+func probeEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string {
+	pinned, err := pinnedCommand(e, workdir)
+	if err != nil {
+		// diagnoseEntry already reports why the command cannot run.
+		return nil
+	}
 	sec := map[string]secrets.Secret{}
 	defer func() {
 		for _, v := range sec {
@@ -179,7 +183,7 @@ func probeEntry(scope mcpreg.Scope, e *mcpreg.Entry) []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mcpProbeTimeout+5*time.Second)
 	defer cancel()
-	live, stderrTail, err := mcpProbeListTools(ctx, e, sec, os.Environ(), mcpProbeTimeout)
+	live, stderrTail, err := mcpProbeListTools(ctx, pinned, sec, os.Environ(), mcpProbeTimeout)
 	if err != nil {
 		msg := "probe failed: " + stripControlChars(err.Error())
 		if tail := strings.TrimSpace(stripControlChars(stderrTail)); tail != "" {

@@ -1,6 +1,8 @@
 package mcpreg
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,5 +83,34 @@ func TestParseDefinitionRefusesBadPolicyFields(t *testing.T) {
 	_, err := ParseDefinition([]byte(policyBase + "tools:\n  - {name: a, class: read}\n  - {name: a, class: write}\n"))
 	if err == nil || !strings.Contains(err.Error(), `"a"`) {
 		t.Errorf("error should name the tool: %v", err)
+	}
+}
+
+func TestResolveCommandRefusesAProgramPATHFindsInTheWorkdir(t *testing.T) {
+	workdir := t.TempDir()
+	bin := filepath.Join(workdir, "node_modules", ".bin")
+	outside := t.TempDir()
+	for _, dir := range []string{bin, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "mcp-demo"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	def := &Definition{Name: "demo", Server: ServerSpec{Command: []string{"mcp-demo", "--flag"}}}
+
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+outside)
+	if _, err := ResolveCommand(def, workdir); err == nil || !strings.Contains(err.Error(), "inside the workdir") {
+		t.Fatalf("program in the workdir: %v", err)
+	}
+
+	t.Setenv("PATH", outside+string(os.PathListSeparator)+bin)
+	got, err := ResolveCommand(def, workdir)
+	if err != nil || got != filepath.Join(outside, "mcp-demo") {
+		t.Fatalf("program outside: %q %v", got, err)
+	}
+	if _, err := ResolveCommand(&Definition{Server: ServerSpec{Command: []string{"no-such-program-xyz"}}}, workdir); err == nil {
+		t.Fatal("a missing program must fail")
 	}
 }

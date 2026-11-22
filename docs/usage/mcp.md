@@ -143,7 +143,7 @@ approvals:
 | Field | Meaning |
 |---|---|
 | `name` | Name of the server. The harness shows it, and you use it in `omac mcp show <name>`. |
-| `server.command` | The command that starts a stdio MCP server. Use an absolute path or a command found on `PATH` (such as `npx` or `uvx`). Relative paths and absolute paths inside your project are refused. |
+| `server.command` | The command that starts a stdio MCP server. Use an absolute path or a command found on `PATH` (such as `npx` or `uvx`). Relative paths and absolute paths inside your project are refused. A program name that `PATH` resolves to a file inside your project (for example through `node_modules/.bin` on `PATH`) is refused when the gateway starts, and the gateway runs the resolved path for the whole session. |
 | `server.env` | Fixed, non-secret environment variables for the server. |
 | `server.env_passthrough` | Names of host environment variables to hand to the server as they are, for example a proxy setting. |
 | `secrets` | Names of secrets the server needs. omac asks for them at registration, stores them in the OS keychain and sets them as environment variables of the server process only. |

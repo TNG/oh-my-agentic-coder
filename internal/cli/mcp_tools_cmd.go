@@ -106,7 +106,12 @@ func probeMCPServer(env *Env, cmd string, scope mcpreg.Scope, name string) (*mcp
 		}
 		secs[sname] = v
 	}
-	live, tail, err := mcpprobe.ListTools(context.Background(), entry, secs, probeBaseEnv(entry.Def), toolProbeTimeout)
+	pinned, err := pinnedCommand(entry, env.Workdir)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "omac mcp %s: %v\n", cmd, err)
+		return nil, nil, false
+	}
+	live, tail, err := mcpprobe.ListTools(context.Background(), pinned, secs, probeBaseEnv(entry.Def), toolProbeTimeout)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac mcp %s: server %s failed: %s\n", cmd, name, stripControlChars(err.Error()))
 		if strings.TrimSpace(tail) != "" {
@@ -115,6 +120,20 @@ func probeMCPServer(env *Env, cmd string, scope mcpreg.Scope, name string) (*mcp
 		return nil, nil, false
 	}
 	return entry, live, true
+}
+
+// pinnedCommand returns a copy of entry whose server program is the absolute
+// path the host resolves, refused when it lies inside workdir.
+func pinnedCommand(entry *mcpreg.Entry, workdir string) (*mcpreg.Entry, error) {
+	prog, err := mcpreg.ResolveCommand(entry.Def, workdir)
+	if err != nil {
+		return nil, err
+	}
+	def := *entry.Def
+	def.Server.Command = append([]string{prog}, entry.Def.Server.Command[1:]...)
+	pinned := *entry
+	pinned.Def = &def
+	return &pinned, nil
 }
 
 // probeBaseEnv is what the gateway hands its children: the base passthrough

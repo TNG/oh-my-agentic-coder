@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -51,10 +50,14 @@ func runMCPServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac mcp serve: %v\n", err)
 		return ExitConfigInvalid
 	}
-	if _, err := exec.LookPath(def.Server.Command[0]); err != nil {
-		fmt.Fprintf(env.Stderr, "omac mcp serve: server command %q not found: %v\n", def.Server.Command[0], err)
+	// Pin the program once: every session runs this path, and a program that
+	// PATH finds inside the workdir is refused.
+	prog, err := mcpreg.ResolveCommand(def, os.Getenv("OMAC_WORKDIR"))
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "omac mcp serve: %v\n", err)
 		return ExitPrerequisiteMissing
 	}
+	def.Server.Command = append([]string{prog}, def.Server.Command[1:]...)
 
 	handler, shutdown, err := gateway.Handler(gateway.Options{
 		Def:      def,
