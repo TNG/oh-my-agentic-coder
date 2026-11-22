@@ -30,6 +30,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // SidecarSpec is the supervisor's view of one sidecar to run.
@@ -69,14 +70,17 @@ type SidecarSpec struct {
 	// marketplace) default to the dir the running harness loads. Empty when
 	// no harness context is available.
 	HarnessSkillsDir string
+	// RequireSecret makes the health probe also demand a 401 for a request
+	// without the per-spawn secret, proving the sidecar enforces it.
+	RequireSecret bool
 }
 
 // Running represents a started sidecar.
 type Running struct {
-	Name    string
-	Port    int
-	Cmd     *exec.Cmd
-	LogFile *os.File
+	Name     string
+	Upstream sidecarauth.Upstream
+	Cmd      *exec.Cmd
+	LogFile  *os.File
 
 	// audit bookkeeping (unexported): captured at spawn so process.exit
 	// can report duration and identity when the child is terminated.
@@ -242,6 +246,13 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 			return nil, fmt.Errorf("%s: %w", spec.Name, err)
 		}
 	}
+	if err := rejectReservedNames(spec); err != nil {
+		return nil, fmt.Errorf("%s: %w", spec.Name, err)
+	}
+	secret, err := sidecarauth.Mint()
+	if err != nil {
+		return nil, fmt.Errorf("%s: mint secret: %w", spec.Name, err)
+	}
 	port, err := allocEphemeralPort()
 	if err != nil {
 		return nil, fmt.Errorf("%s: port alloc: %w", spec.Name, err)
@@ -258,6 +269,8 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 	if err != nil {
 		return nil, fmt.Errorf("%s: open log: %w", spec.Name, err)
 	}
+
+	up := sidecarauth.Upstream{Port: port, Secret: secret}
 
 	// Build argv with ${SIDECAR_PORT} expansion.
 	argv := expandArgv(spec.Command, map[string]string{"SIDECAR_PORT": fmt.Sprint(port)})
@@ -276,7 +289,7 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = spec.SkillDir
-	cmd.Env = s.buildEnv(spec, port)
+	cmd.Env = s.buildEnv(spec, up)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	// A new process group so we can signal the entire child tree.
@@ -313,13 +326,13 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		s.auditor.Emit(audit.SecretInject(skillName, spec.Namespace, secretNames, configNames))
 	}
 
-	r := &Running{Name: spec.Name, Port: port, Cmd: cmd, LogFile: lf}
+	r := &Running{Name: spec.Name, Upstream: up, Cmd: cmd, LogFile: lf}
 	// Capture audit bookkeeping for the reaper + process.exit.
 	r.startedAt = time.Now()
 	r.auditSkill = skillName
 	r.auditNamespace = spec.Namespace
 
-	if err := waitHealth(ctx, port, spec.Health); err != nil {
+	if err := waitHealth(ctx, up, spec.Health, spec.RequireSecret); err != nil {
 		// No watchChild reaper is running yet for this child (it only
 		// starts after the health check passes below), so terminate must
 		// reap it itself: pass nil.
@@ -337,7 +350,7 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 // buildEnv constructs the sidecar's environment from scratch.
 // Precedence (high → low): injected secrets > skill env_passthrough >
 // facade base_env_passthrough > facade-injected vars.
-func (s *Supervisor) buildEnv(spec SidecarSpec, port int) []string {
+func (s *Supervisor) buildEnv(spec SidecarSpec, up sidecarauth.Upstream) []string {
 	vars := map[string]string{}
 
 	host := os.Environ()
@@ -358,7 +371,7 @@ func (s *Supervisor) buildEnv(spec SidecarSpec, port int) []string {
 		}
 	}
 	// Facade-injected.
-	vars["SIDECAR_PORT"] = fmt.Sprint(port)
+	vars["SIDECAR_PORT"] = fmt.Sprint(up.Port)
 	skillName := spec.SkillName
 	if skillName == "" {
 		skillName = spec.Name
@@ -376,10 +389,12 @@ func (s *Supervisor) buildEnv(spec SidecarSpec, port int) []string {
 		vars[name] = v
 	}
 
-	// Secrets — always win over passthrough and config.
+	// Secrets — always win over passthrough and config. The per-spawn secret
+	// is set last so nothing can override it.
 	for name, s := range spec.Secrets {
 		vars[name] = s.ExposeString()
 	}
+	vars[sidecarauth.EnvVar] = up.Secret
 
 	out := make([]string, 0, len(vars))
 	for k, v := range vars {
@@ -443,16 +458,38 @@ func terminate(cmd *exec.Cmd, timeout time.Duration, reaped <-chan struct{}) err
 	}
 }
 
-// waitHealth polls until the upstream returns 2xx on spec.Path or the
-// overall timeout (initial_delay_ms + timeout_ms) elapses.
-func waitHealth(ctx context.Context, port int, spec config.HealthSpec) error {
+// rejectReservedNames refuses a spec that tries to set the per-spawn secret
+// through its own secrets, config or env_passthrough.
+func rejectReservedNames(spec SidecarSpec) error {
+	for name := range spec.Secrets {
+		if sidecarauth.Reserved(name) {
+			return fmt.Errorf("secret %q is reserved", name)
+		}
+	}
+	for name := range spec.Config {
+		if sidecarauth.Reserved(name) {
+			return fmt.Errorf("config %q is reserved", name)
+		}
+	}
+	for _, name := range spec.EnvPassthrough {
+		if sidecarauth.Reserved(name) {
+			return fmt.Errorf("env_passthrough %q is reserved", name)
+		}
+	}
+	return nil
+}
+
+// waitHealth polls until the upstream returns 2xx on spec.Path when sent the
+// secret, or the overall timeout (initial_delay_ms + timeout_ms) elapses.
+// With require set, the upstream must also answer 401 without the secret.
+func waitHealth(ctx context.Context, up sidecarauth.Upstream, spec config.HealthSpec, require bool) error {
 	spec = spec.Defaults()
 	time.Sleep(time.Duration(spec.InitialDelayMS) * time.Millisecond)
 	deadline := time.Now().Add(time.Duration(spec.TimeoutMS) * time.Millisecond)
 	client := &http.Client{Timeout: 1 * time.Second}
 	probeURL := (&url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Host:   fmt.Sprintf("127.0.0.1:%d", up.Port),
 		Path:   spec.Path,
 	}).String()
 	var lastErr error
@@ -462,15 +499,9 @@ func waitHealth(ctx context.Context, port int, spec config.HealthSpec) error {
 			return ctx.Err()
 		default:
 		}
-		resp, err := client.Get(probeURL)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return nil
-			}
-			lastErr = fmt.Errorf("unexpected status %d", resp.StatusCode)
-		} else {
-			lastErr = err
+		lastErr = probe(ctx, client, probeURL, up.Secret, require)
+		if lastErr == nil {
+			return nil
 		}
 		time.Sleep(time.Duration(spec.IntervalMS) * time.Millisecond)
 	}
@@ -478,6 +509,43 @@ func waitHealth(ctx context.Context, port int, spec config.HealthSpec) error {
 		lastErr = errors.New("timeout")
 	}
 	return lastErr
+}
+
+func probe(ctx context.Context, client *http.Client, probeURL, secret string, require bool) error {
+	status, err := probeStatus(ctx, client, probeURL, secret)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("unexpected status %d", status)
+	}
+	if !require {
+		return nil
+	}
+	status, err = probeStatus(ctx, client, probeURL, "")
+	if err != nil {
+		return err
+	}
+	if status != http.StatusUnauthorized {
+		return fmt.Errorf("sidecar does not enforce %s: status %d without it, want 401", sidecarauth.Header, status)
+	}
+	return nil
+}
+
+func probeStatus(ctx context.Context, client *http.Client, probeURL, secret string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	if secret != "" {
+		req.Header.Set(sidecarauth.Header, secret)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode, nil
 }
 
 // allocEphemeralPort binds :0 on 127.0.0.1, remembers the port, and closes.

@@ -23,6 +23,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/osinfo"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // MetaFileName is the on-disk filename of the per-skill metadata
@@ -64,6 +65,9 @@ type SidecarMeta struct {
 	Protocols      []string          `yaml:"protocols,omitempty"`
 	Limits         *LimitsSpec       `yaml:"limits,omitempty"`
 	Approvals      *ApprovalsSpec    `yaml:"approvals,omitempty"`
+	// RequireSecret makes the supervisor's health probe fail unless the
+	// sidecar answers 401 to a request without the per-spawn secret.
+	RequireSecret bool `yaml:"require_secret,omitempty"`
 }
 
 // ApprovalsSpec is the optional endpoint declaration under sidecar.approvals.
@@ -81,8 +85,8 @@ type ApprovalSpec struct {
 	Description string        `yaml:"description,omitempty"`
 }
 
-// UnmarshalYAML decodes the sidecar block as usual, with two exceptions that
-// keep a mistake in the approvals block from switching every dialog off:
+// UnmarshalYAML decodes the sidecar block as usual, with exceptions that
+// keep a mistake in a security declaration from silently weakening it:
 //   - An `approvals:` key with no value is read as an empty declaration
 //     (every route asks), not as a missing one (nothing asks). yaml.v3 leaves
 //     a pointer nil for a null value, so a block whose entries are all
@@ -90,6 +94,9 @@ type ApprovalSpec struct {
 //   - A key that is a near-miss of `approvals` (e.g. `aprovals`) is an
 //     error. Other unknown keys in omac.yaml are only warned about, but this
 //     one would silently mean "no block".
+//   - A near-miss of `require_secret` (e.g. `require_secrets`) is an error
+//     for the same reason: ignored, the sidecar is never checked for
+//     enforcing its secret.
 func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("line %d: sidecar must be a mapping, got %s", node.Line, node.ShortTag())
@@ -98,6 +105,9 @@ func (s *SidecarMeta) UnmarshalYAML(node *yaml.Node) error {
 	for _, k := range keys {
 		if k != "approvals" && nearApprovals(k) {
 			return fmt.Errorf("sidecar.%s: unknown key; did you mean approvals? Misspelled, the block is ignored and nothing asks", k)
+		}
+		if k != requireSecretKey && nearKey(k, requireSecretKey) {
+			return fmt.Errorf("sidecar.%s: unknown key; did you mean %s? Misspelled, the sidecar is not required to enforce its secret", k, requireSecretKey)
 		}
 	}
 	type plain SidecarMeta
@@ -167,11 +177,19 @@ func mappingKeys(node *yaml.Node) []string {
 // A key with the `x-` or `x_` extension prefix holds an anchor or extension
 // data by convention (`x-approvals: &safe {...}`), not a misspelled block.
 func nearApprovals(k string) bool {
+	return nearKey(k, "approvals")
+}
+
+const requireSecretKey = "require_secret"
+
+// nearKey reports whether k is key or within two typos of it, with the same
+// `x-` extension exemption as nearApprovals.
+func nearKey(k, key string) bool {
 	k = strings.ToLower(k)
 	if strings.HasPrefix(k, "x-") || strings.HasPrefix(k, "x_") {
 		return false
 	}
-	return editDistance(k, "approvals") <= 2
+	return editDistance(k, key) <= 2
 }
 
 // editDistance is the Levenshtein distance between a and b (bytes).
@@ -500,7 +518,7 @@ func refusedKey(path string) bool {
 		return true
 	}
 	if parent, key, nested := strings.Cut(path, "."); nested {
-		return parent == "sidecar" && !strings.Contains(key, ".") && nearApprovals(key)
+		return parent == "sidecar" && !strings.Contains(key, ".") && (nearApprovals(key) || nearKey(key, requireSecretKey))
 	}
 	return nearApprovals(path)
 }
@@ -651,6 +669,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 				return fmt.Errorf("sidecar.secrets[%d].pattern is not a valid regex: %w", i, err)
 			}
 		}
+		if sidecarauth.Reserved(sec.Name) {
+			return fmt.Errorf("sidecar.secrets[%d].name %q is reserved for the per-spawn sidecar secret", i, sec.Name)
+		}
 		if err := claim(sec.Name, "secrets"); err != nil {
 			return err
 		}
@@ -710,6 +731,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		default:
 			return fmt.Errorf("sidecar.config[%d].type %q is not one of: string, bool, int, enum", i, c.Type)
 		}
+		if sidecarauth.Reserved(c.Name) {
+			return fmt.Errorf("sidecar.config[%d].name %q is reserved for the per-spawn sidecar secret", i, c.Name)
+		}
 		if err := claim(c.Name, "config"); err != nil {
 			return err
 		}
@@ -718,6 +742,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 	for _, p := range s.EnvPassthrough {
 		if !envNameRE.MatchString(p) {
 			return fmt.Errorf("sidecar.env_passthrough entry %q is not a valid env var name", p)
+		}
+		if sidecarauth.Reserved(p) {
+			return fmt.Errorf("sidecar.env_passthrough entry %q is reserved for the per-spawn sidecar secret", p)
 		}
 		// env_passthrough is allowed to overlap with a secret (legacy
 		// fallback pattern) but not with a config field — fields aren't

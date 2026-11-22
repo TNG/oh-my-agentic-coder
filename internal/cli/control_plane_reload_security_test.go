@@ -15,6 +15,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // The live-reload control plane.
@@ -107,11 +108,11 @@ func TestSecurityReloadCannotReplaceApprovedSkillRoute(t *testing.T) {
 	// Owner is set so AddRoute can enforce that a different skill cannot
 	// claim this mount later (the route ownership guard in facade.AddRoute).
 	r.facade.AddRoute(facade.Route{
-		Mount:        "slack",
-		UpstreamPort: portOf(t, victim.URL),
-		Skill:        "slack",
-		Owner:        "slack",
-		State:        facade.RouteReady,
+		Mount:    "slack",
+		Upstream: sidecarauth.Upstream{Port: portOf(t, victim.URL)},
+		Skill:    "slack",
+		Owner:    "slack",
+		State:    facade.RouteReady,
 	})
 	r.markMounted("slack", "slack")
 

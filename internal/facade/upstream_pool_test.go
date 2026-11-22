@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // countingListener counts accepted and closed connections so tests can see
@@ -93,7 +95,7 @@ func poolFacade(t *testing.T, routes ...Route) (*Facade, string) {
 }
 
 func echoRoute(port int) Route {
-	return Route{Mount: "echo", UpstreamPort: port, State: RouteReady}
+	return Route{Mount: "echo", Upstream: sidecarauth.Upstream{Port: port}, State: RouteReady}
 }
 
 // getStatus issues a GET and drains the body, returning the status.

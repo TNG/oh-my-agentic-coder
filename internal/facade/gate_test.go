@@ -2,6 +2,7 @@ package facade
 
 import (
 	"context"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"net/http"
@@ -90,7 +91,7 @@ func gatedFacade(t *testing.T, ap Approver) (*Facade, *recAuditor, func() []stri
 	}))
 	t.Cleanup(up.Close)
 	port := up.Listener.Addr().(*net.TCPAddr).Port
-	f := New("", "", []Route{{Mount: "echo", UpstreamPort: port, Skill: "echo-rest", Approvals: gateSet(t)}},
+	f := New("", "", []Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: port}, Skill: "echo-rest", Approvals: gateSet(t)}},
 		1<<20, 30*time.Second, "", "test")
 	f.Approver = ap
 	rec := &recAuditor{}
@@ -351,7 +352,7 @@ func TestGate_UngatedRouteIsUnchanged(t *testing.T) {
 	var got string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r.URL.Path }))
 	defer up.Close()
-	f := New("", "", []Route{{Mount: "echo", UpstreamPort: up.Listener.Addr().(*net.TCPAddr).Port, Skill: "s"}},
+	f := New("", "", []Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: up.Listener.Addr().(*net.TCPAddr).Port}, Skill: "s"}},
 		1<<20, 30*time.Second, "", "test")
 	do(f, "GET", "/echo/anything/at/all")
 	if got != "/anything/at/all" {
@@ -504,7 +505,7 @@ func TestGate_UpgradeIsNamedAndForwardedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	ap := &fakeApprover{d: ApprovalDecision{Allow: true, Source: SourcePrompt, Scope: ScopeOnce}}
-	f := New("", "127.0.0.1:0", []Route{{Mount: "skill", UpstreamPort: s.port, State: RouteReady, Approvals: set}}, 1<<20, time.Minute, "", "test")
+	f := New("", "127.0.0.1:0", []Route{{Mount: "skill", Upstream: sidecarauth.Upstream{Port: s.port}, State: RouteReady, Approvals: set}}, 1<<20, time.Minute, "", "test")
 	f.Approver = ap
 	if err := f.Start(context.Background()); err != nil {
 		t.Fatal(err)

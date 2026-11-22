@@ -2,9 +2,13 @@ package supervisor
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,6 +17,8 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // envMap turns buildEnv's []string ("K=V") into a map for assertions.
@@ -36,7 +42,7 @@ func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
 		Name:      "__global__/skill-marketplace",
 		SkillName: "skill-marketplace",
 		Workdir:   "/proj",
-	}, 1234))
+	}, sidecarauth.Upstream{Port: 1234, Secret: "s3"}))
 	if got := env["SIDECAR_SKILL"]; got != "skill-marketplace" {
 		t.Errorf("SIDECAR_SKILL = %q, want skill-marketplace", got)
 	}
@@ -48,7 +54,7 @@ func TestBuildEnvSidecarSkillIsPlainName(t *testing.T) {
 	}
 
 	// SkillName empty (start mode): falls back to Name.
-	env2 := envMap(s.buildEnv(SidecarSpec{Name: "slack"}, 1))
+	env2 := envMap(s.buildEnv(SidecarSpec{Name: "slack"}, sidecarauth.Upstream{Port: 1, Secret: "s3"}))
 	if env2["SIDECAR_SKILL"] != "slack" {
 		t.Errorf("fallback SIDECAR_SKILL = %q, want slack", env2["SIDECAR_SKILL"])
 	}
@@ -312,5 +318,104 @@ func TestAuthorizerBlocksSpawnBeforeExec(t *testing.T) {
 	_, _ = permitting.AddSidecar(t.Context(), spec2) // health will fail; we only assert it ran
 	if _, err := os.Stat(okMarker); err != nil {
 		t.Errorf("permitted command did not run: %v", err)
+	}
+}
+
+func TestBuildEnvAlwaysCarriesMintedSecret(t *testing.T) {
+	s := New(nil, nil, nil)
+	env := envMap(s.buildEnv(SidecarSpec{Name: "x"}, sidecarauth.Upstream{Port: 1, Secret: "minted"}))
+	if env[sidecarauth.EnvVar] != "minted" {
+		t.Errorf("%s = %q, want minted", sidecarauth.EnvVar, env[sidecarauth.EnvVar])
+	}
+}
+
+func TestBuildEnvSecretCannotBeOverridden(t *testing.T) {
+	t.Setenv(sidecarauth.EnvVar, "host")
+	s := New([]string{sidecarauth.EnvVar}, nil, nil)
+	env := envMap(s.buildEnv(SidecarSpec{
+		Name:           "x",
+		EnvPassthrough: []string{sidecarauth.EnvVar},
+		Config:         map[string]string{sidecarauth.EnvVar: "cfg"},
+		Secrets:        map[string]secrets.Secret{sidecarauth.EnvVar: secrets.NewSecretString("sec")},
+	}, sidecarauth.Upstream{Port: 1, Secret: "minted"}))
+	if env[sidecarauth.EnvVar] != "minted" {
+		t.Errorf("%s = %q, want minted", sidecarauth.EnvVar, env[sidecarauth.EnvVar])
+	}
+}
+
+func TestStartOneRefusesReservedNames(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "spawned")
+	base := SidecarSpec{
+		Name:     "bad",
+		SkillDir: dir,
+		Command:  []string{"sh", "-c", "touch '" + marker + "'"},
+		LogPath:  filepath.Join(dir, "log"),
+	}
+	for name, mutate := range map[string]func(*SidecarSpec){
+		"secrets": func(sp *SidecarSpec) {
+			sp.Secrets = map[string]secrets.Secret{"omac_sidecar_secret": secrets.NewSecretString("x")}
+		},
+		"config":          func(sp *SidecarSpec) { sp.Config = map[string]string{sidecarauth.EnvVar: "x"} },
+		"env_passthrough": func(sp *SidecarSpec) { sp.EnvPassthrough = []string{sidecarauth.EnvVar} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := base
+			mutate(&spec)
+			_, err := New(nil, nil, nil).AddSidecar(t.Context(), spec)
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("err = %v, want reserved-name refusal", err)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatal("command ran despite reserved name")
+			}
+		})
+	}
+}
+
+func upstreamOf(t *testing.T, srv *httptest.Server, secret string) sidecarauth.Upstream {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sidecarauth.Upstream{Port: port, Secret: secret}
+}
+
+var fastHealth = config.HealthSpec{InitialDelayMS: 1, IntervalMS: 10, TimeoutMS: 300}
+
+func TestWaitHealthSendsSecretAndRequiresEnforcement(t *testing.T) {
+	enforcing, err := sidecarauth.Require("s3", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(enforcing)
+	defer srv.Close()
+	if err := waitHealth(t.Context(), upstreamOf(t, srv, "s3"), fastHealth, true); err != nil {
+		t.Fatalf("enforcing sidecar: %v", err)
+	}
+	if err := waitHealth(t.Context(), upstreamOf(t, srv, "wrong"), fastHealth, false); err == nil {
+		t.Fatal("probe must send the minted secret and need a 2xx")
+	}
+}
+
+func TestWaitHealthFailsWhenSidecarIgnoresSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	up := upstreamOf(t, srv, "s3")
+	if err := waitHealth(t.Context(), up, fastHealth, false); err != nil {
+		t.Fatalf("without RequireSecret an open sidecar passes: %v", err)
+	}
+	err := waitHealth(t.Context(), up, fastHealth, true)
+	if err == nil || !strings.Contains(err.Error(), "does not enforce") {
+		t.Fatalf("err = %v, want enforcement failure", err)
 	}
 }

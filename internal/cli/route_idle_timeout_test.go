@@ -9,6 +9,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 func TestRouteIdleTimeout(t *testing.T) {
@@ -51,16 +52,16 @@ var idleRouteBuilders = []struct {
 	build func(meta *config.Meta, port int) facade.Route
 }{
 	{"start", func(m *config.Meta, port int) facade.Route {
-		return startRoute("limited", port, "limited", "/skill", m, routeApprovals(m), config.DefaultHealthPath)
+		return startRoute("limited", sidecarauth.Upstream{Port: port}, "limited", "/skill", m, routeApprovals(m), config.DefaultHealthPath)
 	}},
 	{"serve", func(m *config.Meta, port int) facade.Route {
-		return readySkillRoute("limited", "limited", "tok", "/skill", m).facadeRoute(port)
+		return readySkillRoute("limited", "limited", "tok", "/skill", m).facadeRoute(sidecarauth.Upstream{Port: port})
 	}},
 	{"serve single-directory alias", func(m *config.Meta, port int) facade.Route {
-		return readySkillRoute("limited", "limited", "tok", "/skill", m).flatAliasRoute(port)
+		return readySkillRoute("limited", "limited", "tok", "/skill", m).flatAliasRoute(sidecarauth.Upstream{Port: port})
 	}},
 	{"reload", func(m *config.Meta, port int) facade.Route {
-		return reloadRoute("limited", port, "limited", m)
+		return reloadRoute("limited", sidecarauth.Upstream{Port: port}, "limited", m)
 	}},
 }
 

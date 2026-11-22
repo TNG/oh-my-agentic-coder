@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"net/http"
@@ -242,7 +243,7 @@ ready:
 	// Start the facade on a Unix socket routing /echo/* → sidecarPort.
 	socket := filepath.Join(workDir, "b.sock")
 	f := facade.New(socket, "",
-		[]facade.Route{{Mount: "echo", UpstreamPort: sidecarPort, Skill: "echo-rest"}},
+		[]facade.Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: sidecarPort}, Skill: "echo-rest"}},
 		1<<20,
 		30*time.Second,
 		"", "itest")

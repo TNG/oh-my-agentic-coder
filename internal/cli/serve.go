@@ -32,6 +32,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillsource"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
@@ -1605,7 +1606,7 @@ func (s *serveServer) rediscover(d *dirState) {
 			if rerr != nil {
 				sr := &skillRoute{Name: ent.Name, Mount: ent.Name, Namespace: token,
 					State: facade.RouteBroken, Detail: rerr.Error()}
-				s.installRoute(sr, 0)
+				s.installRoute(sr, sidecarauth.Upstream{})
 				d.mu.Lock()
 				d.Skills[sr.Mount] = sr
 				d.mu.Unlock()
@@ -1750,7 +1751,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 
 	if skillstate.Has(problems, skillstate.MetaBroken) {
 		sr := &skillRoute{Name: e.Name, Mount: e.Name, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: "omac.yaml invalid or missing sidecar"}
-		s.installRoute(sr, 0)
+		s.installRoute(sr, sidecarauth.Upstream{})
 		return sr
 	}
 	mount := armed.Mount
@@ -1758,7 +1759,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	broken := func(detail string) *skillRoute {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
 			State: facade.RouteBroken, Detail: detail}
-		s.installRoute(sr, 0)
+		s.installRoute(sr, sidecarauth.Upstream{})
 		return sr
 	}
 
@@ -1795,7 +1796,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		}
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir,
 			State: facade.RoutePendingCredentials, Missing: st.Missing, Detail: st.Detail}
-		s.installRoute(sr, 0)
+		s.installRoute(sr, sidecarauth.Upstream{})
 		return sr
 	}
 
@@ -1825,6 +1826,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		LogPath:          filepath.Join(s.rtDir, "logs", namespace+"-"+e.Name+".log"),
 		Workdir:          workdir, // -> OMAC_WORKDIR (the project, not the skill dir)
 		HarnessSkillsDir: s.harness.WorkdirSkillsDir(),
+		RequireSecret:    snapM.Sidecar.RequireSecret,
 	}
 	running, serr := s.sup.AddSidecar(s.ctx, spec)
 	// Wipe secret material now that the sidecar has been spawned (its env was
@@ -1833,11 +1835,11 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 	armed.Zero()
 	if serr != nil {
 		sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: absDir, State: facade.RouteBroken, Detail: serr.Error()}
-		s.installRoute(sr, 0)
+		s.installRoute(sr, sidecarauth.Upstream{})
 		return sr
 	}
 	sr := readySkillRoute(e.Name, mount, namespace, snapDir, snapM)
-	s.installRoute(sr, running.Port)
+	s.installRoute(sr, running.Upstream)
 	return sr
 }
 
@@ -1952,28 +1954,28 @@ func joinCSV(parts []string) string {
 }
 
 // facadeRoute is the route that serve mode mounts for sr, in front of the
-// sidecar listening on port.
-func (sr *skillRoute) facadeRoute(port int) facade.Route {
+// sidecar listening on up.
+func (sr *skillRoute) facadeRoute(up sidecarauth.Upstream) facade.Route {
 	return facade.Route{
-		Mount:        sr.Mount,
-		Namespace:    sr.Namespace,
-		UpstreamPort: port,
-		Skill:        sr.Name,
-		Owner:        sr.Name,
-		SkillDir:     sr.SkillDir,
-		Approvals:    sr.Approvals,
-		HealthPath:   sr.HealthPath,
-		IdleTimeout:  sr.IdleTimeout,
-		State:        sr.State,
-		Detail:       sr.Detail,
+		Mount:       sr.Mount,
+		Namespace:   sr.Namespace,
+		Upstream:    up,
+		Skill:       sr.Name,
+		Owner:       sr.Name,
+		SkillDir:    sr.SkillDir,
+		Approvals:   sr.Approvals,
+		HealthPath:  sr.HealthPath,
+		IdleTimeout: sr.IdleTimeout,
+		State:       sr.State,
+		Detail:      sr.Detail,
 	}
 }
 
 // flatAliasRoute is the namespace-less, always-ready route that
 // single-directory serve mounts next to the namespaced one, so the flat path
 // /<mount> reaches the same sidecar.
-func (sr *skillRoute) flatAliasRoute(port int) facade.Route {
-	r := sr.facadeRoute(port)
+func (sr *skillRoute) flatAliasRoute(up sidecarauth.Upstream) facade.Route {
+	r := sr.facadeRoute(up)
 	r.Namespace = ""
 	r.State = facade.RouteReady
 	r.Detail = ""
@@ -1987,8 +1989,8 @@ func readySkillRoute(name, mount, namespace, snapDir string, snapM *config.Meta)
 		Approvals: routeApprovals(snapM), HealthPath: config.DefaultHealthPath, IdleTimeout: routeIdleTimeout(snapM)}
 }
 
-func (s *serveServer) installRoute(sr *skillRoute, port int) {
-	s.facade.AddRoute(sr.facadeRoute(port))
+func (s *serveServer) installRoute(sr *skillRoute, up sidecarauth.Upstream) {
+	s.facade.AddRoute(sr.facadeRoute(up))
 	// Audit a route entering a non-ready state (pending-credentials or
 	// broken). Ready routes are covered by process.exec/facade.request.
 	if sr.State != facade.RouteReady {
@@ -2029,15 +2031,14 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if sr.State != facade.RouteReady {
 			continue
 		}
-		// Mirror the namespaced route as a flat one. We re-resolve the
-		// upstream by reading the namespaced route's port from the facade
-		// via a fresh AddRoute that copies the upstream; since we don't
-		// retain the port in skillRoute, look it up through the facade.
-		port := s.facade.UpstreamPort(sr.Namespace, sr.Mount)
-		if port == 0 {
+		// Mirror the namespaced route as a flat one. The upstream (port and
+		// secret) is not retained in skillRoute, so look it up through the
+		// facade.
+		up, ok := s.facade.Upstream(sr.Namespace, sr.Mount)
+		if !ok || up.Port == 0 {
 			continue
 		}
-		s.facade.AddRoute(sr.flatAliasRoute(port))
+		s.facade.AddRoute(sr.flatAliasRoute(up))
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}

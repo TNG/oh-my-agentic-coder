@@ -19,6 +19,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
 	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
@@ -521,6 +522,7 @@ func (r *startReloader) reload() []string {
 			Health:         health.Defaults(),
 			LogPath:        filepath.Join(r.rtDir, "logs", e.Name+".log"),
 			Workdir:        r.env.Workdir,
+			RequireSecret:  snapM.Sidecar.RequireSecret,
 		}
 		running, serr := r.sup.AddSidecar(r.ctx, spec)
 		armed.Zero() // the sidecar's env was built synchronously inside AddSidecar
@@ -530,7 +532,7 @@ func (r *startReloader) reload() []string {
 			}
 			continue
 		}
-		r.facade.AddRoute(reloadRoute(mount, running.Port, e.Name, snapM))
+		r.facade.AddRoute(reloadRoute(mount, running.Upstream, e.Name, snapM))
 		r.markMounted(e.Name, mount)
 		added = append(added, mount)
 		if r.verbose {
@@ -542,15 +544,15 @@ func (r *startReloader) reload() []string {
 
 // reloadRoute is the ready route that a reload mounts for a newly added
 // skill, in front of the sidecar listening on port.
-func reloadRoute(mount string, port int, name string, meta *config.Meta) facade.Route {
+func reloadRoute(mount string, up sidecarauth.Upstream, name string, meta *config.Meta) facade.Route {
 	return facade.Route{
-		Mount:        mount,
-		UpstreamPort: port,
-		IdleTimeout:  routeIdleTimeout(meta),
-		Skill:        name,
-		Owner:        name,
-		Approvals:    routeApprovals(meta),
-		HealthPath:   config.DefaultHealthPath,
-		State:        facade.RouteReady,
+		Mount:       mount,
+		Upstream:    up,
+		IdleTimeout: routeIdleTimeout(meta),
+		Skill:       name,
+		Owner:       name,
+		Approvals:   routeApprovals(meta),
+		HealthPath:  config.DefaultHealthPath,
+		State:       facade.RouteReady,
 	}
 }

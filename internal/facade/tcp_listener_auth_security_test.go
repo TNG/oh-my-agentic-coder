@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -53,10 +54,10 @@ func TestSecurityTCPListenerRequiresAuthentication(t *testing.T) {
 	t.Cleanup(reg.Close)
 
 	f := New("", "127.0.0.1:0", []Route{{
-		Mount:        "slack",
-		UpstreamPort: s.port,
-		Skill:        "slack",
-		State:        RouteReady,
+		Mount:    "slack",
+		Upstream: sidecarauth.Upstream{Port: s.port},
+		Skill:    "slack",
+		State:    RouteReady,
 	}}, 0, time.Minute, "", "test")
 	f.IntentRegistry = reg
 	f.FacadeToken = "test-facade-token" // enable TCP authentication
@@ -132,10 +133,10 @@ func TestSecurityTCPAuthRejectsNonLoopbackSource(t *testing.T) {
 
 	s := startSidecar(t, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbody")
 	f := New("", "127.0.0.1:0", []Route{{
-		Mount:        "slack",
-		UpstreamPort: s.port,
-		Skill:        "slack",
-		State:        RouteReady,
+		Mount:    "slack",
+		Upstream: sidecarauth.Upstream{Port: s.port},
+		Skill:    "slack",
+		State:    RouteReady,
 	}}, 0, time.Minute, "", "test")
 	f.FacadeToken = "test-facade-token"
 	if err := f.Start(context.Background()); err != nil {
@@ -183,10 +184,10 @@ func TestSecurityUnixSocketExemptByTransportFlag(t *testing.T) {
 	socket := filepath.Join(dir, "s.sock")
 
 	f := New(socket, "", []Route{{
-		Mount:        "slack",
-		UpstreamPort: upstreamPort,
-		Skill:        "slack",
-		State:        RouteReady,
+		Mount:    "slack",
+		Upstream: sidecarauth.Upstream{Port: upstreamPort},
+		Skill:    "slack",
+		State:    RouteReady,
 	}}, 0, time.Minute, "", "test")
 	f.FacadeToken = "test-facade-token"
 	if err := f.Start(context.Background()); err != nil {

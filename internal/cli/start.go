@@ -25,6 +25,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/session"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillsource"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
@@ -685,6 +686,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			LogPath:          filepath.Join(rtDir, "logs", s.Entry.Name+".log"),
 			Workdir:          env.Workdir,
 			HarnessSkillsDir: harness.WorkdirSkillsDir(),
+			RequireSecret:    snapM.Sidecar.RequireSecret,
 		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -700,7 +702,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	mounts := make([]string, 0, len(running))
 	for i, r := range running {
 		mount := approved[i].Mount
-		routes = append(routes, startRoute(mount, r.Port, r.Name, approved[i].AbsDir, approved[i].Meta, approvalSets[i], healthPaths[i]))
+		routes = append(routes, startRoute(mount, r.Upstream, r.Name, approved[i].AbsDir, approved[i].Meta, approvalSets[i], healthPaths[i]))
 		mounts = append(mounts, mount)
 	}
 	// Mount unapproved skills as broken routes so a probe gets an
@@ -1546,14 +1548,14 @@ func createRuntimeDir(workdir string) (string, error) {
 
 // startRoute is the route that start mounts for a running skill sidecar on
 // port, with the limits from its manifest.
-func startRoute(mount string, port int, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
+func startRoute(mount string, up sidecarauth.Upstream, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
 	var maxBody int64
 	if meta != nil && meta.Sidecar != nil && meta.Sidecar.Limits != nil {
 		maxBody = meta.Sidecar.Limits.MaxBodyBytes
 	}
 	return facade.Route{
 		Mount:        mount,
-		UpstreamPort: port,
+		Upstream:     up,
 		MaxBodyBytes: maxBody,
 		IdleTimeout:  routeIdleTimeout(meta),
 		Skill:        name,
