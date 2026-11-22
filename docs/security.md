@@ -438,6 +438,13 @@ Sandbox policy grants (filesystem paths, network hosts, environment variables) l
 
 ## Environment filtering
 
+omac does not change how a harness is configured. Claude Code, for example, may
+send telemetry or error reports to third-party hosts, as its own settings allow.
+To stop that, set its documented opt-outs (such as `DISABLE_TELEMETRY`, which
+must also be allowed through with `environment.allow_vars`), or deny the hosts
+with `network.deny_domain`. Every connection leaves through the network proxy,
+which asks per host.
+
 The sandbox does not inherit all environment variables from the shell that
 launched omac. It starts from an explicit allow list — the `OMAC_*` prefix,
 basic system variables (`HOME`, `PATH`, `LANG`, …), and the key the selected
