@@ -114,7 +114,11 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		refuse(d.Reason, d.Detail, policySource(d.Reason), "")
 		return
 	}
-	if d.NeedsApproval {
+	retryKey := mcpAllowanceKeyFor(r, route, call, canonical)
+	if d.NeedsApproval && isTool && f.mcpAllowances.has(retryKey) {
+		rec.Result, rec.Source = "allow", string(SourceRetry)
+		f.auditApproval(rec)
+	} else if d.NeedsApproval {
 		verdict := f.askMCP(r, route, call, d.Class, args)
 		if !verdict.decision.Allow {
 			refuse(verdict.reason, "the call to tool "+call.Tool+" of server "+route.MCP.Server+" was not approved ("+string(verdict.decision.Source)+")",
@@ -123,6 +127,9 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		}
 		rec.Result, rec.Source, rec.Scope = "allow", string(verdict.decision.Source), string(verdict.decision.Scope)
 		f.auditApproval(rec)
+		if isTool {
+			f.mcpAllowances.remember(retryKey)
+		}
 	} else if isTool {
 		rec.Result, rec.Source = "allow", string(SourceDeclared)
 		f.auditApproval(rec)

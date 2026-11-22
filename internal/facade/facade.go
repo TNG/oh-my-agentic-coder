@@ -207,12 +207,15 @@ type Facade struct {
 	slots     map[int]sidecarSlots // by sidecar port, created on first use
 	limits    upstreamLimits
 
-	server      *http.Server
-	unixLn      net.Listener
-	tcpLn       net.Listener
-	boundTCPort int // resolved port if TCPAddr ends in :0
-	accLog      *log.Logger
-	accFile     *os.File
+	// mcpAllowances remembers allowed MCP tool calls so the bridge's
+	// transport retry of one call does not ask again.
+	mcpAllowances mcpAllowanceCache
+	server        *http.Server
+	unixLn        net.Listener
+	tcpLn         net.Listener
+	boundTCPort   int // resolved port if TCPAddr ends in :0
+	accLog        *log.Logger
+	accFile       *os.File
 }
 
 // ProtectedPathChecker reports whether a given absolute path is covered

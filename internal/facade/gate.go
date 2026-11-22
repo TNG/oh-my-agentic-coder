@@ -70,6 +70,7 @@ const (
 	SourceMCPUnparseable ApprovalSource = "mcp-unparseable" // the MCP message failed strict parsing
 	SourceMCPUnlisted    ApprovalSource = "mcp-unlisted"    // the MCP method or tool is not allowed or not declared
 	SourceMCPAccess      ApprovalSource = "mcp-access"      // the tool's class is not allowed by the access mode
+	SourceRetry          ApprovalSource = "retry"           // an MCP call repeated within seconds of its allowed transport attempt
 )
 
 // ApprovalScope is how far a user answer reaches.

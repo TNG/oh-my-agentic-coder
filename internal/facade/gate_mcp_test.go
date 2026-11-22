@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -267,5 +268,125 @@ func TestMCPGate_OnlyMCPPathAndSessionMethods(t *testing.T) {
 	}
 	if got := up.seen(); len(got) != 2 || got[0] != "GET /mcp" || got[1] != "DELETE /mcp" {
 		t.Errorf("upstream saw %v", got)
+	}
+}
+
+func allowOnce() *fakeApprover {
+	return &fakeApprover{d: ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}}
+}
+
+func TestMCPGate_RetryOfAllowedCallAsksOnce(t *testing.T) {
+	ap := allowOnce()
+	f, rec, up := mcpFacade(t, ap, nil)
+	body := callBody("7", "put", `{"path":"/x"}`)
+	for i := 0; i < 2; i++ {
+		if w := mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", "s1"); w.Code != 200 || w.Body.String() != "upstream" {
+			t.Fatalf("attempt %d: %d %q", i, w.Code, w.Body)
+		}
+	}
+	if len(ap.calls) != 1 || len(up.seen()) != 2 {
+		t.Fatalf("approver %d upstream %d", len(ap.calls), len(up.seen()))
+	}
+	ev := rec.approvals()
+	if len(ev) != 2 || ev[0].Source != "prompt" || ev[1].Source != "retry" || ev[1].Result != "allow" || ev[1].Scope != "" || ev[1].Tool != "put" {
+		t.Errorf("audit = %+v", ev)
+	}
+}
+
+func TestMCPGate_RetryNeverMatchesAChangedCall(t *testing.T) {
+	ap := allowOnce()
+	f, _, _ := mcpFacade(t, ap, nil)
+	mcpPost(f, "/srv/mcp", callBody("7", "put", `{"path":"/x"}`), "Mcp-Session-Id", "s1")
+	for name, c := range map[string]struct{ body, session string }{
+		"id":        {callBody("8", "put", `{"path":"/x"}`), "s1"},
+		"tool":      {callBody("7", "rm", `{"path":"/x"}`), "s1"},
+		"arguments": {callBody("7", "put", `{"path":"/y"}`), "s1"},
+		"session":   {callBody("7", "put", `{"path":"/x"}`), "s2"},
+	} {
+		before := len(ap.calls)
+		mcpPost(f, "/srv/mcp", c.body, "Mcp-Session-Id", c.session)
+		if len(ap.calls) != before+1 {
+			t.Errorf("changed %s did not ask", name)
+		}
+	}
+}
+
+func TestMCPGate_AllowanceExpiresAfterTTL(t *testing.T) {
+	ap := allowOnce()
+	f, _, _ := mcpFacade(t, ap, nil)
+	now := time.Unix(1000, 0)
+	f.mcpAllowances.now = func() time.Time { return now }
+	body := callBody("7", "put", `{}`)
+	mcpPost(f, "/srv/mcp", body)
+	now = now.Add(mcpAllowanceTTL - time.Second)
+	mcpPost(f, "/srv/mcp", body)
+	if len(ap.calls) != 1 {
+		t.Fatalf("within ttl asked %d times", len(ap.calls))
+	}
+	now = now.Add(2 * time.Second)
+	mcpPost(f, "/srv/mcp", body)
+	if len(ap.calls) != 2 {
+		t.Errorf("after ttl asked %d times", len(ap.calls))
+	}
+}
+
+func TestMCPGate_DenyIsNotCached(t *testing.T) {
+	ap := &fakeApprover{d: ApprovalDecision{Source: SourcePrompt}}
+	f, _, up := mcpFacade(t, ap, nil)
+	body := callBody("7", "put", `{}`)
+	mcpPost(f, "/srv/mcp", body)
+	ap.mu.Lock()
+	ap.d = ApprovalDecision{Allow: true, Scope: "once", Source: "prompt"}
+	ap.mu.Unlock()
+	mcpPost(f, "/srv/mcp", body)
+	if len(ap.calls) != 2 || len(up.seen()) != 1 {
+		t.Errorf("approver %d upstream %d", len(ap.calls), len(up.seen()))
+	}
+}
+
+func TestMCPGate_NotificationIsNotCached(t *testing.T) {
+	ap := allowOnce()
+	f, _, _ := mcpFacade(t, ap, nil)
+	body := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"put","arguments":{}}}`
+	mcpPost(f, "/srv/mcp", body)
+	mcpPost(f, "/srv/mcp", body)
+	if len(ap.calls) != 2 {
+		t.Errorf("approver calls %d, want 2", len(ap.calls))
+	}
+}
+
+func TestMCPAllowanceCache_StaysBounded(t *testing.T) {
+	var c mcpAllowanceCache
+	now := time.Unix(1000, 0)
+	c.now = func() time.Time { now = now.Add(time.Millisecond); return now }
+	var first, last mcpAllowanceKey
+	for i := 0; i < 2*mcpAllowanceMaxEntries; i++ {
+		k := mcpAllowanceKey{id: strconv.Itoa(i)}
+		if i == 0 {
+			first = k
+		}
+		last = k
+		c.remember(k)
+		if len(c.until) > mcpAllowanceMaxEntries {
+			t.Fatalf("size %d", len(c.until))
+		}
+	}
+	if c.has(first) || !c.has(last) {
+		t.Errorf("oldest kept %v, newest kept %v", c.has(first), c.has(last))
+	}
+}
+
+func TestMCPGate_ConcurrentRetriesOnlyEverUseApproverAnswers(t *testing.T) {
+	ap := allowOnce()
+	f, _, up := mcpFacade(t, ap, nil)
+	body := callBody("7", "put", `{}`)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); mcpPost(f, "/srv/mcp", body) }()
+	}
+	wg.Wait()
+	if len(up.seen()) != 8 || len(ap.calls) < 1 || len(ap.calls) > 8 {
+		t.Errorf("approver %d upstream %d", len(ap.calls), len(up.seen()))
 	}
 }
