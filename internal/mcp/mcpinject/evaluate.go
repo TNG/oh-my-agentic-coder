@@ -10,17 +10,20 @@ const refusalExplanation = `An MCP entry in the harness config runs inside the s
 Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow.
 If an entry already holds a token, rotate it.`
 
-// Evaluate applies the policy to what Scan found. Entries named like a
-// registered server are shadowed by the injected one and never offend.
-func Evaluate(p Policy, ex []Existing, f []Finding, registered map[string]bool) (warnings []string, refusal error) {
+// Evaluate applies the policy to what Scan found. Every harness entry is
+// unregistered from the harness's point of view, including one named like a
+// registered server.
+func Evaluate(p Policy, ex []Existing, f []Finding) (warnings []string, refusal error) {
 	if !p.Active || p.Unregistered == ModeAllow {
 		return nil, nil
 	}
 	var problems []string
 	for _, e := range ex {
-		if !registered[e.Name] {
-			problems = append(problems, fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File))
+		problem := fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File)
+		if e.AlsoRegistered {
+			problem = fmt.Sprintf("%q in %s (also registered with omac; the harness entry still runs inside the sandbox)", e.Name, e.File)
 		}
+		problems = append(problems, problem)
 	}
 	for _, finding := range f {
 		problems = append(problems, fmt.Sprintf("cannot parse MCP config %s (%s)", finding.File, finding.Detail))

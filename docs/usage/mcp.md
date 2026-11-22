@@ -103,7 +103,11 @@ If a secret is missing from the keychain, omac prints a warning and skips that s
 
 ## Existing MCP entries in the harness config
 
-An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) either runs inside the sandbox or keeps its login in the harness's state directory. In both cases the agent can reach its credentials. omac therefore refuses to start while such an entry exists, unless a registered server has the same name. omac never removes, disables or rewrites these entries. It only adds your registered servers next to them.
+Outside omac, use your harness's own MCP config as usual. Inside omac, MCP configuration comes only from the omac registry; omac translates it into the harness's configuration at launch.
+
+An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) either runs inside the sandbox or keeps its login in the harness's state directory. In both cases the agent can reach its credentials. omac therefore refuses to start while such an entry exists. This includes an entry with the same name as a registered server: the old entry, and any token in it, stays in a file the agent can read, so registering the server does not make it safe. omac never removes, disables or rewrites these entries. It only adds your registered servers next to them.
+
+One harness config cannot serve a server with credentials both inside and outside omac. To use a server in both places, keep the harness entry out of the files omac scans and register the server with omac, or run omac once with `--mcp-unregistered=allow`. Under `allow` or `warn`, if a harness entry has the same name as a registered server, the harness uses the entry omac injects.
 
 Fix a refusal in one of three ways:
 

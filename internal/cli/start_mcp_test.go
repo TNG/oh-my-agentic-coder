@@ -251,14 +251,45 @@ func TestMCPAllowChangesNothing(t *testing.T) {
 	}
 }
 
-func TestMCPShadowedEntryIsNotRefused(t *testing.T) {
+const sameNameClaudeEntry = `{"mcpServers":{"demo":{"command":"x"}}}`
+
+func TestMCPSameNameEntryIsRefusedBeforeAnySpawn(t *testing.T) {
 	r := newMCPRig(t)
 	r.register("demo", true, "claude-code")
-	r.writeFile(".mcp.json", `{"mcpServers":{"demo":{"command":"x"}}}`)
+	r.writeFile(".mcp.json", sameNameClaudeEntry)
 
 	code, stderr := r.launch("claude", r.capture, nil)
-	if code != ExitOK {
-		t.Fatalf("exit %d\n%s", code, stderr)
+	if code != ExitConfigInvalid {
+		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
+	}
+	for _, want := range []string{`"demo"`, ".mcp.json", "also registered with omac"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, stderr)
+		}
+	}
+	if _, _, ran := r.captured(); ran {
+		t.Error("the inner command ran")
+	}
+	if logs := r.gatewayLogs(); len(logs) != 0 {
+		t.Errorf("a gateway started: %v", logs)
+	}
+}
+
+func TestMCPSameNameEntryWarnsAndAllowIgnores(t *testing.T) {
+	for mode, wantWarning := range map[string]bool{"warn": true, "allow": false} {
+		t.Run(mode, func(t *testing.T) {
+			r := newMCPRig(t)
+			r.register("demo", true, "claude-code")
+			r.writeFile(".mcp.json", sameNameClaudeEntry)
+
+			code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
+			if code != ExitOK {
+				t.Fatalf("exit %d\n%s", code, stderr)
+			}
+			if got := strings.Contains(stderr, "also registered with omac"); got != wantWarning {
+				t.Errorf("warning present = %v, want %v:\n%s", got, wantWarning, stderr)
+			}
+		})
 	}
 }
 

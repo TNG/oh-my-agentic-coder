@@ -32,6 +32,8 @@ type Existing struct {
 	Harness string
 	File    string
 	Name    string
+	// AlsoRegistered is set by the caller when an omac registry entry has the same name.
+	AlsoRegistered bool
 }
 
 // Finding is a harness config file omac could not read or parse.

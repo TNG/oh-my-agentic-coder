@@ -143,9 +143,8 @@ func TestStripJSONCKeepsStrings(t *testing.T) {
 }
 
 func TestEvaluate(t *testing.T) {
-	ex := []Existing{{Harness: "opencode", File: "/f", Name: "foo"}, {Harness: "opencode", File: "/f", Name: "mine"}}
+	ex := []Existing{{Harness: "opencode", File: "/f", Name: "foo"}, {Harness: "opencode", File: "/f", Name: "mine", AlsoRegistered: true}}
 	parse := []Finding{{File: "/p", Kind: FindingParseError, Detail: "bad"}}
-	reg := map[string]bool{"mine": true}
 
 	tests := []struct {
 		name     string
@@ -156,13 +155,13 @@ func TestEvaluate(t *testing.T) {
 	}{
 		{"inactive", Policy{ModeRefuse, false}, parse, nil, nil},
 		{"allow", Policy{ModeAllow, true}, parse, nil, nil},
-		{"warn", Policy{ModeWarn, true}, parse, []string{`"foo"`, "/f", "/p"}, nil},
-		{"refuse names entry and file", Policy{ModeRefuse, true}, nil, nil, []string{`"foo"`, "/f", "rotate", "omac mcp register", "--mcp-unregistered=allow"}},
+		{"warn", Policy{ModeWarn, true}, parse, []string{`"foo"`, `"mine"`, "also registered", "/f", "/p"}, nil},
+		{"refuse names entry and file", Policy{ModeRefuse, true}, nil, nil, []string{`"foo"`, `"mine"`, "also registered with omac", "/f", "rotate", "omac mcp register", "--mcp-unregistered=allow"}},
 		{"refuse names unparseable file", Policy{ModeRefuse, true}, parse, nil, []string{"/p", `"foo"`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warn, err := Evaluate(tt.p, ex, tt.f, reg)
+			warn, err := Evaluate(tt.p, ex, tt.f)
 			joined := strings.Join(warn, "\n")
 			if len(tt.wantWarn) == 0 && len(warn) != 0 {
 				t.Fatalf("unexpected warnings: %v", warn)
@@ -186,17 +185,20 @@ func TestEvaluate(t *testing.T) {
 					t.Fatalf("refusal %q lacks %q", err, s)
 				}
 			}
-			if strings.Contains(err.Error(), `"mine"`) || strings.Contains(joined, `"mine"`) {
-				t.Fatalf("shadowed entry named: %v %v", err, warn)
-			}
 		})
 	}
 }
 
-func TestEvaluateRefuseWithOnlyShadowedEntriesPasses(t *testing.T) {
-	ex := []Existing{{File: "/f", Name: "mine"}}
-	if _, err := Evaluate(Policy{ModeRefuse, true}, ex, nil, map[string]bool{"mine": true}); err != nil {
-		t.Fatal(err)
+func TestEvaluateSameNameEntryOffends(t *testing.T) {
+	ex := []Existing{{File: "/f", Name: "mine", AlsoRegistered: true}}
+	if _, err := Evaluate(Policy{ModeRefuse, true}, ex, nil); err == nil || !strings.Contains(err.Error(), "also registered") {
+		t.Fatalf("err = %v", err)
+	}
+	if warn, err := Evaluate(Policy{ModeWarn, true}, ex, nil); err != nil || len(warn) != 1 {
+		t.Fatalf("warn = %v err = %v", warn, err)
+	}
+	if warn, err := Evaluate(Policy{ModeAllow, true}, ex, nil); err != nil || len(warn) != 0 {
+		t.Fatalf("warn = %v err = %v", warn, err)
 	}
 }
 

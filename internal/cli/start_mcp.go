@@ -75,7 +75,10 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 	for _, e := range entries {
 		registered[e.Name] = true
 	}
-	warnings, refusal := mcpinject.Evaluate(policy, existing, findings, registered)
+	for i := range existing {
+		existing[i].AlsoRegistered = registered[existing[i].Name]
+	}
+	warnings, refusal := mcpinject.Evaluate(policy, existing, findings)
 	for _, w := range warnings {
 		fmt.Fprintf(env.Stderr, "%s: warning: %s\n", prefix, w)
 	}
