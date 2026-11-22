@@ -18,7 +18,7 @@ func classifiedDef(t *testing.T, name string) *Definition {
 	}
 	def.Tools = []mcppolicy.Tool{{Name: "get", Class: mcppolicy.Read}}
 	def.Access = mcppolicy.ReadWrite
-	def.Pin = &mcppolicy.Pin{ToolsHash: mcppolicy.ListHash(map[string]string{"get": "h"}), Tools: map[string]string{"get": "h"}}
+	def.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(map[string]string{"get": "h"}), Tools: map[string]string{"get": "h"}}
 	return def
 }
 
@@ -84,8 +84,8 @@ func TestUpdateKeepsOldSnapshotAndPolicy(t *testing.T) {
 	if err != nil || oldDef.Server.Command[2] != "some-server" {
 		t.Fatalf("old snapshot changed: %v %v", oldDef, err)
 	}
-	if len(updated.Def.Tools) != 1 || updated.Def.Pin == nil || updated.Def.Access != mcppolicy.ReadWrite {
-		t.Fatalf("classes, pin and access must survive: %+v", updated.Def)
+	if len(updated.Def.Tools) != 1 || updated.Def.Review == nil || updated.Def.Access != mcppolicy.ReadWrite {
+		t.Fatalf("classes, review and access must survive: %+v", updated.Def)
 	}
 	loaded, err := Load(GlobalScope(), "srv")
 	if err != nil || loaded.BundleHash != updated.BundleHash {
@@ -118,7 +118,7 @@ func TestGatewayHoldingOldSnapshotSurvivesUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	gatewaySnapshot := first.SnapshotDir
-	if _, err := Update(GlobalScope(), "srv", func(d *Definition) error { d.Pin = nil; return nil }); err != nil {
+	if _, err := Update(GlobalScope(), "srv", func(d *Definition) error { d.Review = nil; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Register(GlobalScope(), writeDef(t, defYAML("srv")), []string{"claude"}); err != nil {
@@ -129,7 +129,7 @@ func TestGatewayHoldingOldSnapshotSurvivesUpdate(t *testing.T) {
 		t.Fatalf("gateway lost its snapshot: %v", err)
 	}
 	def, err := ParseDefinition(raw)
-	if err != nil || def.Name != "srv" || def.Pin == nil {
+	if err != nil || def.Name != "srv" || def.Review == nil {
 		t.Fatalf("gateway snapshot unreadable: %v", err)
 	}
 }
@@ -140,7 +140,7 @@ func TestDeregisterRemovesAllSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Update(GlobalScope(), "srv", func(d *Definition) error { d.Pin = nil; return nil }); err != nil {
+	if _, err := Update(GlobalScope(), "srv", func(d *Definition) error { d.Review = nil; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := Deregister(GlobalScope(), "srv"); err != nil {

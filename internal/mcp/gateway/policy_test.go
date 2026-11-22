@@ -71,7 +71,7 @@ func isPolicyError(ev, reason string) bool {
 	return strings.Contains(ev, `"error"`) && strings.Contains(ev, `"`+reason+`"`)
 }
 
-func TestPinnedCallsAreAllowed(t *testing.T) {
+func TestReviewedCallsAreAllowed(t *testing.T) {
 	srv := newServer(t, nil)
 	sid := initialize(t, srv)
 	if ev := callTool(t, srv, sid, "echo"); !strings.Contains(ev, "called echo") {
@@ -126,7 +126,7 @@ func TestMalformedRequestRefused(t *testing.T) {
 	}
 }
 
-func TestDriftBlocksCalls(t *testing.T) {
+func TestChangedToolsBlockCalls(t *testing.T) {
 	var file string
 	srv := newServer(t, func(o *Options) { file = toolsFile(o) })
 	changed := append([]fakeTool{}, baseTools...)
@@ -137,41 +137,41 @@ func TestDriftBlocksCalls(t *testing.T) {
 
 	sid := initialize(t, srv)
 	ev := callTool(t, srv, sid, "echo")
-	if !isPolicyError(ev, mcppolicy.ReasonDrift) {
+	if !isPolicyError(ev, mcppolicy.ReasonChanged) {
 		t.Fatalf("echo = %s", ev)
 	}
-	for _, want := range []string{`added: \"sneaky\"`, `removed: \"wipe\"`, `changed: \"echo\"`, "omac mcp pin fake"} {
+	for _, want := range []string{`added: \"sneaky\"`, `removed: \"wipe\"`, `changed: \"echo\"`, "omac mcp review fake"} {
 		if !strings.Contains(ev, want) {
 			t.Errorf("error lacks %q: %s", want, ev)
 		}
 	}
-	if ev := callTool(t, srv, sid, "debug"); !isPolicyError(ev, mcppolicy.ReasonDrift) {
+	if ev := callTool(t, srv, sid, "debug"); !isPolicyError(ev, mcppolicy.ReasonChanged) {
 		t.Errorf("another tool still callable: %s", ev)
 	}
 	if got := listedNames(t, srv, sid); strings.Contains(strings.Join(got, ","), "echo") || strings.Contains(strings.Join(got, ","), "sneaky") {
 		t.Errorf("listed %v", got)
 	}
-	var st struct{ Pin string }
+	var st struct{ Review string }
 	getStatus(t, srv, &st)
-	if st.Pin != "drift" {
-		t.Errorf("status pin = %q", st.Pin)
+	if st.Review != "changed" {
+		t.Errorf("status review = %q", st.Review)
 	}
 }
 
-func TestUnpinnedBlocksCallsAndListsNothing(t *testing.T) {
-	srv := newServer(t, func(o *Options) { o.Policy.Pin = nil })
+func TestUnreviewedBlocksCallsAndListsNothing(t *testing.T) {
+	srv := newServer(t, func(o *Options) { o.Policy.Review = nil })
 	sid := initialize(t, srv)
 	ev := callTool(t, srv, sid, "echo")
-	if !isPolicyError(ev, mcppolicy.ReasonUnpinned) || !strings.Contains(ev, "omac mcp pin fake") {
+	if !isPolicyError(ev, mcppolicy.ReasonUnreviewed) || !strings.Contains(ev, "omac mcp tools fake --classify") {
 		t.Fatalf("echo = %s", ev)
 	}
 	if got := listedNames(t, srv, sid); len(got) != 0 {
 		t.Errorf("listed %v", got)
 	}
-	var st struct{ Pin string }
+	var st struct{ Review string }
 	getStatus(t, srv, &st)
-	if st.Pin != "unpinned" {
-		t.Errorf("status pin = %q", st.Pin)
+	if st.Review != "not-reviewed" {
+		t.Errorf("status review = %q", st.Review)
 	}
 }
 
@@ -190,7 +190,7 @@ func TestListChangedTriggersRecheck(t *testing.T) {
 		t.Fatalf("cached verdict expected, got %s", ev)
 	}
 	callTool(t, srv, sid, "relist")
-	if ev := callTool(t, srv, sid, "echo"); !isPolicyError(ev, mcppolicy.ReasonDrift) {
+	if ev := callTool(t, srv, sid, "echo"); !isPolicyError(ev, mcppolicy.ReasonChanged) {
 		t.Fatalf("after list_changed: %s", ev)
 	}
 	writeTools(t, file, baseTools...)
@@ -202,7 +202,7 @@ func TestListChangedTriggersRecheck(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("pin check did not recover after the tools matched again")
+			t.Fatal("review check did not recover after the tools matched again")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -278,10 +278,10 @@ func TestStatusPinned(t *testing.T) {
 	initialize(t, srv)
 	var st struct {
 		Status string
-		Pin    string
+		Review string
 	}
 	getStatus(t, srv, &st)
-	if st.Status != "ok" || st.Pin != "pinned" {
+	if st.Status != "ok" || st.Review != "reviewed" {
 		t.Fatalf("status = %+v", st)
 	}
 }
@@ -294,7 +294,7 @@ func TestNewSnapshotDirDoesNotAffectOpenGateway(t *testing.T) {
 	}
 	srv := newServer(t, func(o *Options) { o.Dir = oldDir })
 	first := initialize(t, srv)
-	// a re-pin writes a newer snapshot next to the old one; the old one stays
+	// a new review writes a newer snapshot next to the old one; the old one stays
 	if err := os.Mkdir(filepath.Join(root, "snapshot-2"), 0o700); err != nil {
 		t.Fatal(err)
 	}

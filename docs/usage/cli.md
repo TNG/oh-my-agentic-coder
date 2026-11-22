@@ -170,14 +170,14 @@ omac mcp diagnose --probe
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until classified and pinned. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
+| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until its tools are reviewed. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
 | `omac mcp add-json <name> '<json>'`, `omac mcp add-json --file <f> [names...]` | Registers from an `mcpServers` entry with `command`, `args` and `env`. Remote entries and unknown keys are refused. | `--scope`, `--harness`, `--secret NAME` (names the `env` keys that are secrets), `--replace`, `--file` |
-| `omac mcp register <file>` | Registers a definition file exactly as written, including any `tools`, `approvals` and `pin` in it. | `--scope`, `--harness` (required) |
-| `omac mcp tools <name>` | Starts the server on the host and lists its tools with a proposed class, current class and pin status. | `--scope`, `--classify`, `--set NAME=CLASS` (repeatable), `--rest CLASS` (default `off`) |
-| `omac mcp pin <name>` | Shows the drift since the pin, refuses while a live tool has no class, asks `[y/N]` and pins the live tools. | `--scope`, `--yes` |
-| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, a missing pin and harness entries omac does not manage. Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
-| `omac mcp list` | Shows registered servers with tool count, classified count and `pinned` or `unpinned`. | `--all` includes stale project scopes |
-| `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, the pin and every tool with its class. Never secret or environment values. | `--scope` |
+| `omac mcp register <file>` | Registers a definition file exactly as written, including any `tools`, `approvals` and `reviewed` in it. | `--scope`, `--harness` (required) |
+| `omac mcp tools <name>` | Starts the server on the host and lists its tools with a proposed class, current class and review status. | `--scope`, `--classify`, `--set NAME=CLASS` (repeatable), `--rest CLASS` (default `off`) |
+| `omac mcp review <name>` | Shows which tools were added, removed or changed since the last review, refuses while a live tool has no class, asks `[y/N]` and records the current tools as reviewed. | `--scope`, `--yes` |
+| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, tools not reviewed yet and harness entries omac does not manage. Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
+| `omac mcp list` | Shows registered servers with tool count, classified count and `reviewed` or `not reviewed`. | `--all` includes stale project scopes |
+| `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, when the tools were last reviewed and every tool with its class. Never secret or environment values. | `--scope` |
 | `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |
 
 Classes are `read`, `write`, `delete` and `off`. All of these refuse to run inside the sandbox. See [MCP servers](./mcp.md) for the details.

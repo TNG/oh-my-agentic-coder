@@ -93,13 +93,13 @@ func TestMCPAddReplaceKeepsPolicy(t *testing.T) {
 	if code, _, e := runAdd(t, wd, "add", "demo", "--harness", "opencode", "--", "/bin/false"); code != ExitMisuse || !strings.Contains(e, "--replace") {
 		t.Fatalf("exit %d: %s", code, e)
 	}
-	pin := &mcppolicy.Pin{Tools: map[string]string{"get": "h1"}, PinnedAt: time.Now().UTC()}
-	pin.ToolsHash = mcppolicy.ListHash(pin.Tools)
+	review := &mcppolicy.Review{Tools: map[string]string{"get": "h1"}, At: time.Now().UTC()}
+	review.ToolsHash = mcppolicy.ListHash(review.Tools)
 	if _, err := mcpreg.Update(scope, "demo", func(d *mcpreg.Definition) error {
 		d.Access = mcppolicy.ReadWrite
 		d.Tools = []mcppolicy.Tool{{Name: "get", Class: mcppolicy.Read}}
 		d.Approvals = &mcppolicy.Approvals{Write: "none"}
-		d.Pin = pin
+		d.Review = review
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestMCPAddReplaceKeepsPolicy(t *testing.T) {
 		t.Fatalf("server = %+v", got.Def.Server)
 	}
 	if got.Def.Access != mcppolicy.ReadWrite || len(got.Def.Tools) != 1 || got.Def.Tools[0].Class != mcppolicy.Read ||
-		got.Def.Approvals == nil || got.Def.Approvals.Write != "none" || got.Def.Pin == nil || got.Def.Pin.ToolsHash != pin.ToolsHash {
+		got.Def.Approvals == nil || got.Def.Approvals.Write != "none" || got.Def.Review == nil || got.Def.Review.ToolsHash != review.ToolsHash {
 		t.Fatalf("policy lost: %+v", got.Def)
 	}
 	if code, _, e := runAdd(t, wd, "add", "demo", "--replace", "--harness", "claude-code", "--", "/bin/true"); code != ExitMisuse || !strings.Contains(e, "deregister") {

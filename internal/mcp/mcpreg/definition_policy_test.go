@@ -16,7 +16,7 @@ func TestPolicyDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := def.Policy()
-	if p.Server != "demo" || p.Access != mcppolicy.ReadWriteDelete || p.Pin != nil || len(p.Tools) != 0 {
+	if p.Server != "demo" || p.Access != mcppolicy.ReadWriteDelete || p.Review != nil || len(p.Tools) != 0 {
 		t.Errorf("policy = %+v", p)
 	}
 	want := mcppolicy.Approvals{Read: approval.None, Write: approval.Required, Delete: approval.Required}
@@ -26,7 +26,7 @@ func TestPolicyDefaults(t *testing.T) {
 }
 
 func TestPolicyFromDefinition(t *testing.T) {
-	pinHash := mcppolicy.ListHash(map[string]string{"get": "h"})
+	reviewHash := mcppolicy.ListHash(map[string]string{"get": "h"})
 	raw := policyBase + `access: read-write
 tools:
   - {name: get, class: read}
@@ -35,10 +35,10 @@ tools:
 approvals:
   read: required
   delete: none
-pin:
-  tools_hash: ` + pinHash + `
+reviewed:
+  tools_hash: ` + reviewHash + `
   tools: {get: h}
-  pinned_at: 2026-01-02T03:04:05Z
+  at: 2026-01-02T03:04:05Z
 `
 	def, err := ParseDefinition([]byte(raw))
 	if err != nil {
@@ -55,23 +55,23 @@ pin:
 	if p.Approvals != want {
 		t.Errorf("a partial approvals block keeps the defaults for the rest: %+v", p.Approvals)
 	}
-	if p.Pin == nil || p.Pin.Tools["get"] != "h" || p.Pin.PinnedAt.Year() != 2026 {
-		t.Errorf("pin = %+v", p.Pin)
+	if p.Review == nil || p.Review.Tools["get"] != "h" || p.Review.At.Year() != 2026 {
+		t.Errorf("review = %+v", p.Review)
 	}
 }
 
 func TestParseDefinitionRefusesBadPolicyFields(t *testing.T) {
 	cases := map[string]string{
-		"bad access":           "access: admin\n",
-		"duplicate tool":       "tools:\n  - {name: a, class: read}\n  - {name: a, class: write}\n",
-		"bad class":            "tools:\n  - {name: a, class: execute}\n",
-		"missing class":        "tools:\n  - {name: a}\n",
-		"empty tool name":      "tools:\n  - {name: \"\", class: read}\n",
-		"bad approval mode":    "approvals:\n  write: sometimes\n",
-		"unknown approval key": "approvals:\n  admin: none\n",
-		"unknown tool key":     "tools:\n  - {name: a, class: read, extra: 1}\n",
-		"pin hash mismatch":    "pin:\n  tools_hash: abc\n  tools: {a: h}\n",
-		"unknown key":          "bogus: 1\n",
+		"bad access":             "access: admin\n",
+		"duplicate tool":         "tools:\n  - {name: a, class: read}\n  - {name: a, class: write}\n",
+		"bad class":              "tools:\n  - {name: a, class: execute}\n",
+		"missing class":          "tools:\n  - {name: a}\n",
+		"empty tool name":        "tools:\n  - {name: \"\", class: read}\n",
+		"bad approval mode":      "approvals:\n  write: sometimes\n",
+		"unknown approval key":   "approvals:\n  admin: none\n",
+		"unknown tool key":       "tools:\n  - {name: a, class: read, extra: 1}\n",
+		"reviewed hash mismatch": "reviewed:\n  tools_hash: abc\n  tools: {a: h}\n",
+		"unknown key":            "bogus: 1\n",
 	}
 	for name, extra := range cases {
 		if _, err := ParseDefinition([]byte(policyBase + extra)); err == nil {

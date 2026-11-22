@@ -82,19 +82,19 @@ func ListHash(perTool map[string]string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Drift is how the live tool list differs from a pin, each list sorted.
-type Drift struct{ Added, Removed, Changed []string }
+// Changes is how the live tool list differs from the last review, each list sorted.
+type Changes struct{ Added, Removed, Changed []string }
 
-// Empty reports whether the live list matches the pin.
-func (d Drift) Empty() bool {
+// Empty reports whether the live list matches the review.
+func (d Changes) Empty() bool {
 	return len(d.Added) == 0 && len(d.Removed) == 0 && len(d.Changed) == 0
 }
 
-// Compare reports how live differs from pin. A nil pin reports every live
+// Compare reports how live differs from the review. A nil review reports every live
 // tool as added. A name the server lists twice with different content counts
 // as changed.
-func Compare(p *Pin, live []ToolInfo) Drift {
-	var d Drift
+func Compare(p *Review, live []ToolInfo) Changes {
+	var d Changes
 	seen := map[string]string{}
 	for _, t := range live {
 		prev, dup := seen[t.Name]
@@ -106,10 +106,10 @@ func Compare(p *Pin, live []ToolInfo) Drift {
 		case p == nil:
 			d.Added = append(d.Added, t.Name)
 		default:
-			pinned, ok := p.Tools[t.Name]
+			reviewed, ok := p.Tools[t.Name]
 			if !ok {
 				d.Added = append(d.Added, t.Name)
-			} else if pinned != t.Hash {
+			} else if reviewed != t.Hash {
 				d.Changed = append(d.Changed, t.Name)
 			}
 		}

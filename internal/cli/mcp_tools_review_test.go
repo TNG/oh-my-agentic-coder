@@ -134,7 +134,7 @@ func TestMCPToolsShowsProposalsAndPaginates(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	for _, want := range []string{"claims, not facts", "read-only", "not destructive", "assumed destructive", "unclassified", "new", "3 tools, 3 unclassified; not pinned"} {
+	for _, want := range []string{"claims, not facts", "read-only", "not destructive", "assumed destructive", "unclassified", "new", "3 tools, 3 unclassified; not reviewed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -145,12 +145,12 @@ func TestMCPToolsShowsProposalsAndPaginates(t *testing.T) {
 			t.Errorf("wrong proposal: %q", line)
 		}
 	}
-	if e := f.entry(t); e.Def.Pin != nil || len(e.Def.Tools) != 0 {
+	if e := f.entry(t); e.Def.Review != nil || len(e.Def.Tools) != 0 {
 		t.Fatal("read-only listing changed the registry")
 	}
 }
 
-func TestMCPClassifyScriptedWritesClassesAndPin(t *testing.T) {
+func TestMCPClassifyScriptedWritesClassesAndReview(t *testing.T) {
 	f := registerToolsFake(t, nil)
 	code, _, errOut := f.run(t, "", "tools", "fake", "--classify", "--set", "get=read", "--set", "put=w")
 	if code != ExitOK {
@@ -169,16 +169,16 @@ func TestMCPClassifyScriptedWritesClassesAndPin(t *testing.T) {
 		t.Fatal("probe failed")
 	}
 	hashes := liveHashes(tools)
-	if e.Def.Pin == nil || e.Def.Pin.ToolsHash != mcppolicy.ListHash(hashes) || e.Def.Pin.PinnedAt.IsZero() {
-		t.Fatalf("pin: %+v", e.Def.Pin)
+	if e.Def.Review == nil || e.Def.Review.ToolsHash != mcppolicy.ListHash(hashes) || e.Def.Review.At.IsZero() {
+		t.Fatalf("review: %+v", e.Def.Review)
 	}
 	for n, h := range hashes {
-		if e.Def.Pin.Tools[n] != h {
-			t.Errorf("pin of %s differs", n)
+		if e.Def.Review.Tools[n] != h {
+			t.Errorf("review of %s differs", n)
 		}
 	}
 	_, out, _ := f.run(t, "", "tools", "fake")
-	if strings.Count(out, "pinned") < 3 || !strings.Contains(out, "no drift") {
+	if strings.Count(out, "reviewed") < 3 || !strings.Contains(out, "no changes") {
 		t.Fatalf("after classify:\n%s", out)
 	}
 }
@@ -216,14 +216,14 @@ func TestMCPClassifyInteractiveEOFWritesNothing(t *testing.T) {
 	}
 }
 
-func TestMCPPinRefusesUnclassifiedTool(t *testing.T) {
+func TestMCPReviewRefusesUnclassifiedTool(t *testing.T) {
 	f := registerToolsFake(t, nil)
 	if code, _, e := f.run(t, "", "tools", "fake", "--classify", "--rest", "read"); code != ExitOK {
 		t.Fatal(e)
 	}
 	os.WriteFile(f.descFile+".extra", nil, 0o600)
 	before := f.entry(t).BundleHash
-	code, _, errOut := f.run(t, "", "pin", "fake", "--yes")
+	code, _, errOut := f.run(t, "", "review", "fake", "--yes")
 	if code == ExitOK || !strings.Contains(errOut, "extra") || !strings.Contains(errOut, "omac mcp tools fake --classify") {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -232,31 +232,31 @@ func TestMCPPinRefusesUnclassifiedTool(t *testing.T) {
 	}
 }
 
-func TestMCPPinRebaselinesDrift(t *testing.T) {
+func TestMCPReviewAcceptsChangedTools(t *testing.T) {
 	f := registerToolsFake(t, nil)
 	if code, _, e := f.run(t, "", "tools", "fake", "--classify", "--rest", "read"); code != ExitOK {
 		t.Fatal(e)
 	}
 	os.WriteFile(f.descFile, []byte("v2 changed"), 0o600)
-	old := f.entry(t).Def.Pin.ToolsHash
+	old := f.entry(t).Def.Review.ToolsHash
 
-	code, out, errOut := f.run(t, "n\n", "pin", "fake")
+	code, out, errOut := f.run(t, "n\n", "review", "fake")
 	if code == ExitOK || !strings.Contains(out, "changed") || !strings.Contains(out, "put") {
-		t.Fatalf("declined pin: exit %d out %q err %q", code, out, errOut)
+		t.Fatalf("declined review: exit %d out %q err %q", code, out, errOut)
 	}
-	if f.entry(t).Def.Pin.ToolsHash != old {
-		t.Fatal("declined pin was written")
+	if f.entry(t).Def.Review.ToolsHash != old {
+		t.Fatal("declined review was written")
 	}
 
-	if code, _, e := f.run(t, "y\n", "pin", "fake"); code != ExitOK {
+	if code, _, e := f.run(t, "y\n", "review", "fake"); code != ExitOK {
 		t.Fatal(e)
 	}
-	if f.entry(t).Def.Pin.ToolsHash == old {
-		t.Fatal("pin not updated")
+	if f.entry(t).Def.Review.ToolsHash == old {
+		t.Fatal("review not updated")
 	}
-	_, out, _ = f.run(t, "", "pin", "fake", "--yes")
-	if !strings.Contains(out, "nothing to pin") {
-		t.Fatalf("second pin: %q", out)
+	_, out, _ = f.run(t, "", "review", "fake", "--yes")
+	if !strings.Contains(out, "nothing to review") {
+		t.Fatalf("second review: %q", out)
 	}
 }
 
@@ -265,7 +265,7 @@ func TestMCPToolsStartFailureLeavesRegistryUntouched(t *testing.T) {
 	before := f.entry(t).BundleHash
 	for _, args := range [][]string{
 		{"tools", "fake", "--classify", "--rest", "read"},
-		{"pin", "fake", "--yes"},
+		{"review", "fake", "--yes"},
 	} {
 		code, _, errOut := f.run(t, "", args...)
 		if code == ExitOK || !strings.Contains(errOut, "fake server: cannot start") {
@@ -296,11 +296,11 @@ func TestMCPToolsProbeChildEnvHasNoOmacVariables(t *testing.T) {
 	}
 }
 
-func TestMCPToolsAndPinRefuseInsideSandbox(t *testing.T) {
+func TestMCPToolsAndReviewRefuseInsideSandbox(t *testing.T) {
 	f := registerToolsFake(t, nil)
 	t.Setenv("OMAC_SOCKET", "/tmp/x.sock")
 	before := f.entry(t).BundleHash
-	for _, args := range [][]string{{"tools", "fake"}, {"tools", "fake", "--classify", "--rest", "read"}, {"pin", "fake", "--yes"}} {
+	for _, args := range [][]string{{"tools", "fake"}, {"tools", "fake", "--classify", "--rest", "read"}, {"review", "fake", "--yes"}} {
 		code, _, errOut := f.run(t, "", args...)
 		if code != ExitMisuse || !strings.Contains(errOut, "refused inside the omac sandbox") {
 			t.Fatalf("%v: exit %d: %s", args, code, errOut)

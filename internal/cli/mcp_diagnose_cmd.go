@@ -32,7 +32,7 @@ func runMCPDiagnose(args []string, env *Env) int {
 	fs := flag.NewFlagSet("mcp diagnose", flag.ContinueOnError)
 	scopeFlag := fs.String("scope", "", "Check only project or global registrations (default: both).")
 	all := fs.Bool("all", false, "Check registrations of every scope.")
-	probe := fs.Bool("probe", false, "Also start each server and compare its live tools to the pin (host terminal only).")
+	probe := fs.Bool("probe", false, "Also start each server and compare its live tools to the last review (host terminal only).")
 	if code, ok := parseFlags(fs, args, env); !ok {
 		return code
 	}
@@ -127,8 +127,8 @@ func diagnoseEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string
 	if unclassified := unclassifiedTools(e.Def); len(unclassified) > 0 {
 		problems = append(problems, "tools not classified (refused until classified): "+strings.Join(unclassified, ", "))
 	}
-	if e.Def.Pin == nil {
-		problems = append(problems, fmt.Sprintf("no pin yet; run: omac mcp tools %s", e.Name))
+	if e.Def.Review == nil {
+		problems = append(problems, fmt.Sprintf("tools not reviewed yet; run: omac mcp tools %s --classify", e.Name))
 	}
 	return problems
 }
@@ -144,14 +144,14 @@ func checkMCPCommand(def *mcpreg.Definition, workdir string) error {
 	return nil
 }
 
-// unclassifiedTools lists the pinned tools that have no class.
+// unclassifiedTools lists the reviewed tools that have no class.
 func unclassifiedTools(def *mcpreg.Definition) []string {
-	if def.Pin == nil {
+	if def.Review == nil {
 		return nil
 	}
 	classes := def.Policy().Tools
 	var out []string
-	for name := range def.Pin.Tools {
+	for name := range def.Review.Tools {
 		if _, ok := classes[name]; !ok {
 			out = append(out, name)
 		}
@@ -182,17 +182,17 @@ func probeEntry(scope mcpreg.Scope, e *mcpreg.Entry) []string {
 		}
 		return []string{msg}
 	}
-	if e.Def.Pin == nil {
+	if e.Def.Review == nil {
 		return nil
 	}
-	d := mcppolicy.Compare(e.Def.Pin, live)
+	d := mcppolicy.Compare(e.Def.Review, live)
 	var problems []string
 	for _, g := range []struct {
 		what  string
 		names []string
 	}{{"added", d.Added}, {"removed", d.Removed}, {"changed", d.Changed}} {
 		if len(g.names) > 0 {
-			problems = append(problems, fmt.Sprintf("tools drifted from the pin, %s: %s", g.what, stripControlChars(strings.Join(g.names, ", "))))
+			problems = append(problems, fmt.Sprintf("tools changed since the last review (%s: %s); run: omac mcp review %s", g.what, stripControlChars(strings.Join(g.names, ", ")), e.Name))
 		}
 	}
 	return problems

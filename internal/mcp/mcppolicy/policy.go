@@ -19,7 +19,7 @@ const (
 	Read   Class = "read"
 	Write  Class = "write"
 	Delete Class = "delete"
-	// Off marks a tool that is pinned but hidden from the agent and refused.
+	// Off marks a tool that is reviewed but hidden from the agent and refused.
 	Off Class = "off"
 )
 
@@ -101,12 +101,12 @@ func (a Approvals) For(c Class) approval.Mode {
 	return mode
 }
 
-// Pin records the tool list the user reviewed: a hash per tool and one over
+// Review records the tool list the user reviewed: a hash per tool and one over
 // the whole list.
-type Pin struct {
+type Review struct {
 	ToolsHash string            `yaml:"tools_hash" json:"tools_hash"`
 	Tools     map[string]string `yaml:"tools"      json:"tools"`
-	PinnedAt  time.Time         `yaml:"pinned_at"  json:"pinned_at"`
+	At        time.Time         `yaml:"at"  json:"at"`
 }
 
 // Policy is the effective policy of one registered server.
@@ -115,9 +115,9 @@ type Policy struct {
 	Access    Access
 	Tools     map[string]Class
 	Approvals Approvals
-	// Pin is nil until the user pins the tool list. A missing pin is the
-	// gateway's concern (ReasonUnpinned); Decide does not look at it.
-	Pin *Pin
+	// Review is nil until the user reviews the tool list. A missing review is the
+	// gateway's concern (ReasonUnreviewed); Decide does not look at it.
+	Review *Review
 }
 
 // Call is one parsed JSON-RPC message from the agent.
@@ -151,8 +151,8 @@ const (
 	ReasonUnparseable    = "mcp-unparseable"
 	ReasonUnlisted       = "mcp-unlisted"
 	ReasonAccess         = "mcp-access"
-	ReasonUnpinned       = "mcp-unpinned"
-	ReasonDrift          = "mcp-drift"
+	ReasonUnreviewed     = "mcp-unreviewed"
+	ReasonChanged        = "mcp-changed"
 	ReasonUnknownSession = "unknown-session"
 )
 

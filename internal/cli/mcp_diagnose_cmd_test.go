@@ -35,16 +35,16 @@ func (f diagFixture) register(t *testing.T, def *mcpreg.Definition) *mcpreg.Entr
 	return e
 }
 
-func pinnedDef(name string, command string, classes map[string]mcppolicy.Class, pinned ...string) *mcpreg.Definition {
+func reviewedDef(name string, command string, classes map[string]mcppolicy.Class, reviewed ...string) *mcpreg.Definition {
 	def := &mcpreg.Definition{Name: name, Server: mcpreg.ServerSpec{Command: []string{command}}}
 	for tool, class := range classes {
 		def.Tools = append(def.Tools, mcppolicy.Tool{Name: tool, Class: class})
 	}
 	hashes := map[string]string{}
-	for _, tool := range pinned {
+	for _, tool := range reviewed {
 		hashes[tool] = "hash-" + tool
 	}
-	def.Pin = &mcppolicy.Pin{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, PinnedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
+	def.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, At: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
 	return def
 }
 
@@ -58,8 +58,8 @@ func runDiagnoseCmd(t *testing.T, wd string, args ...string) (int, string, strin
 
 func TestMCPDiagnoseCorruptAndHealthy(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("good", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
-	bad := f.register(t, pinnedDef("bad", "sh", nil))
+	f.register(t, reviewedDef("good", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
+	bad := f.register(t, reviewedDef("bad", "sh", nil))
 	if err := os.WriteFile(bad.DefPath, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestMCPDiagnoseCorruptAndHealthy(t *testing.T) {
 
 func TestMCPDiagnoseCleanExitsZero(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("good", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
+	f.register(t, reviewedDef("good", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
 	code, out, _ := runDiagnoseCmd(t, f.wd)
 	if code != ExitOK || !strings.Contains(out, "no problems found") {
 		t.Fatalf("exit %d, out %q", code, out)
@@ -86,7 +86,7 @@ func TestMCPDiagnoseCleanExitsZero(t *testing.T) {
 
 func TestMCPDiagnoseMissingSecretByNameOnly(t *testing.T) {
 	f := newDiagFixture(t)
-	def := pinnedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo")
+	def := reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo")
 	def.Secrets = []string{"API_TOKEN", "OTHER_TOKEN"}
 	def.Server.Env = map[string]string{"VISIBLE": "env-value-xyz"}
 	f.register(t, def)
@@ -102,11 +102,11 @@ func TestMCPDiagnoseMissingSecretByNameOnly(t *testing.T) {
 	}
 }
 
-func TestMCPDiagnoseUnclassifiedAndUnpinned(t *testing.T) {
+func TestMCPDiagnoseUnclassifiedAndUnreviewed(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("half", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo", "wipe"))
-	f.register(t, pinnedDef("nopin", "sh", nil))
-	_, err := mcpreg.Update(f.scope, "nopin", func(d *mcpreg.Definition) error { d.Pin = nil; return nil })
+	f.register(t, reviewedDef("half", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo", "wipe"))
+	f.register(t, reviewedDef("noreview", "sh", nil))
+	_, err := mcpreg.Update(f.scope, "noreview", func(d *mcpreg.Definition) error { d.Review = nil; return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +117,14 @@ func TestMCPDiagnoseUnclassifiedAndUnpinned(t *testing.T) {
 	if !strings.Contains(out, "tools not classified (refused until classified): wipe") {
 		t.Fatalf("unclassified missing: %q", out)
 	}
-	if !strings.Contains(out, "no pin yet; run: omac mcp tools nopin") {
-		t.Fatalf("no pin missing: %q", out)
+	if !strings.Contains(out, "tools not reviewed yet; run: omac mcp tools noreview --classify") {
+		t.Fatalf("not-reviewed message missing: %q", out)
 	}
 }
 
 func TestMCPDiagnoseCommandProblems(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("nocmd", "definitely-not-a-program-xyz", nil))
+	f.register(t, reviewedDef("nocmd", "definitely-not-a-program-xyz", nil))
 	_, out, _ := runDiagnoseCmd(t, f.wd)
 	if !strings.Contains(out, `command "definitely-not-a-program-xyz" not found`) {
 		t.Fatalf("output: %q", out)
@@ -155,24 +155,24 @@ func fakeProbe(t *testing.T, tools []mcppolicy.ToolInfo, tail string, err error)
 	}
 }
 
-func TestMCPDiagnoseProbeDrift(t *testing.T) {
+func TestMCPDiagnoseProbeChanged(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read, "gone": mcppolicy.Read}, "echo", "gone"))
+	f.register(t, reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read, "gone": mcppolicy.Read}, "echo", "gone"))
 	fakeProbe(t, []mcppolicy.ToolInfo{{Name: "echo", Hash: "other"}, {Name: "fresh", Hash: "h"}}, "", nil)
 	code, out, _ := runDiagnoseCmd(t, f.wd, "--probe")
 	if code != ExitGeneric {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"added: fresh", "removed: gone", "changed: echo"} {
+	for _, want := range []string{"changed since the last review (added: fresh)", "(removed: gone)", "(changed: echo)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in %q", want, out)
 		}
 	}
 }
 
-func TestMCPDiagnoseProbeMatchingPinIsClean(t *testing.T) {
+func TestMCPDiagnoseProbeMatchingReviewIsClean(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
+	f.register(t, reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
 	fakeProbe(t, []mcppolicy.ToolInfo{{Name: "echo", Hash: "hash-echo"}}, "", nil)
 	if code, out, _ := runDiagnoseCmd(t, f.wd, "--probe"); code != ExitOK {
 		t.Fatalf("exit %d, out %q", code, out)
@@ -181,7 +181,7 @@ func TestMCPDiagnoseProbeMatchingPinIsClean(t *testing.T) {
 
 func TestMCPDiagnoseProbeStartErrorShowsStderrTail(t *testing.T) {
 	f := newDiagFixture(t)
-	f.register(t, pinnedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
+	f.register(t, reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
 	fakeProbe(t, nil, "boom: missing module\n", errors.New("exited early"))
 	code, out, _ := runDiagnoseCmd(t, f.wd, "--probe")
 	if code != ExitGeneric || !strings.Contains(out, "probe failed: exited early") || !strings.Contains(out, "boom: missing module") {
@@ -204,7 +204,7 @@ func TestMCPDiagnoseProbeRefusedInsideSandbox(t *testing.T) {
 
 func TestMCPShowAndListGolden(t *testing.T) {
 	f := newDiagFixture(t)
-	def := pinnedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read, "rm": mcppolicy.Delete}, "echo", "rm", "extra")
+	def := reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read, "rm": mcppolicy.Delete}, "echo", "rm", "extra")
 	def.Secrets = []string{"API_TOKEN"}
 	def.Server.Env = map[string]string{"VISIBLE": "env-value-xyz"}
 	def.Access = mcppolicy.ReadWrite
@@ -221,7 +221,7 @@ func TestMCPShowAndListGolden(t *testing.T) {
 	for _, want := range []string{
 		"access:      read-write\n",
 		"approvals:   read=none write=required delete=required\n",
-		"pin:         " + mcppolicy.ListHash(def.Pin.Tools)[:12] + "  pinned 2026-01-02 03:04:05Z  3 tools\n",
+		"reviewed:    2026-01-02  3 tools  fingerprint " + mcppolicy.ListHash(def.Review.Tools)[:12] + "\n",
 		"  echo                             read\n",
 		"  extra                            unclassified\n",
 		"  rm                               delete\n",
@@ -242,7 +242,7 @@ func TestMCPShowAndListGolden(t *testing.T) {
 		t.Fatalf("list exit %d", code)
 	}
 	out, _ = read()
-	if !strings.Contains(out, "opencode") || !strings.Contains(out, "  3 tools   2 classified  pinned") {
+	if !strings.Contains(out, "opencode") || !strings.Contains(out, "  3 tools   2 classified  reviewed") {
 		t.Fatalf("list output: %q", out)
 	}
 	if strings.Contains(out, "secret-value-abc") || strings.Contains(out, "env-value-xyz") {

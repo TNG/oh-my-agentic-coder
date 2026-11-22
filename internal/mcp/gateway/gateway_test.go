@@ -127,13 +127,13 @@ func hashOf(t *testing.T, ft fakeTool) string {
 
 var baseTools = []fakeTool{{"echo", "echoes"}, {"wipe", "deletes"}, {"hidden", "off"}, {"debug", "dbg"}, {"relist", "relists"}}
 
-func pinOf(t *testing.T, tools ...fakeTool) *mcppolicy.Pin {
+func reviewOf(t *testing.T, tools ...fakeTool) *mcppolicy.Review {
 	t.Helper()
 	per := map[string]string{}
 	for _, ft := range tools {
 		per[ft.Name] = hashOf(t, ft)
 	}
-	return &mcppolicy.Pin{ToolsHash: mcppolicy.ListHash(per), Tools: per, PinnedAt: time.Now()}
+	return &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(per), Tools: per, At: time.Now()}
 }
 
 func testOptions(t *testing.T) Options {
@@ -156,7 +156,7 @@ func testOptions(t *testing.T) Options {
 				"debug": mcppolicy.Read, "relist": mcppolicy.Read,
 			},
 			Approvals: mcppolicy.DefaultApprovals(),
-			Pin:       pinOf(t, baseTools...),
+			Review:    reviewOf(t, baseTools...),
 		},
 		Dir:    t.TempDir(),
 		Secret: secret,

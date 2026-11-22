@@ -37,8 +37,8 @@ type Definition struct {
 	Tools []mcppolicy.Tool `yaml:"tools,omitempty" json:"tools,omitempty"`
 	// Approvals overrides the approval mode per class. Nil means the defaults.
 	Approvals *mcppolicy.Approvals `yaml:"approvals,omitempty" json:"approvals,omitempty"`
-	// Pin records the tool list the user reviewed.
-	Pin *mcppolicy.Pin `yaml:"pin,omitempty" json:"pin,omitempty"`
+	// Review records the tool list the user reviewed.
+	Review *mcppolicy.Review `yaml:"reviewed,omitempty" json:"reviewed,omitempty"`
 }
 
 // Policy builds the effective policy of the definition, with defaults applied.
@@ -48,7 +48,7 @@ func (d *Definition) Policy() *mcppolicy.Policy {
 		Access:    d.Access,
 		Tools:     make(map[string]mcppolicy.Class, len(d.Tools)),
 		Approvals: mcppolicy.DefaultApprovals(),
-		Pin:       d.Pin,
+		Review:    d.Review,
 	}
 	if p.Access == "" {
 		p.Access = mcppolicy.DefaultAccess

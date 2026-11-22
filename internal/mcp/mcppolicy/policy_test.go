@@ -134,9 +134,9 @@ func TestDecideApprovalOverrides(t *testing.T) {
 
 func TestDecideIgnoresPin(t *testing.T) {
 	p := testPolicy(ReadWriteDelete)
-	p.Pin = nil
+	p.Review = nil
 	if d := p.Decide(Call{Method: "tools/call", Tool: "get"}); !d.Allow {
-		t.Errorf("a missing pin is the gateway's concern, got %+v", d)
+		t.Errorf("a missing review is the gateway's concern, got %+v", d)
 	}
 }
 

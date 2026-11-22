@@ -39,7 +39,7 @@ func (f *mcpAddFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.scope, "scope", scopeProject, "Where the server applies: project (this workdir) or global.")
 	fs.StringVar(&f.harness, "harness", "", "Comma-separated harnesses the server is injected into (required for a new server).")
 	fs.Var(&f.secrets, "secret", "Name of an environment variable that holds a secret; its value is prompted for or read from OMAC_SECRET_<NAME> and kept in the keychain. Repeatable.")
-	fs.BoolVar(&f.replace, "replace", false, "Replace the command and environment of a registered server, keeping its tools, approvals, access and pin.")
+	fs.BoolVar(&f.replace, "replace", false, "Replace the command and environment of a registered server, keeping its tools, approvals, access and review.")
 }
 
 func runMCPAdd(args []string, env *Env) int {

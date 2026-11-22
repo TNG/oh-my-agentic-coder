@@ -84,34 +84,34 @@ func TestListHash(t *testing.T) {
 }
 
 func TestCompare(t *testing.T) {
-	pin := &Pin{Tools: map[string]string{"same": "h1", "changed": "h2", "gone": "h3", "gone2": "h4"}}
+	review := &Review{Tools: map[string]string{"same": "h1", "changed": "h2", "gone": "h3", "gone2": "h4"}}
 	live := []ToolInfo{{Name: "zeta", Hash: "x"}, {Name: "same", Hash: "h1"}, {Name: "changed", Hash: "new"}, {Name: "alpha", Hash: "y"}}
-	got := Compare(pin, live)
-	want := Drift{Added: []string{"alpha", "zeta"}, Removed: []string{"gone", "gone2"}, Changed: []string{"changed"}}
+	got := Compare(review, live)
+	want := Changes{Added: []string{"alpha", "zeta"}, Removed: []string{"gone", "gone2"}, Changed: []string{"changed"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if got.Empty() {
-		t.Error("drift is not empty")
+		t.Error("changes is not empty")
 	}
-	if d := Compare(pin, []ToolInfo{{Name: "same", Hash: "h1"}, {Name: "changed", Hash: "h2"}, {Name: "gone", Hash: "h3"}, {Name: "gone2", Hash: "h4"}}); !d.Empty() {
-		t.Errorf("matching list drifted: %+v", d)
+	if d := Compare(review, []ToolInfo{{Name: "same", Hash: "h1"}, {Name: "changed", Hash: "h2"}, {Name: "gone", Hash: "h3"}, {Name: "gone2", Hash: "h4"}}); !d.Empty() {
+		t.Errorf("matching list changed: %+v", d)
 	}
 }
 
 func TestCompareNilPin(t *testing.T) {
 	got := Compare(nil, []ToolInfo{{Name: "b", Hash: "1"}, {Name: "a", Hash: "2"}})
-	if !reflect.DeepEqual(got, Drift{Added: []string{"a", "b"}}) {
+	if !reflect.DeepEqual(got, Changes{Added: []string{"a", "b"}}) {
 		t.Errorf("got %+v", got)
 	}
 	if !Compare(nil, nil).Empty() {
-		t.Error("nothing live and no pin is no drift")
+		t.Error("nothing live and no review is no changes")
 	}
 }
 
 func TestCompareDuplicateLiveNames(t *testing.T) {
-	pin := &Pin{Tools: map[string]string{"a": "1"}}
-	d := Compare(pin, []ToolInfo{{Name: "a", Hash: "1"}, {Name: "a", Hash: "2"}})
+	review := &Review{Tools: map[string]string{"a": "1"}}
+	d := Compare(review, []ToolInfo{{Name: "a", Hash: "1"}, {Name: "a", Hash: "2"}})
 	if !reflect.DeepEqual(d.Changed, []string{"a"}) {
 		t.Errorf("duplicate with different content must count as changed: %+v", d)
 	}

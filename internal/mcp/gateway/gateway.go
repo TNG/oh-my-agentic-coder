@@ -242,7 +242,7 @@ func (g *gateway) status(w http.ResponseWriter, _ *http.Request) {
 	n := len(g.sessions)
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","sessions":%d,"pin":%q}`, n, g.pinState())
+	fmt.Fprintf(w, `{"status":"ok","sessions":%d,"review":%q}`, n, g.reviewState())
 }
 
 func (g *gateway) delete(w http.ResponseWriter, r *http.Request) {
@@ -493,12 +493,12 @@ type session struct {
 	lastActive time.Time
 	closeOnce  sync.Once
 
-	// checkMu serializes pin checks; pin, pinValid and toolsGen are guarded
+	// checkMu serializes review checks; review, reviewValid and toolsGen are guarded
 	// by mu. toolsGen counts the server's tools/list_changed notifications.
-	checkMu  sync.Mutex
-	pin      pinCheck
-	pinValid bool
-	toolsGen int
+	checkMu     sync.Mutex
+	review      reviewCheck
+	reviewValid bool
+	toolsGen    int
 }
 
 func startSession(id string, o Options, env []string, onExit func(*session)) (*session, error) {

@@ -21,7 +21,7 @@ const (
 
 func runMCP(args []string, env *Env) int {
 	if len(args) == 0 {
-		fmt.Fprintln(env.Stderr, "Usage: omac mcp <register|add|add-json|list|show|tools|pin|diagnose|deregister|serve|bridge> ...")
+		fmt.Fprintln(env.Stderr, "Usage: omac mcp <register|add|add-json|list|show|tools|review|diagnose|deregister|serve|bridge> ...")
 		return ExitMisuse
 	}
 	sub, rest := args[0], args[1:]
@@ -34,8 +34,8 @@ func runMCP(args []string, env *Env) int {
 		return runMCPAddJSON(rest, env)
 	case "tools":
 		return runMCPTools(rest, env)
-	case "pin":
-		return runMCPPin(rest, env)
+	case "review":
+		return runMCPReview(rest, env)
 	case "diagnose":
 		return runMCPDiagnose(rest, env)
 	case "list":
@@ -228,9 +228,9 @@ func runMCPList(args []string, env *Env) int {
 					marker = "  [stale: directory missing]"
 				}
 			}
-			total, classified, pinned := mcpToolCounts(e.Def)
+			total, classified, review := mcpToolCounts(e.Def)
 			fmt.Fprintf(env.Stdout, "%-24s %-40s %-24s %3d tools %3d classified  %s%s\n", e.Name, mcpScopeLabel(scope),
-				strings.Join(e.Harnesses, ","), total, classified, pinned, marker)
+				strings.Join(e.Harnesses, ","), total, classified, review, marker)
 			printed++
 		}
 	}
@@ -240,20 +240,20 @@ func runMCPList(args []string, env *Env) int {
 	return code
 }
 
-// mcpToolCounts returns the number of tools omac knows (the pinned ones, or
-// the classified ones when nothing is pinned), how many of them have a class,
-// and "pinned" or "unpinned".
-func mcpToolCounts(def *mcpreg.Definition) (total, classified int, pin string) {
+// mcpToolCounts returns the number of tools omac knows (the reviewed ones, or
+// the classified ones when nothing is reviewed), how many of them have a class,
+// and "reviewed" or "not reviewed".
+func mcpToolCounts(def *mcpreg.Definition) (total, classified int, review string) {
 	classes := def.Policy().Tools
-	if def.Pin == nil {
-		return len(classes), len(classes), "unpinned"
+	if def.Review == nil {
+		return len(classes), len(classes), "not reviewed"
 	}
-	for name := range def.Pin.Tools {
+	for name := range def.Review.Tools {
 		if _, ok := classes[name]; ok {
 			classified++
 		}
 	}
-	return len(def.Pin.Tools), classified, "pinned"
+	return len(def.Review.Tools), classified, "reviewed"
 }
 
 func findMCPEntry(name, scopeFlag string, env *Env) (mcpreg.Scope, *mcpreg.Entry, error) {
@@ -316,29 +316,29 @@ func runMCPShow(args []string, env *Env) int {
 		}
 		fmt.Fprintf(w, "secret:      %s (%s)\n", name, state)
 	}
-	printMCPPolicy(w, e.Def)
+	printMCPPolicy(w, e.Name, e.Def)
 	return ExitOK
 }
 
-func printMCPPolicy(w io.Writer, def *mcpreg.Definition) {
+func printMCPPolicy(w io.Writer, name string, def *mcpreg.Definition) {
 	p := def.Policy()
 	fmt.Fprintf(w, "access:      %s\n", p.Access)
 	fmt.Fprintf(w, "approvals:   read=%s write=%s delete=%s\n", p.Approvals.Read, p.Approvals.Write, p.Approvals.Delete)
-	if p.Pin == nil {
-		fmt.Fprintln(w, "pin:         none")
+	if p.Review == nil {
+		fmt.Fprintf(w, "reviewed:    no (run: omac mcp tools %s --classify)\n", name)
 	} else {
-		hash := p.Pin.ToolsHash
+		hash := p.Review.ToolsHash
 		if len(hash) > 12 {
 			hash = hash[:12]
 		}
-		fmt.Fprintf(w, "pin:         %s  pinned %s  %d tools\n", hash, p.Pin.PinnedAt.Format("2006-01-02 15:04:05Z"), len(p.Pin.Tools))
+		fmt.Fprintf(w, "reviewed:    %s  %d tools  fingerprint %s\n", p.Review.At.Format("2006-01-02"), len(p.Review.Tools), hash)
 	}
 	names := map[string]bool{}
 	for n := range p.Tools {
 		names[n] = true
 	}
-	if p.Pin != nil {
-		for n := range p.Pin.Tools {
+	if p.Review != nil {
+		for n := range p.Review.Tools {
 			names[n] = true
 		}
 	}

@@ -105,8 +105,8 @@ func (d *Definition) validatePolicy() error {
 			}
 		}
 	}
-	if d.Pin != nil && d.Pin.ToolsHash != mcppolicy.ListHash(d.Pin.Tools) {
-		return errors.New("pin.tools_hash does not match pin.tools")
+	if d.Review != nil && d.Review.ToolsHash != mcppolicy.ListHash(d.Review.Tools) {
+		return errors.New("reviewed.tools_hash does not match reviewed.tools")
 	}
 	return nil
 }

@@ -16,24 +16,24 @@ import (
 )
 
 const (
-	internalIDPrefix = "omac-gw-"
-	pinCheckTimeout  = 30 * time.Second
-	maxNamedTools    = 20
-	errCodePolicy    = -32001
+	internalIDPrefix   = "omac-gw-"
+	reviewCheckTimeout = 30 * time.Second
+	maxNamedTools      = 20
+	errCodePolicy      = -32001
 
-	pinStatePinned   = "pinned"
-	pinStateUnpinned = "unpinned"
-	pinStateDrift    = "drift"
+	reviewStateReviewed    = "reviewed"
+	reviewStateNotReviewed = "not-reviewed"
+	reviewStateChanged     = "changed"
 )
 
-// pinCheck is the outcome of comparing one session's live tool list with the
-// pin.
-type pinCheck struct {
-	state string
-	drift mcppolicy.Drift
+// reviewCheck is the outcome of comparing one session's live tool list with the
+// reviewed one.
+type reviewCheck struct {
+	state   string
+	changes mcppolicy.Changes
 }
 
-func (c pinCheck) ok() bool { return c.state == pinStatePinned }
+func (c reviewCheck) ok() bool { return c.state == reviewStateReviewed }
 
 // refusal is why the gateway will not pass a message on.
 type refusal struct{ reason, detail string }
@@ -95,34 +95,34 @@ func (s *session) Call(ctx context.Context, method string, params any) (json.Raw
 	}
 }
 
-// pinStatus returns the pin check of the session, fetching the live tool list
+// reviewStatus returns the review check of the session, fetching the live tool list
 // when none is current: before the first use and after the server announced
 // that its tools changed.
-func (s *session) pinStatus(ctx context.Context, p *mcppolicy.Policy) (pinCheck, error) {
+func (s *session) reviewStatus(ctx context.Context, p *mcppolicy.Policy) (reviewCheck, error) {
 	s.checkMu.Lock()
 	defer s.checkMu.Unlock()
 	s.mu.Lock()
-	cur, valid, gen := s.pin, s.pinValid, s.toolsGen
+	cur, valid, gen := s.review, s.reviewValid, s.toolsGen
 	s.mu.Unlock()
 	if valid {
 		return cur, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, pinCheckTimeout)
+	ctx, cancel := context.WithTimeout(ctx, reviewCheckTimeout)
 	defer cancel()
 	live, err := mcppolicy.ListTools(ctx, s)
 	if err != nil {
-		return pinCheck{}, err
+		return reviewCheck{}, err
 	}
-	res := pinCheck{state: pinStatePinned}
-	switch drift := mcppolicy.Compare(p.Pin, live); {
-	case p.Pin == nil:
-		res = pinCheck{state: pinStateUnpinned, drift: drift}
-	case !drift.Empty():
-		res = pinCheck{state: pinStateDrift, drift: drift}
+	res := reviewCheck{state: reviewStateReviewed}
+	switch changes := mcppolicy.Compare(p.Review, live); {
+	case p.Review == nil:
+		res = reviewCheck{state: reviewStateNotReviewed, changes: changes}
+	case !changes.Empty():
+		res = reviewCheck{state: reviewStateChanged, changes: changes}
 	}
 	s.mu.Lock()
-	s.pin = res
-	s.pinValid = s.toolsGen == gen
+	s.review = res
+	s.reviewValid = s.toolsGen == gen
 	s.mu.Unlock()
 	return res, nil
 }
@@ -130,14 +130,14 @@ func (s *session) pinStatus(ctx context.Context, p *mcppolicy.Policy) (pinCheck,
 func (s *session) toolsChanged() {
 	s.mu.Lock()
 	s.toolsGen++
-	s.pinValid = false
+	s.reviewValid = false
 	s.mu.Unlock()
 }
 
-func (s *session) currentPinState() (string, bool) {
+func (s *session) currentReviewState() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pin.state, s.pinValid
+	return s.review.state, s.reviewValid
 }
 
 func isToolsListChanged(line []byte) bool {
@@ -161,25 +161,24 @@ func quoteNames(names []string) string {
 	return out
 }
 
-func (c pinCheck) describe(server string) refusal {
-	fix := fmt.Sprintf("Run `omac mcp pin %s` on the host to review and pin the tools.", server)
-	if c.state == pinStateUnpinned {
-		return refusal{mcppolicy.ReasonUnpinned, fmt.Sprintf("the tools of MCP server %s have not been pinned, so no tool can be called. %s", server, fix)}
+func (c reviewCheck) describe(server string) refusal {
+	if c.state == reviewStateNotReviewed {
+		return refusal{mcppolicy.ReasonUnreviewed, fmt.Sprintf("the tools of MCP server %s have not been reviewed yet, so no tool can be called. Run \"omac mcp tools %s --classify\" on the host.", server, server)}
 	}
 	var parts []string
 	for _, p := range []struct {
 		label string
 		names []string
-	}{{"added", c.drift.Added}, {"removed", c.drift.Removed}, {"changed", c.drift.Changed}} {
+	}{{"added", c.changes.Added}, {"removed", c.changes.Removed}, {"changed", c.changes.Changed}} {
 		if len(p.names) > 0 {
 			parts = append(parts, p.label+": "+quoteNames(p.names))
 		}
 	}
-	return refusal{mcppolicy.ReasonDrift, fmt.Sprintf("the tools of MCP server %s differ from the pinned list (%s), so no tool can be called. %s", server, strings.Join(parts, "; "), fix)}
+	return refusal{mcppolicy.ReasonChanged, fmt.Sprintf("the tools of MCP server %s changed since they were last reviewed (%s), so no tool can be called. Run \"omac mcp review %s\" on the host to review them.", server, strings.Join(parts, "; "), server)}
 }
 
 // enforce is the gateway's own check, independent of the facade's: the
-// method and tool policy for every message, and the pin check before a tool
+// method and tool policy for every message, and the review check before a tool
 // is listed or called.
 func (g *gateway) enforce(ctx context.Context, s *session, call mcppolicy.Call) *refusal {
 	p := g.opts.Policy
@@ -189,12 +188,12 @@ func (g *gateway) enforce(ctx context.Context, s *session, call mcppolicy.Call) 
 	if call.Method != "tools/call" && call.Method != "tools/list" {
 		return nil
 	}
-	check, err := s.pinStatus(ctx, p)
+	check, err := s.reviewStatus(ctx, p)
 	if err != nil {
 		if call.Method == "tools/list" {
-			return &refusal{mcppolicy.ReasonDrift, "cannot read the tool list of MCP server " + p.Server + ": " + err.Error()}
+			return &refusal{mcppolicy.ReasonChanged, "cannot read the tool list of MCP server " + p.Server + ": " + err.Error()}
 		}
-		return &refusal{mcppolicy.ReasonDrift, "cannot verify the tool list of MCP server " + p.Server + ": " + err.Error()}
+		return &refusal{mcppolicy.ReasonChanged, "cannot verify the tool list of MCP server " + p.Server + ": " + err.Error()}
 	}
 	if call.Method == "tools/call" && !check.ok() {
 		r := check.describe(p.Server)
@@ -213,7 +212,7 @@ func policyErrorReply(id json.RawMessage, r refusal) []byte {
 }
 
 // filterToolsList keeps the tools the agent may see and that still match the
-// pin. A reply it cannot parse is replaced by an error.
+// reviewed list. A reply it cannot parse is replaced by an error.
 func (g *gateway) filterToolsList(id json.RawMessage, resp []byte) []byte {
 	var env map[string]json.RawMessage
 	if json.Unmarshal(resp, &env) != nil {
@@ -234,10 +233,10 @@ func (g *gateway) filterToolsList(id json.RawMessage, resp []byte) []byte {
 			Name string `json:"name"`
 		}
 		hash, err := mcppolicy.ToolHash(raw)
-		if err != nil || json.Unmarshal(raw, &t) != nil || p.Pin == nil {
+		if err != nil || json.Unmarshal(raw, &t) != nil || p.Review == nil {
 			continue
 		}
-		if p.Visible(t.Name) && p.Pin.Tools[t.Name] == hash {
+		if p.Visible(t.Name) && p.Review.Tools[t.Name] == hash {
 			kept = append(kept, raw)
 		}
 	}
@@ -250,20 +249,20 @@ func (g *gateway) filterToolsList(id json.RawMessage, resp []byte) []byte {
 	return out
 }
 
-// pinState summarizes the gateway for /status: unpinned when the definition
-// has no pin, drift when any open session saw the tools differ, else pinned.
-func (g *gateway) pinState() string {
-	if g.opts.Policy.Pin == nil {
-		return pinStateUnpinned
+// reviewState summarizes the gateway for /status: not-reviewed when the definition
+// has no review, changed when any open session saw the tools differ, else reviewed.
+func (g *gateway) reviewState() string {
+	if g.opts.Policy.Review == nil {
+		return reviewStateNotReviewed
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, s := range g.sessions {
-		if state, valid := s.currentPinState(); valid && state == pinStateDrift {
-			return pinStateDrift
+		if state, valid := s.currentReviewState(); valid && state == reviewStateChanged {
+			return reviewStateChanged
 		}
 	}
-	return pinStatePinned
+	return reviewStateReviewed
 }
 
 func refuseHTTP(w http.ResponseWriter, status int, reason, text string) {

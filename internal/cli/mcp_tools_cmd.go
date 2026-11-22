@@ -21,12 +21,12 @@ import (
 
 const toolProbeTimeout = 30 * time.Second
 
-// Pin status of one tool relative to the stored pin.
+// Review status of one tool relative to the last review.
 const (
-	pinStatusPinned  = "pinned"
-	pinStatusChanged = "changed"
-	pinStatusNew     = "new"
-	pinStatusRemoved = "removed"
+	reviewStatusReviewed = "reviewed"
+	reviewStatusChanged  = "changed"
+	reviewStatusNew      = "new"
+	reviewStatusRemoved  = "removed"
 )
 
 type setFlag []string
@@ -37,7 +37,7 @@ func (s *setFlag) Set(v string) error { *s = append(*s, v); return nil }
 func runMCPTools(args []string, env *Env) int {
 	fs := flag.NewFlagSet("mcp tools", flag.ContinueOnError)
 	scopeFlag := fs.String("scope", scopeProject, "Where the server is registered: project (this workdir) or global.")
-	classify := fs.Bool("classify", false, "Record a class for every tool and pin the list you just reviewed.")
+	classify := fs.Bool("classify", false, "Record a class for every tool and record the list as reviewed.")
 	var sets setFlag
 	fs.Var(&sets, "set", "With --classify: NAME=CLASS (read, write, delete, off); repeatable. Skips the prompts.")
 	rest := fs.String("rest", "", "With --classify: class for every tool not named by --set (default off). Skips the prompts.")
@@ -152,26 +152,26 @@ func sortedLive(live []mcppolicy.ToolInfo) []mcppolicy.ToolInfo {
 	return out
 }
 
-func toolPinStatus(pin *mcppolicy.Pin, t mcppolicy.ToolInfo) string {
-	if pin == nil {
-		return pinStatusNew
+func toolReviewStatus(review *mcppolicy.Review, t mcppolicy.ToolInfo) string {
+	if review == nil {
+		return reviewStatusNew
 	}
-	pinned, ok := pin.Tools[t.Name]
+	reviewed, ok := review.Tools[t.Name]
 	switch {
 	case !ok:
-		return pinStatusNew
-	case pinned != t.Hash:
-		return pinStatusChanged
+		return reviewStatusNew
+	case reviewed != t.Hash:
+		return reviewStatusChanged
 	}
-	return pinStatusPinned
+	return reviewStatusReviewed
 }
 
 func printToolTable(env *Env, entry *mcpreg.Entry, live []mcppolicy.ToolInfo) {
-	pin := entry.Def.Pin
+	review := entry.Def.Review
 	current := currentClasses(entry.Def)
 	fmt.Fprintf(env.Stdout, "Tools of %s. Proposed classes come from the server's own annotations: they are claims, not facts, so check each tool yourself.\n\n", stripControlChars(entry.Name))
 	tw := tabwriter.NewWriter(env.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TOOL\tPROPOSED\tREASON\tCURRENT\tPIN")
+	fmt.Fprintln(tw, "TOOL\tPROPOSED\tREASON\tCURRENT\tREVIEW")
 	unclassified := 0
 	liveNames := map[string]bool{}
 	for _, t := range sortedLive(live) {
@@ -183,11 +183,11 @@ func printToolTable(env *Env, entry *mcpreg.Entry, live []mcppolicy.ToolInfo) {
 		} else {
 			unclassified++
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", stripControlChars(t.Name), class, stripControlChars(reason), cur, toolPinStatus(pin, t))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", stripControlChars(t.Name), class, stripControlChars(reason), cur, toolReviewStatus(review, t))
 	}
 	var removed []string
-	if pin != nil {
-		for n := range pin.Tools {
+	if review != nil {
+		for n := range review.Tools {
 			if !liveNames[n] {
 				removed = append(removed, n)
 			}
@@ -199,22 +199,22 @@ func printToolTable(env *Env, entry *mcpreg.Entry, live []mcppolicy.ToolInfo) {
 		if c, ok := current[n]; ok {
 			cur = string(c)
 		}
-		fmt.Fprintf(tw, "%s\t-\t-\t%s\t%s\n", stripControlChars(n), cur, pinStatusRemoved)
+		fmt.Fprintf(tw, "%s\t-\t-\t%s\t%s\n", stripControlChars(n), cur, reviewStatusRemoved)
 	}
 	tw.Flush()
-	fmt.Fprintf(env.Stdout, "\n%s\n", toolSummary(pin, live, unclassified, len(removed)))
+	fmt.Fprintf(env.Stdout, "\n%s\n", toolSummary(review, live, unclassified, len(removed)))
 }
 
-func toolSummary(pin *mcppolicy.Pin, live []mcppolicy.ToolInfo, unclassified, removed int) string {
+func toolSummary(review *mcppolicy.Review, live []mcppolicy.ToolInfo, unclassified, removed int) string {
 	s := fmt.Sprintf("%d tools, %d unclassified; ", len(live), unclassified)
-	if pin == nil {
-		return s + "not pinned"
+	if review == nil {
+		return s + "not reviewed"
 	}
-	d := mcppolicy.Compare(pin, live)
+	d := mcppolicy.Compare(review, live)
 	if d.Empty() {
-		return s + "pinned " + pin.PinnedAt.Format("2006-01-02") + ", no drift"
+		return s + "reviewed " + review.At.Format("2006-01-02") + ", no changes"
 	}
-	return s + fmt.Sprintf("pinned %s, drift: %d new, %d changed, %d removed", pin.PinnedAt.Format("2006-01-02"), len(d.Added), len(d.Changed), removed)
+	return s + fmt.Sprintf("reviewed %s, since then %d new, %d changed, %d removed", review.At.Format("2006-01-02"), len(d.Added), len(d.Changed), removed)
 }
 
 func parseClass(s string) (mcppolicy.Class, bool) {
@@ -270,14 +270,14 @@ func classifyMCPTools(env *Env, scope mcpreg.Scope, entry *mcpreg.Entry, live []
 		for _, t := range sortedLive(live) {
 			d.Tools = append(d.Tools, mcppolicy.Tool{Name: t.Name, Class: classes[t.Name]})
 		}
-		d.Pin = &mcppolicy.Pin{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, PinnedAt: time.Now().UTC()}
+		d.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, At: time.Now().UTC()}
 		return nil
 	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac mcp tools:", err)
 		return ExitIOError
 	}
-	fmt.Fprintf(env.Stdout, "\nclassified and pinned %d tools of %s\n", len(live), stripControlChars(entry.Name))
+	fmt.Fprintf(env.Stdout, "\nclassified and recorded as reviewed %d tools of %s\n", len(live), stripControlChars(entry.Name))
 	for _, t := range sortedLive(live) {
 		fmt.Fprintf(env.Stdout, "  %s  %s\n", classes[t.Name], stripControlChars(t.Name))
 	}

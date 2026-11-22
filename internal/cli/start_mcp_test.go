@@ -75,7 +75,7 @@ func fakeMCPTools(token string) []any {
 	}
 }
 
-// fakeMCPDefinition is a definition of the fake server that classifies and pins
+// fakeMCPDefinition is a definition of the fake server that classifies and reviews
 // its tools, so the gateway lets them through.
 func fakeMCPDefinition(name, exe string) string {
 	perTool := map[string]string{}
@@ -96,10 +96,10 @@ secrets: [FAKE_TOKEN]
 tools:
   - {name: whoami, class: read}
   - {name: hang, class: read}
-pin:
+reviewed:
   tools_hash: %s
   tools: {hang: %s, whoami: %s}
-  pinned_at: 2026-01-01T00:00:00Z
+  at: 2026-01-01T00:00:00Z
 `, name, exe, mcppolicy.ListHash(perTool), perTool["hang"], perTool["whoami"])
 }
 
