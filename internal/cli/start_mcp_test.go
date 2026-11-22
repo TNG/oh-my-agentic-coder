@@ -267,6 +267,23 @@ func TestMCPRefusalHappensBeforeAnySpawn(t *testing.T) {
 	}
 }
 
+func TestMCPServerRegisteredForAnotherHarnessStillActivatesThePolicy(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "opencode")
+	r.writeFile(".mcp.json", unregisteredClaudeEntry)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitConfigInvalid {
+		t.Fatalf("exit %d, want %d: a harness's own MCP entry must be refused once the project uses the registry\n%s", code, ExitConfigInvalid, stderr)
+	}
+	if !strings.Contains(stderr, `"other"`) {
+		t.Errorf("refusal does not name the entry:\n%s", stderr)
+	}
+	if _, _, ran := r.captured(); ran {
+		t.Error("the inner command ran")
+	}
+}
+
 func TestMCPUnregisteredFlagOverridesRefusal(t *testing.T) {
 	r := newMCPRig(t)
 	r.register("demo", true, "claude-code")

@@ -40,7 +40,7 @@ mcp:
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
-**`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
+**`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server (for this project or globally, for any harness) with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
 
 Registered MCP servers are not configured in this file. Their definitions (command, secrets, tool classes, `access`, `approvals` and the `reviewed` record of the tool list) live on the host under `~/.config/omac/mcp/`; see the [definition reference](./usage/mcp.md#definition-reference).
 

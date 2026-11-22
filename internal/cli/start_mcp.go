@@ -72,7 +72,12 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 	for _, name := range shadowed {
 		fmt.Fprintf(env.Stderr, "%s: MCP server %q is registered for this project and globally; the project registration is used\n", prefix, name)
 	}
-	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(entries))
+	applicable, err := mcpreg.Applicable(env.Workdir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+": MCP registry:", err)
+		return nil, ExitIOError
+	}
+	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(applicable))
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return nil, ExitConfigInvalid

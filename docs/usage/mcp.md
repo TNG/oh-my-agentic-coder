@@ -15,7 +15,7 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
 | An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac refuses to start with a harness MCP entry by default, so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
-If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
+If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are refused, because inside omac MCP configuration comes only from the registry. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
 
 ## How it works
 
