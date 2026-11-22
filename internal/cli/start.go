@@ -21,6 +21,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpinject"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
@@ -79,6 +80,8 @@ type launchOpts struct {
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
+	// mcpUnregistered overrides mcp.unregistered for this run; empty keeps the config value.
+	mcpUnregistered string
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -107,6 +110,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		mcpUnregistered    = fs.String("mcp-unregistered", "", "How to treat MCP servers the harness config defines that are not registered with omac: allow, warn, ignore or refuse. Overrides mcp.unregistered for this run.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	var openPorts intMultiFlag
@@ -151,6 +155,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 			return launchOpts{}, ExitMisuse
 		}
 	}
+	if *mcpUnregistered != "" && !mcpinject.Mode(*mcpUnregistered).Valid() {
+		fmt.Fprintf(env.Stderr, "omac %s: invalid --mcp-unregistered %q: want allow, warn, ignore or refuse\n", cmdName, *mcpUnregistered)
+		return launchOpts{}, ExitMisuse
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
 		label:              cmdName,
@@ -170,6 +178,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		mcpUnregistered:    *mcpUnregistered,
 		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
 	}, ExitOK
@@ -254,6 +263,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
+	}
+	mcp, mcpCode := prepareMCP(env, harness, lc, opts)
+	if mcpCode != ExitOK {
+		return mcpCode
 	}
 	// One resolved sandbox plan for the whole launch: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
@@ -696,6 +709,12 @@ func runLaunch(env *Env, opts launchOpts) int {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitSidecarHealthcheckFail
 	}
+	defer mcp.shutdown()
+	mcpRoutes, err := mcp.launchMCPGateways(ctx, env, prefix, lc, auditor, rtDir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitSidecarHealthcheckFail
+	}
 
 	// 6. Build facade routes.
 	routes := make([]facade.Route, 0, len(running))
@@ -708,6 +727,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Mount unapproved skills as broken routes so a probe gets an
 	// actionable 502 instead of a silent 404 (and they never spawn).
 	routes = append(routes, refusedRoutes...)
+	routes = append(routes, mcpRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
@@ -740,6 +760,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer f.Close()
 	tcpPort := f.TCPPort()
+	if err := mcp.buildInjection(harness, socketPath, tcpPort, f.FacadeToken, sandboxTmp); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitIOError
+	}
+	if err := mcp.checkSandboxEnv(env, prefix, plan, noSandbox); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade listening on %s and 127.0.0.1:%d (%d route(s))\n",
 			socketPath, tcpPort, len(routes))
@@ -775,6 +803,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
+	inner = append(inner, mcp.innerArgs()...)
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
@@ -847,6 +876,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = mcp.allowEnv(argv, plan)
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
@@ -935,6 +965,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra["OMAC_CONTROL_TOKEN"] = reloader.controlToken
 	}
 	extra["OMAC_FACADE_TOKEN"] = reloader.facade.FacadeToken
+	mcp.addEnv(extra)
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).
@@ -970,6 +1001,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
+		mcp.shutdown()
 		_ = f.Close()
 		closeControl()
 		os.Exit(ExitIOError)

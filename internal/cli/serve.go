@@ -212,6 +212,7 @@ func runServe(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac serve: launcher config:", err)
 		return ExitConfigInvalid
 	}
+	mcpServeNotice(env, harness)
 	// One resolved sandbox plan for the whole run: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
 	// (grant JSON). Everything downstream reads the plan instead of
