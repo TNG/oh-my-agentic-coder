@@ -668,6 +668,11 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if route.MCP != nil {
+		f.handleMCP(w, r, route, rest, started)
+		return
+	}
+
 	// Auto-discovery at the skill's top-level URL. When the request
 	// addresses the mount root (no path beyond /<ns>/<mount>[/]) and the
 	// skill ships a SKILL.md, serve that file instead of forwarding a bare
@@ -1375,9 +1380,13 @@ func (f *Facade) logAccessWaited(r *http.Request, route *Route, rest string, sta
 	// Audit sink: one facade.request event per request, with the namespace
 	// hashed by the auditor (a secret dir-token must never be written).
 	if f.auditor != nil {
-		f.auditor.Emit(audit.FacadeRequest(
+		ev := audit.FacadeRequest(
 			r.Method, route.Mount, route.Namespace, "/"+rest,
-			status, bytes, dur.Milliseconds()))
+			status, bytes, dur.Milliseconds())
+		if info, ok := mcpToolFrom(r.Context()); ok {
+			ev = ev.WithTool(info.tool, info.class, info.args)
+		}
+		f.auditor.Emit(ev)
 	}
 	if f.accLog == nil {
 		return

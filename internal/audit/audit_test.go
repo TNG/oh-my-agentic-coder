@@ -334,3 +334,14 @@ func TestNewRunIDIsRandom(t *testing.T) {
 	_ = a1.Close()
 	_ = a2.Close()
 }
+
+func TestRedactorReplacesSecretValuesInsideToolArgs(t *testing.T) {
+	r := newRedactor([]string{"supersecret-value", "short"})
+	ev := r.apply(Event{ToolArgs: "q=find supersecret-value now, k=short"})
+	if strings.Contains(ev.ToolArgs, "supersecret-value") {
+		t.Errorf("secret kept: %q", ev.ToolArgs)
+	}
+	if !strings.Contains(ev.ToolArgs, "short") {
+		t.Errorf("a value under 8 bytes must be left alone: %q", ev.ToolArgs)
+	}
+}

@@ -75,17 +75,37 @@ func NetDecision(host string, port int, allow bool, scope, source string, persis
 // cannot exceed the ~4 KiB threshold that forces two write(2) calls.
 const maxPathBytes = 512
 
+// Caps for the agent-controlled MCP fields. With the path cap they leave
+// room under the same threshold, including the growth when the redactor
+// replaces a secret of 8 bytes with its 10-byte marker.
+const (
+	maxToolBytes     = 128
+	maxToolArgsBytes = 1024
+)
+
 // capPath bounds an agent-controlled path to maxPathBytes, cut at a rune
 // boundary.
-func capPath(path string) string {
-	if len(path) <= maxPathBytes {
-		return path
+func capPath(path string) string { return capString(path, maxPathBytes) }
+
+func capString(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	cut := maxPathBytes
-	for cut > 0 && !utf8.RuneStart(path[cut]) {
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return path[:cut] + "…"
+	return s[:cut] + "…"
+}
+
+// WithTool returns ev with the MCP tool, its class and the argument summary
+// set, each capped. The redactor scrubs known secret values from the summary
+// at Emit.
+func (e Event) WithTool(tool, class, args string) Event {
+	e.Tool = capString(tool, maxToolBytes)
+	e.ToolClass = capString(class, maxToolBytes)
+	e.ToolArgs = capString(args, maxToolArgsBytes)
+	return e
 }
 
 // FacadeRequest builds a facade.request event.
@@ -130,7 +150,7 @@ func FacadeApproval(i FacadeApprovalInfo) Event {
 		Type: TypeFacadeApproval, Skill: i.Skill, Method: i.Method, Mount: i.Mount,
 		Namespace: i.Namespace, Path: capPath(i.Path), Result: i.Result, Source: i.Source, Scope: i.Scope,
 		Unlisted: i.Unlisted, StrippedHeaders: i.StrippedHeaders,
-	}
+	}.WithTool(i.Tool, i.ToolClass, i.ToolArgs)
 }
 
 // ControlMutation builds a control.mutation event.

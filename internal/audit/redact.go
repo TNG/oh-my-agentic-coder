@@ -3,7 +3,13 @@ package audit
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 )
+
+// minToolArgsSecretLen is the shortest secret value replaced inside free
+// text such as an MCP argument summary; shorter ones would match innocuous
+// substrings.
+const minToolArgsSecretLen = 8
 
 // redactedMarker replaces any argv element that matches a known secret.
 const redactedMarker = "<redacted>"
@@ -41,6 +47,9 @@ func (r *redactor) apply(ev Event) Event {
 	if len(ev.Argv) > 0 {
 		ev.Argv = r.redactArgv(ev.Argv)
 	}
+	if ev.ToolArgs != "" {
+		ev.ToolArgs = r.redactText(ev.ToolArgs)
+	}
 	ev.Namespace = redactNamespace(ev.Namespace)
 	return ev
 }
@@ -57,6 +66,17 @@ func (r *redactor) redactArgv(argv []string) []string {
 		out[i] = a
 	}
 	return out
+}
+
+// redactText replaces every occurrence of a known secret value of at least
+// minToolArgsSecretLen bytes inside s.
+func (r *redactor) redactText(s string) string {
+	for v := range r.secretValues {
+		if len(v) >= minToolArgsSecretLen {
+			s = strings.ReplaceAll(s, v, redactedMarker)
+		}
+	}
+	return s
 }
 
 // redactNamespace hashes a per-directory namespace token so a secret
