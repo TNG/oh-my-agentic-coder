@@ -16,21 +16,27 @@ func TestResolvePolicy(t *testing.T) {
 		cfg        config.MCPConfig
 		flag       string
 		registered int
+		canIgnore  bool
 		want       Policy
 		wantErr    bool
 	}{
-		{"nothing registered, nothing set", config.MCPConfig{}, "", 0, Policy{ModeRefuse, false}, false},
-		{"registered activates defaults", config.MCPConfig{}, "", 1, Policy{ModeRefuse, true}, false},
-		{"config unregistered activates", config.MCPConfig{Unregistered: "warn"}, "", 0, Policy{ModeWarn, true}, false},
-		{"flag overrides config", config.MCPConfig{Unregistered: "refuse"}, "warn", 0, Policy{ModeWarn, true}, false},
-		{"flag alone activates", config.MCPConfig{}, "allow", 0, Policy{ModeAllow, true}, false},
-		{"invalid config", config.MCPConfig{Unregistered: "nope"}, "", 1, Policy{}, true},
-		{"invalid flag", config.MCPConfig{}, "nope", 1, Policy{}, true},
-		{"ignore is not a mode", config.MCPConfig{}, "ignore", 1, Policy{}, true},
+		{"nothing registered, nothing set", config.MCPConfig{}, "", 0, false, Policy{Unregistered: ModeRefuse}, false},
+		{"registered activates defaults", config.MCPConfig{}, "", 1, false, Policy{Unregistered: ModeRefuse, Active: true}, false},
+		{"default is ignore when the harness can", config.MCPConfig{}, "", 0, true, Policy{Unregistered: ModeIgnore}, false},
+		{"default is ignore when the harness can, registered", config.MCPConfig{}, "", 1, true, Policy{Unregistered: ModeIgnore, Active: true}, false},
+		{"config unregistered activates", config.MCPConfig{Unregistered: "warn"}, "", 0, false, Policy{Unregistered: ModeWarn, Active: true}, false},
+		{"flag overrides config", config.MCPConfig{Unregistered: "refuse"}, "warn", 0, true, Policy{Unregistered: ModeWarn, Active: true}, false},
+		{"flag alone activates", config.MCPConfig{}, "allow", 0, false, Policy{Unregistered: ModeAllow, Active: true}, false},
+		{"explicit refuse wins over the ignore default", config.MCPConfig{Unregistered: "refuse"}, "", 0, true, Policy{Unregistered: ModeRefuse, Active: true}, false},
+		{"explicit ignore", config.MCPConfig{}, "ignore", 0, true, Policy{Unregistered: ModeIgnore, Active: true}, false},
+		{"ignore falls back to refuse", config.MCPConfig{Unregistered: "ignore"}, "", 0, false, Policy{Unregistered: ModeRefuse, Active: true, IgnoreUnavailable: true}, false},
+		{"ignore flag falls back to refuse", config.MCPConfig{}, "ignore", 1, false, Policy{Unregistered: ModeRefuse, Active: true, IgnoreUnavailable: true}, false},
+		{"invalid config", config.MCPConfig{Unregistered: "nope"}, "", 1, true, Policy{}, true},
+		{"invalid flag", config.MCPConfig{}, "nope", 1, true, Policy{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ResolvePolicy(tt.cfg, tt.flag, tt.registered)
+			got, err := ResolvePolicy(tt.cfg, tt.flag, tt.registered, tt.canIgnore)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -153,11 +159,11 @@ func TestEvaluate(t *testing.T) {
 		wantWarn []string
 		wantRef  []string
 	}{
-		{"inactive", Policy{ModeRefuse, false}, parse, nil, nil},
-		{"allow", Policy{ModeAllow, true}, parse, nil, nil},
-		{"warn", Policy{ModeWarn, true}, parse, []string{`"foo"`, `"mine"`, "also registered", "/f", "/p"}, nil},
-		{"refuse names entry and file", Policy{ModeRefuse, true}, nil, nil, []string{`"foo"`, `"mine"`, "also registered with omac", "/f", "rotate", "omac mcp register", "--mcp-unregistered=allow"}},
-		{"refuse names unparseable file", Policy{ModeRefuse, true}, parse, nil, []string{"/p", `"foo"`}},
+		{"inactive", Policy{Unregistered: ModeRefuse, Active: false}, parse, nil, nil},
+		{"allow", Policy{Unregistered: ModeAllow, Active: true}, parse, nil, nil},
+		{"warn", Policy{Unregistered: ModeWarn, Active: true}, parse, []string{`"foo"`, `"mine"`, "also registered", "/f", "/p"}, nil},
+		{"refuse names entry and file", Policy{Unregistered: ModeRefuse, Active: true}, nil, nil, []string{`"foo"`, `"mine"`, "also registered with omac", "/f", "rotate", "omac mcp register", "--mcp-unregistered=allow"}},
+		{"refuse names unparseable file", Policy{Unregistered: ModeRefuse, Active: true}, parse, nil, []string{"/p", `"foo"`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,15 +195,62 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluateIgnore(t *testing.T) {
+	ex := []Existing{
+		{Harness: "claude-code", File: "/f", Name: "local", Command: "npx", Managed: true},
+		{Harness: "claude-code", File: "/f", Name: "far", Transport: "http", PluginProvided: true},
+	}
+	parse := []Finding{{File: "/p", Kind: FindingParseError, Detail: "bad"}}
+	warn, err := Evaluate(Policy{Unregistered: ModeIgnore, Active: true}, ex, parse)
+	if err != nil {
+		t.Fatalf("ignore must not refuse: %v", err)
+	}
+	joined := strings.Join(warn, "\n")
+	for _, want := range []string{`"local"`, `"far"`, "/f", "/p", "ignored by strict mode", "remote MCP servers are not supported yet"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("notice %q lacks %q", joined, want)
+		}
+	}
+	for _, bad := range []string{"rotate", "omac mcp register", "--mcp-unregistered=allow", "administrator-managed"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("notice %q must not contain %q", joined, bad)
+		}
+	}
+	if warn, err := Evaluate(Policy{Unregistered: ModeIgnore, Active: false}, ex, nil); err != nil || warn != nil {
+		t.Fatalf("inactive: %v %v", warn, err)
+	}
+}
+
+func TestEvaluateRefuseRemoteOnly(t *testing.T) {
+	remote := []Existing{{Harness: "claude-code", File: "/f", Name: "far", Transport: "http"}}
+	_, err := Evaluate(Policy{Unregistered: ModeRefuse, Active: true}, remote, nil)
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	for _, want := range []string{"Remote MCP servers are not supported yet", "--mcp-unregistered=allow", "rotate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q lacks %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "omac mcp register") {
+		t.Fatalf("remote-only refusal must not advise registering: %v", err)
+	}
+	mixed := append(remote, Existing{Harness: "claude-code", File: "/f", Name: "near", Command: "npx"})
+	_, err = Evaluate(Policy{Unregistered: ModeRefuse, Active: true}, mixed, nil)
+	if err == nil || !strings.Contains(err.Error(), "omac mcp register") || !strings.Contains(err.Error(), "Remote MCP servers are not supported yet") {
+		t.Fatalf("mixed refusal: %v", err)
+	}
+}
+
 func TestEvaluateSameNameEntryOffends(t *testing.T) {
 	ex := []Existing{{File: "/f", Name: "mine", AlsoRegistered: true}}
-	if _, err := Evaluate(Policy{ModeRefuse, true}, ex, nil); err == nil || !strings.Contains(err.Error(), "also registered") {
+	if _, err := Evaluate(Policy{Unregistered: ModeRefuse, Active: true}, ex, nil); err == nil || !strings.Contains(err.Error(), "also registered") {
 		t.Fatalf("err = %v", err)
 	}
-	if warn, err := Evaluate(Policy{ModeWarn, true}, ex, nil); err != nil || len(warn) != 1 {
+	if warn, err := Evaluate(Policy{Unregistered: ModeWarn, Active: true}, ex, nil); err != nil || len(warn) != 1 {
 		t.Fatalf("warn = %v err = %v", warn, err)
 	}
-	if warn, err := Evaluate(Policy{ModeAllow, true}, ex, nil); err != nil || len(warn) != 0 {
+	if warn, err := Evaluate(Policy{Unregistered: ModeAllow, Active: true}, ex, nil); err != nil || len(warn) != 0 {
 		t.Fatalf("warn = %v err = %v", warn, err)
 	}
 }
@@ -210,8 +263,8 @@ var testServers = []Server{{
 
 func TestBuildOpenCodeOnlyAddsServers(t *testing.T) {
 	const golden = `{"mcp":{"gh":{"command":["/bin/omac","mcp","bridge","gh"],"enabled":true,"environment":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"},"type":"local"}}}`
-	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeRefuse} {
-		inj, err := Build(config.MCPInjectOpenCodeEnv, testServers, Policy{mode, true}, t.TempDir(), nil)
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
+		inj, err := Build(config.MCPInjectOpenCodeEnv, testServers, Policy{Unregistered: mode, Active: true}, t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,9 +279,9 @@ func TestBuildOpenCodeOnlyAddsServers(t *testing.T) {
 
 func TestBuildClaudeOnlyAddsConfigFlag(t *testing.T) {
 	const golden = `{"mcpServers":{"gh":{"args":["mcp","bridge","gh"],"command":"/bin/omac","env":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"}}}}`
-	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeRefuse} {
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
 		dir := t.TempDir()
-		inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{mode, true}, dir, nil)
+		inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{Unregistered: mode, Active: true}, dir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -241,7 +294,7 @@ func TestBuildClaudeOnlyAddsConfigFlag(t *testing.T) {
 			t.Fatalf("mode = %v", info.Mode().Perm())
 		}
 		wantArgs := []string{"--mcp-config=" + file}
-		if mode == ModeRefuse {
+		if mode == ModeRefuse || mode == ModeIgnore {
 			wantArgs = []string{"--strict-mcp-config", "--mcp-config=" + file}
 		}
 		if inj.Env != nil || inj.AllowEnv != nil || !reflect.DeepEqual(inj.InnerArgs, wantArgs) {
@@ -266,13 +319,15 @@ func TestBuildClaudeStrictMode(t *testing.T) {
 		userArgs []string
 		want     []string
 	}{
-		{"claude default, nothing registered", config.MCPInjectClaudeFlag, Policy{ModeRefuse, false}, nil, strict},
-		{"claude refuse, nothing registered", config.MCPInjectClaudeFlag, Policy{ModeRefuse, true}, nil, strict},
-		{"claude warn", config.MCPInjectClaudeFlag, Policy{ModeWarn, true}, nil, nil},
-		{"claude allow", config.MCPInjectClaudeFlag, Policy{ModeAllow, true}, nil, nil},
-		{"user passed the flag", config.MCPInjectClaudeFlag, Policy{ModeRefuse, false}, strict, nil},
-		{"opencode", config.MCPInjectOpenCodeEnv, Policy{ModeRefuse, false}, nil, nil},
-		{"harness without injection", config.MCPInjectNone, Policy{ModeRefuse, false}, nil, nil},
+		{"claude default, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, nil, strict},
+		{"claude refuse, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: true}, nil, strict},
+		{"claude ignore, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, nil, strict},
+		{"claude ignore, user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, strict, nil},
+		{"claude warn", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeWarn, Active: true}, nil, nil},
+		{"claude allow", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeAllow, Active: true}, nil, nil},
+		{"user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, strict, nil},
+		{"opencode", config.MCPInjectOpenCodeEnv, Policy{Unregistered: ModeRefuse, Active: false}, nil, nil},
+		{"harness without injection", config.MCPInjectNone, Policy{Unregistered: ModeRefuse, Active: false}, nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -289,7 +344,7 @@ func TestBuildClaudeStrictMode(t *testing.T) {
 
 func TestBuildClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
 	dir := t.TempDir()
-	inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{ModeRefuse, true}, dir, []string{"--strict-mcp-config"})
+	inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{Unregistered: ModeRefuse, Active: true}, dir, []string{"--strict-mcp-config"})
 	if err != nil {
 		t.Fatal(err)
 	}

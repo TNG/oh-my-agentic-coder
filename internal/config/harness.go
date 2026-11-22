@@ -204,6 +204,13 @@ func MCPCapableHarnessNames() []string {
 	return names
 }
 
+// CanIgnoreMCP reports whether the harness can be told not to load its own MCP
+// config, which the ignore mode of mcp.unregistered needs. Only Claude Code can,
+// with --strict-mcp-config.
+func (h Harness) CanIgnoreMCP() bool {
+	return h.MCPInjection == MCPInjectClaudeFlag
+}
+
 // MCPInjectionKind selects the mechanism that injects MCP servers.
 type MCPInjectionKind int
 

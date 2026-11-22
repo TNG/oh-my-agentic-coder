@@ -89,9 +89,9 @@ type MCPConfig struct {
 // Validate rejects values that are not a known mode. Empty values are valid.
 func (m MCPConfig) Validate() error {
 	switch m.Unregistered {
-	case "", "allow", "warn", "refuse":
+	case "", "allow", "warn", "ignore", "refuse":
 	default:
-		return fmt.Errorf("mcp.unregistered must be allow, warn or refuse, got %q", m.Unregistered)
+		return fmt.Errorf("mcp.unregistered must be allow, warn, ignore or refuse, got %q", m.Unregistered)
 	}
 	return nil
 }

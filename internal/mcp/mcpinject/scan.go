@@ -108,6 +108,9 @@ func scan(kind config.MCPScanKind, host Host, managed managedDirs) ([]Existing, 
 			existing = append(existing, e)
 		}
 	}
+	if harness == harnessOpenCode {
+		existing = dropDisabledOpenCode(existing)
+	}
 	return existing, findings, nil
 }
 
@@ -248,6 +251,7 @@ type openCodeEntry struct {
 	Type        string                     `json:"type"`
 	Command     []string                   `json:"command"`
 	Environment map[string]json.RawMessage `json:"environment"`
+	Enabled     *bool                      `json:"enabled"`
 	URL         string                     `json:"url"`
 	Headers     map[string]json.RawMessage `json:"headers"`
 }
@@ -257,7 +261,7 @@ func decodeOpenCodeEntry(raw json.RawMessage) Existing {
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return Existing{}
 	}
-	e := Existing{EnvKeys: sortedKeys(o.Environment), HeaderKeys: sortedKeys(o.Headers)}
+	e := Existing{EnvKeys: sortedKeys(o.Environment), HeaderKeys: sortedKeys(o.Headers), disabled: o.Enabled != nil && !*o.Enabled}
 	switch {
 	case o.Type == "remote" || (o.Type == "" && o.URL != ""):
 		e.Transport = "remote"

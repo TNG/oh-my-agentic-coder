@@ -35,14 +35,16 @@ audit:
 cache:
   scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
 mcp:
-  unregistered: refuse              # harness MCP entries omac did not register: allow | warn | refuse (default refuse once a server is registered)
+  unregistered: ignore              # harness MCP entries omac did not register: allow | warn | ignore | refuse (default: ignore for Claude Code, refuse otherwise)
 ```
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
 
 **`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server (for this project or globally, for any harness) with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
 
-For Claude Code the default `refuse` also starts it in strict MCP mode, even when nothing is registered, so it does not auto-load servers from plugins or its own config. To keep those, for example plugins your organization requires, set `mcp:` `unregistered: allow` here, or pass `--mcp-unregistered=allow` for one run: see [how to skip the disabling](./usage/mcp.md#keeping-plugins-or-servers-you-have-to-use).
+The modes are `allow` (entries load, silent), `warn` (entries load, listed), `ignore` (entries are not loaded, listed as a notice, start proceeds) and `refuse` (entries are not loaded, start is refused). `ignore` needs a harness that can suppress its own MCP config, which only Claude Code can; for OpenCode and the other harnesses it falls back to `refuse` with a message. The default is `ignore` for Claude Code and `refuse` for every other harness; an explicit setting always wins.
+
+For Claude Code the default `ignore` (and `refuse`) starts it in strict MCP mode, even when nothing is registered, so it does not auto-load servers from plugins or its own config. To keep those, for example plugins your organization requires, set `mcp:` `unregistered: allow` here, or pass `--mcp-unregistered=allow` for one run: see [how to skip the disabling](./usage/mcp.md#keeping-plugins-or-servers-you-have-to-use).
 
 Registered MCP servers are not configured in this file. Their definitions (command, secrets, tool classes, `access`, `approvals` and the `reviewed` record of the tool list) live on the host under `~/.config/omac/mcp/`; see the [definition reference](./usage/mcp.md#definition-reference).
 
@@ -157,7 +159,7 @@ A few things to know:
 
 ### Running an MCP server the harness launches
 
-An MCP server is configured in the harness, not in omac. Inside omac, MCP configuration comes only from the omac registry (see the [MCP gateway](./usage/mcp.md)). Once you register a server, omac refuses to start while such harness entries exist, unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
+An MCP server is configured in the harness, not in omac. Inside omac, MCP configuration comes only from the omac registry (see the [MCP gateway](./usage/mcp.md)). Once you register a server, omac does not load such harness entries (Claude Code, `ignore`) or refuses to start while they exist (other harnesses, `refuse`), unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
 
 - **A token**, if the server authenticates with an API key: add the variable to `environment.allow_vars` (see above) and export it before `omac start`.

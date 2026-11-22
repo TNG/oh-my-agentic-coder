@@ -100,7 +100,8 @@ func TestScanOpenCodeShapes(t *testing.T) {
 		{"v2 servers", `{"mcp":{"servers":{"c":{"type":"local","command":["x"]}},"timeout":{"catalog":5}}}`, []string{"c"}},
 		{"v1 server named servers", `{"mcp":{"servers":{"type":"remote","url":"https://h"}}}`, []string{"servers"}},
 		{"enabled only is no server", `{"mcp":{"jira":{"enabled":true}}}`, nil},
-		{"disabled entry still listed", `{"mcp":{"d":{"type":"local","command":["x"],"enabled":false}}}`, []string{"d"}},
+		{"disabled entry is not started", `{"mcp":{"d":{"type":"local","command":["x"],"enabled":false}}}`, nil},
+		{"explicitly enabled entry is listed", `{"mcp":{"d":{"type":"local","command":["x"],"enabled":true}}}`, []string{"d"}},
 		{"no mcp", `{"model":"x"}`, nil},
 	}
 	for _, tt := range tests {

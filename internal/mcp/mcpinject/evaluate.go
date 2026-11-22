@@ -8,9 +8,11 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
-const refusalExplanation = `An MCP entry in the harness config runs inside the sandbox or keeps its login in the harness's state directory, where the agent can reach it.
-Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow.
-If an entry already holds a token, rotate it.`
+const refusalExposure = `An MCP entry in the harness config runs inside the sandbox or keeps its login in the harness's state directory, where the agent can reach it.`
+
+const refusalRotate = `If an entry already holds a token, rotate it.`
+
+const ignoredSuffix = " is ignored by strict mode"
 
 const unsupportedHarnessWays = `Use a supported harness, or run once with --mcp-unregistered=warn (start without the registered servers) or --mcp-unregistered=allow.`
 
@@ -34,18 +36,45 @@ func Evaluate(p Policy, ex []Existing, f []Finding) (warnings []string, refusal 
 	if !p.Active || p.Unregistered == ModeAllow {
 		return nil, nil
 	}
-	problems, hinted := scanProblems(ex, f)
+	ignored := p.Unregistered == ModeIgnore
+	problems, hinted := scanProblems(ex, f, ignored)
 	if hinted {
 		problems = append(problems, argumentsNotice)
 	}
-	if p.Unregistered == ModeWarn {
+	if p.Unregistered == ModeWarn || ignored {
 		return problems, nil
 	}
 	if len(problems) > 0 {
-		return nil, errors.New("MCP policy refuses this start:\n  " + strings.Join(problems, "\n  ") + "\n" + refusalExplanation)
+		return nil, errors.New("MCP policy refuses this start:\n  " + strings.Join(problems, "\n  ") + "\n" + refusalExplanation(ex, f))
 	}
 	return nil, nil
 }
+
+// refusalExplanation says what the user can do about refused entries. Remote
+// entries cannot be registered yet, so they get no registration advice.
+func refusalExplanation(ex []Existing, f []Finding) string {
+	registerable := len(f) > 0
+	remote := false
+	for _, e := range ex {
+		if isRemote(e) {
+			remote = true
+		} else {
+			registerable = true
+		}
+	}
+	var ways string
+	switch {
+	case !registerable:
+		ways = `Remote MCP servers are not supported yet, so they cannot be registered. Remove the entry, or run once with --mcp-unregistered=allow.`
+	case remote:
+		ways = `Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow. Remote MCP servers are not supported yet, so they cannot be registered.`
+	default:
+		ways = `Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow.`
+	}
+	return refusalExposure + "\n" + ways + "\n" + refusalRotate
+}
+
+func isRemote(e Existing) bool { return e.Transport != "" && e.Transport != "stdio" }
 
 // EvaluateUnsupported applies the policy to a start of a harness omac cannot
 // provide MCP servers to. Registered servers are the names of the registrations
@@ -59,7 +88,7 @@ func EvaluateUnsupported(p Policy, harness string, registered []string, ex []Exi
 	if len(registered) > 0 {
 		problems = append(problems, UnsupportedHarnessMessage(harness)+". Registered servers that will not be available: "+strings.Join(registered, ", ")+".")
 	}
-	found, hinted := scanProblems(ex, f)
+	found, hinted := scanProblems(ex, f, false)
 	problems = append(problems, found...)
 	if hinted {
 		problems = append(problems, argumentsNotice)
@@ -77,16 +106,24 @@ func EvaluateUnsupported(p Policy, harness string, registered []string, ex []Exi
 	return nil, errors.New("MCP policy refuses this start:\n  " + strings.Join(problems, "\n  ") + "\n" + explanation)
 }
 
-func scanProblems(ex []Existing, f []Finding) (problems []string, hinted bool) {
+// scanProblems lists the entries and unreadable files. With ignored set the
+// harness does not load them, so the lines say so and the hints that only apply
+// to loaded or refused entries are left out.
+func scanProblems(ex []Existing, f []Finding, ignored bool) (problems []string, hinted bool) {
 	for _, e := range ex {
 		problem := fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File)
 		if e.AlsoRegistered {
 			problem = fmt.Sprintf("%q in %s (also registered with omac; the harness entry still runs inside the sandbox)", e.Name, e.File)
+			if ignored {
+				problem = fmt.Sprintf("%q in %s (also registered with omac)", e.Name, e.File)
+			}
 		}
 		if e.PluginProvided {
 			problem += " (provided by a plugin)"
 		}
-		if e.Managed {
+		if ignored {
+			problem += ignoredSuffix
+		} else if e.Managed {
 			problem += managedNotice
 		}
 		if hint := AddCommand(e); hint != "" {
@@ -104,7 +141,9 @@ func scanProblems(ex []Existing, f []Finding) (problems []string, hinted bool) {
 		if finding.PluginProvided {
 			problem += " (provided by a plugin)"
 		}
-		if finding.Managed {
+		if ignored {
+			problem += "; anything it defines" + ignoredSuffix
+		} else if finding.Managed {
 			problem += managedNotice
 		}
 		problems = append(problems, problem)

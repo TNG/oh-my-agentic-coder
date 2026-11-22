@@ -77,13 +77,17 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintln(env.Stderr, prefix+": MCP registry:", err)
 		return nil, ExitIOError
 	}
-	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(applicable))
+	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(applicable), harness.CanIgnoreMCP())
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return nil, ExitConfigInvalid
 	}
+	if policy.IgnoreUnavailable {
+		fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, mcpinject.IgnoreUnavailableMessage(harness.Name))
+	}
 	if !policy.Active {
-		if harness.MCPInjection != config.MCPInjectClaudeFlag || policy.Unregistered != mcpinject.ModeRefuse {
+		strict := policy.Unregistered == mcpinject.ModeRefuse || policy.Unregistered == mcpinject.ModeIgnore
+		if harness.MCPInjection != config.MCPInjectClaudeFlag || !strict {
 			return nil, ExitOK
 		}
 		noticeStrictMCP(env, harness, prefix)
@@ -96,6 +100,19 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
 		return nil, ExitIOError
 	}
+	var loaded []mcpinject.Existing
+	var loadedFindings []mcpinject.Finding
+	if policy.Unregistered == mcpinject.ModeIgnore {
+		// Strict mode does not stop what the user passes on the command line, such as --mcp-config.
+		// Those entries load, so they are reported as loaded and not as ignored.
+		bare, bareFindings, err := mcpinject.Scan(harness.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
+			return nil, ExitIOError
+		}
+		existing, loaded = splitExisting(existing, bare)
+		findings, loadedFindings = splitFindings(findings, bareFindings)
+	}
 	registered := map[string]bool{}
 	for _, e := range entries {
 		registered[e.Name] = true
@@ -104,8 +121,18 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		existing[i].AlsoRegistered = registered[existing[i].Name]
 	}
 	warnings, refusal := mcpinject.Evaluate(policy, existing, findings)
+	label := "warning"
+	if policy.Unregistered == mcpinject.ModeIgnore {
+		label = "notice"
+	}
 	for _, w := range warnings {
-		fmt.Fprintf(env.Stderr, "%s: warning: %s\n", prefix, w)
+		fmt.Fprintf(env.Stderr, "%s: %s: %s\n", prefix, label, w)
+	}
+	if len(loaded)+len(loadedFindings) > 0 {
+		loadedWarnings, _ := mcpinject.Evaluate(mcpinject.Policy{Unregistered: mcpinject.ModeWarn, Active: true}, loaded, loadedFindings)
+		for _, w := range loadedWarnings {
+			fmt.Fprintf(env.Stderr, "%s: warning: %s\n", prefix, w)
+		}
 	}
 	if refusal != nil {
 		fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, refusal)
@@ -132,7 +159,57 @@ func noticeStrictMCP(env *Env, harness config.Harness, prefix string) {
 	if len(names) > maxNamed {
 		list = fmt.Sprintf("%s and %d more", strings.Join(names[:maxNamed], ", "), len(names)-maxNamed)
 	}
-	fmt.Fprintf(env.Stderr, "%s: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration will not load inside omac: %s. Register them with \"omac mcp add\" or run with --mcp-unregistered=allow to keep them.\n", prefix, list)
+	advice := `Register them with "omac mcp add" or run with --mcp-unregistered=allow to keep them.`
+	if onlyRemote(existing, findings) {
+		advice = `Remote MCP servers are not supported yet; run with --mcp-unregistered=allow to keep them.`
+	}
+	fmt.Fprintf(env.Stderr, "%s: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration are ignored and will not load inside omac: %s. %s\n", prefix, list, advice)
+}
+
+// onlyRemote reports whether every entry found is a remote server, which cannot be registered yet.
+func onlyRemote(ex []mcpinject.Existing, f []mcpinject.Finding) bool {
+	if len(f) > 0 {
+		return false
+	}
+	for _, e := range ex {
+		if e.Transport == "" || e.Transport == "stdio" {
+			return false
+		}
+	}
+	return len(ex) > 0
+}
+
+// splitExisting separates the entries a scan with the user's arguments found into
+// those the bare scan also found (the harness config) and those only the
+// arguments add.
+func splitExisting(all, bare []mcpinject.Existing) (config, fromArgs []mcpinject.Existing) {
+	known := map[string]bool{}
+	for _, e := range bare {
+		known[e.File+"\x00"+e.Name] = true
+	}
+	for _, e := range all {
+		if known[e.File+"\x00"+e.Name] {
+			config = append(config, e)
+		} else {
+			fromArgs = append(fromArgs, e)
+		}
+	}
+	return config, fromArgs
+}
+
+func splitFindings(all, bare []mcpinject.Finding) (config, fromArgs []mcpinject.Finding) {
+	known := map[string]bool{}
+	for _, f := range bare {
+		known[f.File+"\x00"+f.Kind] = true
+	}
+	for _, f := range all {
+		if known[f.File+"\x00"+f.Kind] {
+			config = append(config, f)
+		} else {
+			fromArgs = append(fromArgs, f)
+		}
+	}
+	return config, fromArgs
 }
 
 // prepareUnsupportedHarnessMCP applies the unregistered-entry policy to a
@@ -144,10 +221,13 @@ func prepareUnsupportedHarnessMCP(env *Env, harness config.Harness, lc config.La
 		fmt.Fprintln(env.Stderr, prefix+": MCP registry:", err)
 		return ExitIOError
 	}
-	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(entries))
+	policy, err := mcpinject.ResolvePolicy(lc.MCP, opts.mcpUnregistered, len(entries), false)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitConfigInvalid
+	}
+	if policy.IgnoreUnavailable {
+		fmt.Fprintf(env.Stderr, "%s: %s\n", prefix, mcpinject.IgnoreUnavailableMessage(harness.Name))
 	}
 	if !policy.Active {
 		return ExitOK

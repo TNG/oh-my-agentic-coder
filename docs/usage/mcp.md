@@ -13,9 +13,9 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 |---|---|
 | The agent to call a service with a secret, and the secret must stay out of the sandbox, and a stdio MCP server for it exists | The MCP gateway (this page) |
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
-| An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac refuses to start with a harness MCP entry by default, so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
+| An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac does not load the harness's own MCP entries by default (Claude Code) or refuses to start with them (other harnesses), so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
-If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are refused, because inside omac MCP configuration comes only from the registry. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
+If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are not loaded (Claude Code) or refused (other harnesses), because inside omac MCP configuration comes only from the registry. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
 
 ## How it works
 
@@ -160,7 +160,7 @@ Only stdio servers are supported.
 For each registered server that matches the harness, omac starts the server on the host before the harness and injects an entry that starts the bridge. It never edits your own config files.
 
 - **OpenCode**: omac passes the entry in the `OPENCODE_CONFIG_CONTENT` environment variable, which takes precedence over project config.
-- **Claude Code**: omac writes a config file to the session's temporary directory and passes it with `--mcp-config`. With the default `refuse` mode it also passes `--strict-mcp-config`, see [Claude Code runs in strict MCP mode](#claude-code-runs-in-strict-mcp-mode).
+- **Claude Code**: omac writes a config file to the session's temporary directory and passes it with `--mcp-config`. With the default `ignore` mode (and with `refuse`) it also passes `--strict-mcp-config`, see [Claude Code runs in strict MCP mode](#claude-code-runs-in-strict-mcp-mode).
 
 omac adds these variables to the sandbox only when it injects, so a value you export yourself does not reach the agent.
 
@@ -177,29 +177,30 @@ If a secret is missing from the keychain, omac prints a warning and skips that s
 
 Outside omac, use your harness's own MCP config as usual. Inside omac, MCP configuration comes only from the omac registry; omac translates it into the harness's configuration at launch.
 
-An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) either runs inside the sandbox or keeps its login in the harness's state directory. In both cases the agent can reach its credentials. omac therefore refuses to start while such an entry exists. This includes an entry with the same name as a registered server: the old entry, and any token in it, stays in a file the agent can read, so registering the server does not make it safe. omac never removes, disables or rewrites these entries. It only adds your registered servers next to them.
+An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) either runs inside the sandbox or keeps its login in the harness's state directory. In both cases the agent can reach its credentials. omac therefore does not let such an entry load: Claude Code ignores it by default (`ignore` mode, strict MCP mode) and every other harness refuses to start while it exists (`refuse` mode). This includes an entry with the same name as a registered server: the old entry, and any token in it, stays in a file the agent can read, so registering the server does not make it safe. omac never removes, disables or rewrites these entries. It only adds your registered servers next to them, and with `ignore` it asks Claude Code not to load the others.
 
 One harness config cannot serve a server with credentials both inside and outside omac. To use a server in both places, keep the harness entry out of the files omac scans and register the server with omac, or run omac once with `--mcp-unregistered=allow`. Under `allow` or `warn`, if a harness entry has the same name as a registered server, the harness uses the entry omac injects.
 
 ### Where omac looks
 
-The scan reads server names, transport, command, arguments and the names (never the values) of environment variables and headers. A file that exists but cannot be read or parsed also stops the start, because it may hide servers. A missing file is ignored. "Walks up" means the current directory and every parent directory up to the filesystem root.
+The scan reads server names, transport, command, arguments and the names (never the values) of environment variables and headers. In `refuse` mode a file that exists but cannot be read or parsed also stops the start, because it may hide servers. A missing file is ignored. "Walks up" means the current directory and every parent directory up to the filesystem root.
 
 | Harness | Place | Status |
 | --- | --- | --- |
 | OpenCode | `opencode.json` / `opencode.jsonc` in the user config directory (`$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`), in `$OPENCODE_CONFIG_DIR`, and in the current directory and every parent (walks up), also inside each `.opencode/` directory | scanned |
 | OpenCode | file named by `$OPENCODE_CONFIG`; inline JSON in `$OPENCODE_CONFIG_CONTENT` | scanned when set on the host |
 | OpenCode | administrator files `/Library/Application Support/opencode/` and `/etc/opencode/` | scanned, reported as administrator-managed |
-| OpenCode | both config shapes: `mcp.<name>` (v1) and `mcp.servers.<name>` (v2); an entry with `enabled: false` is still reported, because it can be enabled later | scanned |
+| OpenCode | both config shapes: `mcp.<name>` (v1) and `mcp.servers.<name>` (v2); an entry with `enabled: false` is not reported when every place that mentions the name turns it off, and is reported when any other definition or `enabled: true` override of that name exists | scanned |
 | OpenCode | remote `.well-known/opencode` config, macOS MDM managed preferences, Windows `%ProgramData%\opencode`, MCP servers that a plugin registers in code | not scanned (not a file omac can read at start) |
 | Claude Code | `~/.claude.json`, user scope and the entry of the current project only (other projects are never reported), also `$CLAUDE_CONFIG_DIR/.claude.json` | scanned |
 | Claude Code | `.mcp.json` in the current directory and every parent (walks up) | scanned |
 | Claude Code | `settings.json` in `~/.claude` and `$CLAUDE_CONFIG_DIR`, and `.claude/settings.json`, `.claude/settings.local.json` of the project (`mcpServers` key) | scanned |
+| Claude Code | entries Claude Code does not load | not reported: servers in `disabledMcpjsonServers` (any `settings.json`) for `.mcp.json`, and servers in this project's `disabledMcpServers` (the `/mcp` toggle, kept in `~/.claude.json`) for `~/.claude.json` and `settings.json` entries. Not skipped: servers that are merely not approved yet (print mode loads them without asking), and a per-server `enabled`/`disabled` key, which Claude Code does not document |
 | Claude Code | `--mcp-config` files or inline JSON that you pass after the omac flags | scanned |
 | Claude Code | `mcpServers` in the frontmatter of agent files in `.claude/agents/` (current directory and parents), `~/.claude/agents/`, `$CLAUDE_CONFIG_DIR/agents/` and `.claude/agents/` of `--add-dir` directories; `--agents` JSON | scanned |
 | Claude Code | a plugin directory passed with `--plugin-dir`: its `.mcp.json` and `mcpServers` in `.claude-plugin/plugin.json` (inline or a `.json` file) | scanned (not for `.zip` files, `.mcpb` bundles or URLs) |
 | Claude Code | `managed-mcp.json` and `managedMcpServers` in `managed-settings.json` under `/Library/Application Support/ClaudeCode/` and `/etc/claude-code/` | scanned, reported as administrator-managed; the settings file name is unverified because the pages we read name only the directory |
-| Claude Code | plugin directories in `~/.claude/plugins` and `$CLAUDE_CONFIG_DIR/plugins`: every `.mcp.json` and `.claude-plugin/plugin.json` (`mcpServers`) under `synced/`, and the plugin install paths listed in `installed_plugins.json` when that file exists. Reported as provided by a plugin | scanned. The layout is observed on one machine, not documented, and the shape of `installed_plugins.json` is unverified: omac reads every `installPath` string in it, and a file whose `plugins` entry yields no path is reported as unparseable |
+| Claude Code | plugin directories in `~/.claude/plugins` and `$CLAUDE_CONFIG_DIR/plugins`: every `.mcp.json` and `.claude-plugin/plugin.json` (`mcpServers`) under `synced/`, and the plugin install paths listed in `installed_plugins.json` when that file exists. Reported as provided by a plugin. A plugin that `enabledPlugins` in the user, project or local `settings.json` turns off (`false`) is skipped; a `synced` plugin is matched as `<name>@synced`, with the name from its `.claude-plugin/plugin.json`. A plugin whose state cannot be determined is scanned | scanned. The layout is observed on one machine, not documented, and the shape of `installed_plugins.json` is unverified: omac reads every `installPath` string in it, and a file whose `plugins` entry yields no path is reported as unparseable |
 | Claude Code | `plugins/marketplaces/` | not scanned (a catalog of plugins you can install, not plugins Claude Code loads) |
 | Codex | `config.toml` in `$CODEX_HOME` (default `~/.codex`); `.codex/config.toml` in the current directory and each parent up to the git root; administrator file `/etc/codex/config.toml` (reported as administrator-managed). Tables `[mcp_servers.<name>]` and `[plugins."<plugin>".mcp_servers.<name>]` | scanned |
 | Codex | `-c mcp_servers.*` and `--config mcp_servers.*` that you pass after the omac flags | scanned |
@@ -217,9 +218,9 @@ The scan reads server names, transport, command, arguments and the names (never 
 
 "Up to the git root" means the current directory and each parent up to the first directory that contains `.git`; without a git root only the current directory counts.
 
-Environment variables and `--mcp-config` files are scanned whenever they are set on the host, even if the harness would ignore them (for example with `--strict-mcp-config`). To get past such a finding, unset the variable, drop the flag or use `--mcp-unregistered=allow`. An entry from an administrator-managed file cannot be removed by you, so `--mcp-unregistered=allow` is the way past it.
+Environment variables and `--mcp-config` files are scanned whenever they are set on the host, even if the harness would ignore them (for example with `--strict-mcp-config`). In `ignore` mode, entries from a `--mcp-config` you pass yourself still load under strict mode, so they are listed as loaded warnings and not as ignored. To get past a refusal because of them, unset the variable, drop the flag or use `--mcp-unregistered=allow`. An entry from an administrator-managed file cannot be removed by you, so `--mcp-unregistered=allow` is the way past it.
 
-The refusal and the warning print, under each stdio entry, an equivalent command, for example:
+The refusal, the warning and the ignore notice print, under each stdio entry, an equivalent command, for example:
 
 ```text
 omac mcp add --scope project --harness claude-code --secret JIRA_TOKEN jira -- npx -y mcp-jira@1.2.3
@@ -233,37 +234,40 @@ Fix a refusal in one of three ways:
 - **Remove the entry** from the harness config.
 - **Allow it for one run** with `omac start --mcp-unregistered=allow`.
 
-If an entry already holds a token, rotate it: agents that ran earlier may have read it.
+If a refused or loaded entry already holds a token, rotate it: agents that ran earlier may have read it.
 
-Only stdio servers are supported, so a remote or OAuth server cannot be registered. With the default `refuse` it needs `--mcp-unregistered=allow` for that run, and it then runs inside the sandbox.
+Only stdio servers are supported, so a remote or OAuth server cannot be registered yet. A remote entry is listed with "remote MCP servers are not supported yet" and no registration advice. To use it, run with `--mcp-unregistered=allow`; it then runs inside the sandbox.
 
 `mcp.unregistered` sets the default:
 
 | Value | Effect |
 |---|---|
-| `refuse` (default once a server is registered) | `omac start` stops and names each entry and its file. A config file omac cannot parse also stops it, because it may hide entries. |
-| `warn` | Starts and prints a warning for each entry and each unparseable file. |
-| `allow` | Starts without comment. |
+| `ignore` (default for Claude Code) | The harness does not load its own entries. `omac start` proceeds and prints a notice that lists each entry and its file as ignored by strict mode. Needs a harness that can suppress its own MCP config: only Claude Code can, with `--strict-mcp-config`. |
+| `refuse` (default for every other harness) | `omac start` stops and names each entry and its file. A config file omac cannot parse also stops it, because it may hide entries. |
+| `warn` | The entries load. Starts and prints a warning for each entry and each unparseable file. |
+| `allow` | The entries load. Starts without comment. |
+
+`ignore` is available only for Claude Code. For OpenCode and every other harness an explicit `ignore` (setting or flag) falls back to `refuse` and omac prints `ignore is not available for <harness>, which cannot suppress its own MCP config; using refuse`. An explicit setting always wins over the default: `refuse` on Claude Code refuses, and `ignore` on OpenCode refuses with the message.
 
 It goes in the user-global launcher config, `~/.config/omac/config.yaml`:
 
 ```yaml
 mcp:
-  unregistered: refuse          # allow | warn | refuse
+  unregistered: ignore          # allow | warn | ignore | refuse (default: ignore for Claude Code, refuse otherwise)
 ```
 
 - **Project-local files cannot set this.** A project's `.opencode/oh-my-agentic-coder.yaml` is ignored for `mcp:`, so opening a repository cannot switch the check off.
 - **Where it is read from.** `~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml` when that variable is set. The registry uses the same directory.
-- **One run:** `omac start --mcp-unregistered=<allow|warn|refuse>` overrides the setting for that run. This is the way past a refusal caused by a checked-in `.mcp.json`.
-- The check of harness entries applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not refuse because of your MCP config. Claude Code still starts in strict MCP mode, see below.
+- **One run:** `omac start --mcp-unregistered=<allow|warn|ignore|refuse>` overrides the setting for that run. This is the way past a refusal caused by a checked-in `.mcp.json`.
+- The check of harness entries applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not refuse because of your MCP config. Claude Code still starts in strict MCP mode (its default `ignore`), see below.
 
 ### Claude Code runs in strict MCP mode
 
-In the default `refuse` mode omac starts Claude Code with `--strict-mcp-config`, also when nothing is registered. Claude Code then loads only the MCP servers passed with `--mcp-config`: the registered servers omac injects. It no longer loads servers from `.mcp.json`, `~/.claude.json`, settings files or plugins, so a plugin bundle's servers do not start inside omac. When the strict flag is the only change and the scan finds entries, omac prints one line naming them (names only, at most 10) so you know they will not load.
+In the default `ignore` mode, and in `refuse` mode, omac starts Claude Code with `--strict-mcp-config`, also when nothing is registered. Claude Code then loads only the MCP servers passed with `--mcp-config`: the registered servers omac injects. It no longer loads servers from `.mcp.json`, `~/.claude.json`, settings files or plugins, so a plugin bundle's servers do not start inside omac. When the strict flag is the only change and the scan finds entries, omac prints one line naming them (names only, at most 10) so you know they are ignored. For remote entries the line says that remote servers are not supported yet instead of advising to register them.
 
 The Claude Code documentation does not say whether strict mode also skips the claude.ai connectors (servers from your Claude account). Check it with a real session before you rely on it; omac does not claim it.
 
-- **Keep Claude's own servers:** run with `--mcp-unregistered=warn` or `allow` (or set `mcp.unregistered`). omac then passes neither flag and leaves Claude's MCP entries as they are.
+- **Keep Claude's own servers:** run with `--mcp-unregistered=warn` or `allow` (or set `mcp.unregistered`). omac then passes no strict flag and leaves Claude's MCP entries as they are.
 - **Your own `--mcp-config` argument** after `--` still loads when nothing is registered, because you chose it. With a registered server or an explicit mode, omac scans it as before.
 - A `--strict-mcp-config` you pass yourself is not repeated.
 - OpenCode and the other harnesses are not affected.
@@ -283,7 +287,7 @@ omac disables what Claude Code would load on its own by default. That is the rig
 - **Not from a project.** A project's `.opencode/oh-my-agentic-coder.yaml` cannot set this, so a repository you open cannot switch the protection off. The setting is yours.
 - **Different setups for different work.** The global config applies to everything you start. If you want the protection for your own work and the opt-out only for some projects, keep the default and start those sessions with `--mcp-unregistered=allow`, for example through a shell alias such as `alias omac-claude-open='omac start claude --mcp-unregistered=allow'`.
 
-omac passes neither the strict flag nor anything else that hides Claude's own servers in `warn` and `allow` modes. Servers you registered with `omac mcp add` are still added next to them.
+omac passes no strict flag and nothing else that hides Claude's own servers in `warn` and `allow` modes. Servers you registered with `omac mcp add` are still added next to them.
 
 What you give up when you skip it:
 
@@ -304,7 +308,7 @@ omac mcp register: omac cannot provide MCP servers to codex yet (supported: open
 What happens when you start such a harness depends on your registrations. Registrations of any harness and scope that apply to this directory count, because none of them would be available:
 
 - **Nothing registered and `mcp.unregistered` not set:** nothing changes.
-- **A server is registered, or `mcp.unregistered` is set:** omac applies `mcp.unregistered` before anything starts. With `refuse` (the default) it stops with the message below. With `warn` it prints the same as a warning and starts the harness without MCP servers. With `allow` it starts silently. omac never injects anything into these harnesses.
+- **A server is registered, or `mcp.unregistered` is set:** omac applies `mcp.unregistered` before anything starts. With `refuse` (the default for these harnesses) it stops with the message below. `ignore` is not available for them and falls back to `refuse`, with a line saying so. With `warn` it prints the same as a warning and starts the harness without MCP servers. With `allow` it starts silently. omac never injects anything into these harnesses.
 
 ```text
 omac start: MCP policy refuses this start:
@@ -340,8 +344,8 @@ With `--probe` (host terminal only) it also starts each server and reports tools
 
 ## Troubleshooting
 
-- **Start refused: unregistered MCP entry.** The message names the entry and the file and prints an `omac mcp add` line for it. Register the server, remove the entry, or run once with `--mcp-unregistered=allow` (or `warn`).
-- **Start refused: config file cannot be parsed.** omac cannot check a config file it cannot read (for example JSONC or `~/.claude.json`), so in `refuse` mode it stops. Fix the file, or run once with `--mcp-unregistered=warn` or `allow`.
+- **Start refused: unregistered MCP entry.** The message names the entry and the file and prints an `omac mcp add` line for it. Register the server, remove the entry, or run once with `--mcp-unregistered=allow` (or `warn`). A remote entry cannot be registered yet.
+- **Start refused: config file cannot be parsed.** omac cannot check a config file it cannot read (for example JSONC or `~/.claude.json`), so in `refuse` mode it stops. Fix the file, or run once with `--mcp-unregistered=warn`, `ignore` (Claude Code) or `allow`.
 - **A server is missing in the agent, with a warning at start.** A secret is not in the keychain. Register it again with `omac mcp add --replace`, which asks for the secret.
 - **The agent sees no tools, or every call fails with `mcp-unreviewed` or `mcp-changed`.** Run `omac mcp diagnose --probe`, then `omac mcp tools <name> --classify` or `omac mcp review <name>` on the host.
 - **I changed the definition and nothing happened.** Register it again, or use `omac mcp add --replace` for the command and environment.

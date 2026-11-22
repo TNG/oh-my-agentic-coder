@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,7 +68,6 @@ func TestLoadLauncherHonorsGlobalMCP(t *testing.T) {
 func TestLoadLauncherRejectsInvalidGlobalMCP(t *testing.T) {
 	for _, body := range []string{
 		"mcp:\n  unregistered: block\n",
-		"mcp:\n  unregistered: ignore\n",
 	} {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
@@ -92,6 +92,30 @@ func TestHarnessMCPInjectionKinds(t *testing.T) {
 	for _, h := range harnessRegistry() {
 		if _, ok := want[h.Name]; !ok && h.MCPInjection != MCPInjectNone {
 			t.Fatalf("%s must not inject MCP", h.Name)
+		}
+	}
+}
+
+func TestMCPConfigValidateModes(t *testing.T) {
+	for _, mode := range []string{"", "allow", "warn", "ignore", "refuse"} {
+		if err := (MCPConfig{Unregistered: mode}).Validate(); err != nil {
+			t.Errorf("%q: %v", mode, err)
+		}
+	}
+	err := (MCPConfig{Unregistered: "nope"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "must be allow, warn, ignore or refuse") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestCanIgnoreMCPOnlyForClaudeCode(t *testing.T) {
+	for _, name := range []string{"claude-code", "opencode", "codex", "copilot", "pi", "codewhale"} {
+		h, ok := LookupHarness(name)
+		if !ok {
+			t.Fatalf("no harness %s", name)
+		}
+		if got, want := h.CanIgnoreMCP(), name == "claude-code"; got != want {
+			t.Errorf("%s: CanIgnoreMCP = %v, want %v", name, got, want)
 		}
 	}
 }

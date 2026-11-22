@@ -251,7 +251,7 @@ func TestMCPRefusalHappensBeforeAnySpawn(t *testing.T) {
 	r.register("demo", true, "claude-code")
 	r.writeFile(".mcp.json", unregisteredClaudeEntry)
 
-	code, stderr := r.launch("claude", r.capture, nil)
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = "refuse" })
 	if code != ExitConfigInvalid {
 		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
 	}
@@ -273,7 +273,7 @@ func TestMCPServerRegisteredForAnotherHarnessStillActivatesThePolicy(t *testing.
 	r.register("demo", true, "opencode")
 	r.writeFile(".mcp.json", unregisteredClaudeEntry)
 
-	code, stderr := r.launch("claude", r.capture, nil)
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = "refuse" })
 	if code != ExitConfigInvalid {
 		t.Fatalf("exit %d, want %d: a harness's own MCP entry must be refused once the project uses the registry\n%s", code, ExitConfigInvalid, stderr)
 	}
@@ -323,7 +323,7 @@ func TestMCPSameNameEntryIsRefusedBeforeAnySpawn(t *testing.T) {
 	r.register("demo", true, "claude-code")
 	r.writeFile(".mcp.json", sameNameClaudeEntry)
 
-	code, stderr := r.launch("claude", r.capture, nil)
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = "refuse" })
 	if code != ExitConfigInvalid {
 		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
 	}
@@ -363,7 +363,7 @@ func TestMCPUnparseableConfigRefuses(t *testing.T) {
 	r.register("demo", true, "claude-code")
 	r.writeFile(".mcp.json", `{ not json`)
 
-	code, stderr := r.launch("claude", r.capture, nil)
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = "refuse" })
 	if code != ExitConfigInvalid || !strings.Contains(stderr, "cannot parse MCP config") {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
@@ -421,7 +421,7 @@ func TestMCPClaudeStrictModeNoticeNamesEntriesNotValues(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
-	const want = `omac start: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration will not load inside omac: other. Register them with "omac mcp add" or run with --mcp-unregistered=allow to keep them.`
+	const want = `omac start: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration are ignored and will not load inside omac: other. Register them with "omac mcp add" or run with --mcp-unregistered=allow to keep them.`
 	if strings.Count(stderr, want) != 1 {
 		t.Errorf("want the notice once:\n%s", stderr)
 	}
@@ -682,12 +682,11 @@ func TestMCPUnregisteredFlagValidation(t *testing.T) {
 		t.Errorf("invalid value: exit %d, want %d (%s)", code, ExitMisuse, stderr())
 	}
 	for _, cmd := range []string{"start", "continue", "resume"} {
-		if _, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=ignore"}, env); code != ExitMisuse {
-			t.Errorf("%s: ignore: exit %d, want %d", cmd, code, ExitMisuse)
-		}
-		opts, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=warn"}, env)
-		if code != ExitOK || opts.mcpUnregistered != "warn" {
-			t.Errorf("%s: code=%d value=%q", cmd, code, opts.mcpUnregistered)
+		for _, mode := range []string{"allow", "warn", "ignore", "refuse"} {
+			opts, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=" + mode}, env)
+			if code != ExitOK || opts.mcpUnregistered != mode {
+				t.Errorf("%s: %s: code=%d value=%q", cmd, mode, code, opts.mcpUnregistered)
+			}
 		}
 	}
 }
@@ -756,4 +755,77 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestMCPClaudeDefaultIgnoresHarnessEntriesAndStartsStrict(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.writeFile(".mcp.json", `{"mcpServers":{"other":{"command":"x"},"far":{"type":"http","url":"https://example.invalid/mcp"}}}`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	for _, want := range []string{"notice:", `"other"`, `"far"`, "ignored by strict mode", "remote MCP servers are not supported yet"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("notice lacks %q:\n%s", want, stderr)
+		}
+	}
+	for _, bad := range []string{"warning:", "rotate"} {
+		if strings.Contains(stderr, bad) {
+			t.Errorf("ignore notice contains %q:\n%s", bad, stderr)
+		}
+	}
+	args, _, ran := r.captured()
+	if !ran || len(args) == 0 || args[0] != "--strict-mcp-config" {
+		t.Errorf("args = %v, want --strict-mcp-config first", args)
+	}
+	r.claudeConfig()
+}
+
+func TestMCPIgnoreReportsUserMCPConfigAsLoaded(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.writeFile("extra.json", `{"mcpServers":{"mine":{"command":"x"}}}`)
+
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.innerArgs = []string{"--mcp-config", filepath.Join(r.wd, "extra.json")} })
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "warning: unregistered MCP server \"mine\"") || strings.Contains(stderr, "notice:") {
+		t.Errorf("an entry the user passes must be reported as loaded, not ignored:\n%s", stderr)
+	}
+}
+
+func TestMCPIgnoreFallsBackToRefuseForOpenCode(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "opencode")
+	r.writeFile("opencode.json", `{"mcp":{"other":{"type":"remote","url":"https://example.invalid/mcp"}}}`)
+
+	code, stderr := r.launch("opencode", r.capture, func(o *launchOpts) { o.mcpUnregistered = "ignore" })
+	if code != ExitConfigInvalid {
+		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
+	}
+	for _, want := range []string{"ignore is not available for opencode", "using refuse", `"other"`, "Remote MCP servers are not supported yet"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("output lacks %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "omac mcp register") {
+		t.Errorf("a remote entry must not be told to register:\n%s", stderr)
+	}
+}
+
+func TestMCPOpenCodeDefaultIsRefuse(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "opencode")
+	r.writeFile("opencode.json", `{"mcp":{"other":{"type":"local","command":["x"]}}}`)
+
+	code, stderr := r.launch("opencode", r.capture, nil)
+	if code != ExitConfigInvalid {
+		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
+	}
+	if strings.Contains(stderr, "not available") {
+		t.Errorf("the fallback message belongs to an explicit ignore only:\n%s", stderr)
+	}
 }

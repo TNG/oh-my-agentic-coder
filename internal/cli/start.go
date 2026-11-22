@@ -110,7 +110,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
-		mcpUnregistered    = fs.String("mcp-unregistered", "", "How to treat MCP servers the harness config defines that are not registered with omac: allow, warn or refuse. Overrides mcp.unregistered for this run.")
+		mcpUnregistered    = fs.String("mcp-unregistered", "", "How to treat MCP servers the harness config defines that are not registered with omac: allow, warn, ignore or refuse. Overrides mcp.unregistered for this run.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	var openPorts intMultiFlag
@@ -156,7 +156,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		}
 	}
 	if *mcpUnregistered != "" && !mcpinject.Mode(*mcpUnregistered).Valid() {
-		fmt.Fprintf(env.Stderr, "omac %s: invalid --mcp-unregistered %q: want allow, warn or refuse\n", cmdName, *mcpUnregistered)
+		fmt.Fprintf(env.Stderr, "omac %s: invalid --mcp-unregistered %q: want allow, warn, ignore or refuse\n", cmdName, *mcpUnregistered)
 		return launchOpts{}, ExitMisuse
 	}
 	innerArgs = append(fs.Args(), innerArgs...)

@@ -8,13 +8,14 @@ type Mode string
 const (
 	ModeAllow  Mode = "allow"
 	ModeWarn   Mode = "warn"
+	ModeIgnore Mode = "ignore"
 	ModeRefuse Mode = "refuse"
 )
 
 // Valid reports whether m is one of the defined modes.
 func (m Mode) Valid() bool {
 	switch m {
-	case ModeAllow, ModeWarn, ModeRefuse:
+	case ModeAllow, ModeWarn, ModeIgnore, ModeRefuse:
 		return true
 	}
 	return false
@@ -25,6 +26,9 @@ func (m Mode) Valid() bool {
 type Policy struct {
 	Unregistered Mode
 	Active       bool
+	// IgnoreUnavailable is set when ignore was requested for a harness that cannot suppress its own
+	// MCP config. Unregistered is then refuse.
+	IgnoreUnavailable bool
 }
 
 // Existing is an MCP server a harness config file already defines.
@@ -45,6 +49,9 @@ type Existing struct {
 	// EnvKeys and HeaderKeys hold names only; values are never stored.
 	EnvKeys    []string
 	HeaderKeys []string
+	// disabled marks an entry its config turns off. enabledOnly marks a stub that only sets
+	// "enabled" for a server defined elsewhere. Both are resolved inside Scan.
+	disabled, enabledOnly bool
 	// AlsoRegistered is set by the caller when an omac registry entry has the same name.
 	AlsoRegistered bool
 }

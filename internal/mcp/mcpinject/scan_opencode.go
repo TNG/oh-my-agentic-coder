@@ -61,6 +61,7 @@ func parseOpenCodeDoc(raw []byte) ([]Existing, error) {
 	var mcp map[string]json.RawMessage
 	_ = json.Unmarshal(doc["mcp"], &mcp)
 	servers := map[string]json.RawMessage{}
+	var stubs []Existing
 	for name, entry := range mcp {
 		switch {
 		case name == "servers" && !isOpenCodeServer(entry):
@@ -69,12 +70,40 @@ func parseOpenCodeDoc(raw []byte) ([]Existing, error) {
 			for k, v := range nested {
 				servers[k] = v
 			}
-		case name == "timeout" && !isOpenCodeServer(entry), isEnabledOnly(entry):
+		case name == "timeout" && !isOpenCodeServer(entry):
+		case isEnabledOnly(entry):
+			stubs = append(stubs, Existing{Name: name, enabledOnly: true, disabled: !openCodeEnabled(entry)})
 		default:
 			servers[name] = entry
 		}
 	}
-	return entriesOf(servers, decodeOpenCodeEntry), nil
+	return append(entriesOf(servers, decodeOpenCodeEntry), stubs...), nil
+}
+
+func openCodeEnabled(raw json.RawMessage) bool {
+	var o struct{ Enabled *bool }
+	return json.Unmarshal(raw, &o) != nil || o.Enabled == nil || *o.Enabled
+}
+
+// dropDisabledOpenCode removes the entries OpenCode does not start. Configs merge by
+// server name, so a server is skipped only when every place that mentions the name
+// turns it off. Any definition or override that may enable it keeps it reported.
+// The stubs that only set "enabled" never appear in the result.
+func dropDisabledOpenCode(all []Existing) []Existing {
+	enabled := map[string]bool{}
+	for _, e := range all {
+		if !e.disabled {
+			enabled[e.Name] = true
+		}
+	}
+	var out []Existing
+	for _, e := range all {
+		if e.enabledOnly || (e.disabled && !enabled[e.Name]) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func isOpenCodeServer(raw json.RawMessage) bool {

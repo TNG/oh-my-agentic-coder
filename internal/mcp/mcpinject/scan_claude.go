@@ -29,19 +29,24 @@ func claudeSources(host Host, managedDirs []string) []source {
 		userFiles = append(userFiles, filepath.Join(configDir, ".claude.json"))
 	}
 	userLevel := func(src source) source { src.userLevel = true; return src }
-	claudeFile := func(file, key string, projectKeys []string) source {
-		return fileSource(file, key, projectKeys, decodeClaudeEntry)
+	// Claude Code does not connect to a server in the project's disabledMcpServers list (the /mcp
+	// toggle writes it to ~/.claude.json) or, for .mcp.json, in disabledMcpjsonServers. Plugin,
+	// managed and command-line sources are not filtered: their server names may differ.
+	projectKeys := projectKeyCandidates(host.Workdir)
+	toggledOff := disabledServerNames(userFiles, projectKeys)
+	rejected := disabledMcpjsonNames(settingsFiles(homes, host.Workdir))
+	claudeFile := func(file, key string, keys []string) source {
+		return withoutNames(fileSource(file, key, keys, decodeClaudeEntry), toggledOff)
 	}
 
 	var out []source
-	projectKeys := projectKeyCandidates(host.Workdir)
 	for _, file := range userFiles {
 		out = append(out,
 			userLevel(claudeFile(file, "mcpServers", nil)),
 			claudeFile(file, "mcpServers", projectKeys))
 	}
 	for _, dir := range ancestors(host.Workdir) {
-		out = append(out, claudeFile(filepath.Join(dir, ".mcp.json"), "mcpServers", nil))
+		out = append(out, withoutNames(fileSource(filepath.Join(dir, ".mcp.json"), "mcpServers", nil, decodeClaudeEntry), rejected))
 	}
 	for _, home := range homes {
 		out = append(out, userLevel(claudeFile(filepath.Join(home, "settings.json"), "mcpServers", nil)))
@@ -52,8 +57,8 @@ func claudeSources(host Host, managedDirs []string) []source {
 
 	for _, dir := range managedDirs {
 		for _, src := range []source{
-			claudeFile(filepath.Join(dir, "managed-mcp.json"), "mcpServers", nil),
-			claudeFile(filepath.Join(dir, "managed-settings.json"), "managedMcpServers", nil),
+			fileSource(filepath.Join(dir, "managed-mcp.json"), "mcpServers", nil, decodeClaudeEntry),
+			fileSource(filepath.Join(dir, "managed-settings.json"), "managedMcpServers", nil, decodeClaudeEntry),
 		} {
 			src.managed, src.userLevel = true, true
 			out = append(out, src)
@@ -80,8 +85,9 @@ func claudeSources(host Host, managedDirs []string) []source {
 	for _, value := range flagValues(host.InnerArgs, agentsFlag) {
 		out = append(out, jsonOrFileSource(host.Workdir, value, parseCLIAgents, agentsFlag+" (inline JSON)"))
 	}
+	disabledPlugins := disabledClaudePlugins(settingsFiles(homes, host.Workdir))
 	for _, home := range homes {
-		out = append(out, claudePluginSources(home)...)
+		out = append(out, claudePluginSources(home, disabledPlugins)...)
 	}
 	for _, dir := range flagValues(host.InnerArgs, pluginDirFlag) {
 		out = append(out, pluginDirSources(absolute(host.Workdir, dir))...)

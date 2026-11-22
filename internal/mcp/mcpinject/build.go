@@ -22,13 +22,13 @@ const strictMCPConfigFlag = "--strict-mcp-config"
 // Build returns the injection that adds the servers next to whatever the
 // harness already has. userArgs are the arguments the user passes to the
 // harness. An inactive policy injects nothing, except that Claude Code is
-// always started in strict MCP mode when unregistered servers are refused.
+// always started in strict MCP mode when unregistered servers are refused or ignored.
 func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir string, userArgs []string) (Injection, error) {
 	var inj Injection
-	if kind == config.MCPInjectClaudeFlag && p.Unregistered == ModeRefuse && !slices.Contains(userArgs, strictMCPConfigFlag) {
+	if kind == config.MCPInjectClaudeFlag && (p.Unregistered == ModeRefuse || p.Unregistered == ModeIgnore) && !slices.Contains(userArgs, strictMCPConfigFlag) {
 		// Strict mode also keeps Claude Code from auto-loading MCP servers from plugins and the
 		// user's Claude config. Whether it also skips the claude.ai connectors is not documented
-		// and has to be checked with a real session. Only refuse mode passes it: warn and allow
+		// and has to be checked with a real session. Only refuse and ignore modes pass it: warn and allow
 		// mean the user wants Claude's own entries.
 		inj.InnerArgs = []string{strictMCPConfigFlag}
 	}
