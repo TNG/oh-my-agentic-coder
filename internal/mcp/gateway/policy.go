@@ -229,14 +229,15 @@ func (g *gateway) filterToolsList(id json.RawMessage, resp []byte) []byte {
 	p := g.opts.Policy
 	kept := make([]json.RawMessage, 0, len(tools))
 	for _, raw := range tools {
-		var t struct {
-			Name string `json:"name"`
-		}
-		hash, err := mcppolicy.ToolHash(raw)
-		if err != nil || json.Unmarshal(raw, &t) != nil || p.Review == nil {
+		name, err := mcppolicy.ToolName(raw)
+		if err != nil || p.Review == nil {
 			continue
 		}
-		if p.Visible(t.Name) && p.Review.Tools[t.Name] == hash {
+		hash, err := mcppolicy.ToolHash(raw)
+		if err != nil {
+			continue
+		}
+		if p.Visible(name) && p.Review.Tools[name] == hash {
 			kept = append(kept, raw)
 		}
 	}

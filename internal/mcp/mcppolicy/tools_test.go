@@ -289,3 +289,14 @@ func TestListToolsToolCap(t *testing.T) {
 		t.Errorf("exactly 10,000 tools must pass: %v %d", err, len(tools))
 	}
 }
+
+func TestListToolsReadsTheExactNameKey(t *testing.T) {
+	rt := &fakeRT{pages: map[string]string{"": `{"tools":[{"name":"get","NAME":"rm","description":"reads"}]}`}}
+	tools, err := ListTools(context.Background(), rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "get" {
+		t.Fatalf("tools = %+v; the client sees the tool as get", tools)
+	}
+}

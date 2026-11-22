@@ -364,3 +364,22 @@ func TestPdeathsigParent(t *testing.T) {
 	os.WriteFile(pidFile, []byte(fmt.Sprint(pid)), 0o600)
 	time.Sleep(time.Minute)
 }
+
+// A tool whose only matching "name" differs in case is checked by the name
+// the client reads, so a reviewed "rm" cannot be listed as an unreviewed "get".
+func TestFilterToolsListUsesTheExactNameKey(t *testing.T) {
+	tool := json.RawMessage(`{"name":"get","NAME":"rm","description":"x"}`)
+	hash, err := mcppolicy.ToolHash(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &gateway{opts: Options{Policy: &mcppolicy.Policy{
+		Server: "srv", Access: mcppolicy.ReadWriteDelete,
+		Tools:  map[string]mcppolicy.Class{"rm": mcppolicy.Read},
+		Review: &mcppolicy.Review{Tools: map[string]string{"rm": hash}},
+	}}}
+	out := g.filterToolsList(json.RawMessage(`1`), []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[`+string(tool)+`]}}`))
+	if strings.Contains(string(out), `"get"`) {
+		t.Fatalf("tool listed under a name that was never reviewed: %s", out)
+	}
+}

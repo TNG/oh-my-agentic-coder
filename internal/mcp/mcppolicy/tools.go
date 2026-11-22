@@ -35,13 +35,13 @@ type ToolInfo struct {
 // title, description, inputSchema and outputSchema. Key order and every other
 // field do not change it.
 func ToolHash(raw json.RawMessage) (string, error) {
+	name, err := ToolName(raw)
+	if err != nil {
+		return "", err
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return "", fmt.Errorf("tool is not a JSON object: %w", err)
-	}
-	var name string
-	if err := json.Unmarshal(fields["name"], &name); err != nil || name == "" {
-		return "", errors.New("tool has no name")
 	}
 	picked := map[string]any{}
 	for _, key := range []string{"name", "title", "description", "inputSchema", "outputSchema"} {
@@ -63,6 +63,22 @@ func ToolHash(raw json.RawMessage) (string, error) {
 	}
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// ToolName returns the value of the tool's "name" key, spelled exactly so.
+// Go's struct decoding would also take "Name" or "NAME", which a client
+// reading the same object ignores, so the name omac reviews and checks could
+// differ from the name the agent sees.
+func ToolName(raw json.RawMessage) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return "", fmt.Errorf("tool is not a JSON object: %w", err)
+	}
+	var name string
+	if err := json.Unmarshal(fields["name"], &name); err != nil || name == "" {
+		return "", errors.New("tool has no name")
+	}
+	return name, nil
 }
 
 // ListHash hashes a whole tool list from the per-tool hashes (one quoted
@@ -211,14 +227,17 @@ func toolInfo(raw json.RawMessage) (ToolInfo, error) {
 	if err != nil {
 		return ToolInfo{}, fmt.Errorf("tools/list: %w", err)
 	}
+	name, err := ToolName(raw)
+	if err != nil {
+		return ToolInfo{}, fmt.Errorf("tools/list: %w", err)
+	}
 	var t struct {
-		Name        string                     `json:"name"`
 		Annotations map[string]json.RawMessage `json:"annotations"`
 	}
 	// An annotations value of the wrong type is ignored, not trusted.
 	_ = json.Unmarshal(raw, &t)
 	return ToolInfo{
-		Name: t.Name, Raw: raw, Hash: hash,
+		Name: name, Raw: raw, Hash: hash,
 		ReadOnlyHint:    boolHint(t.Annotations["readOnlyHint"]),
 		DestructiveHint: boolHint(t.Annotations["destructiveHint"]),
 	}, nil
