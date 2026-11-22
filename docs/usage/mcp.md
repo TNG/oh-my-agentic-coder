@@ -268,6 +268,31 @@ The Claude Code documentation does not say whether strict mode also skips the cl
 - A `--strict-mcp-config` you pass yourself is not repeated.
 - OpenCode and the other harnesses are not affected.
 
+### Keeping plugins or servers you have to use, for example at a customer
+
+omac disables what Claude Code would load on its own by default. That is the right default for your own work. It is not what you want when a customer, or your organization, gives you Claude plugins or MCP servers that you have to use. To skip the disabling:
+
+- **For one run:** `omac start claude --mcp-unregistered=allow`. `allow` starts silently. `warn` starts too, and lists Claude's own MCP servers first so you see what is loaded.
+- **Always, for yourself:** set it in your global config, `~/.config/omac/config.yaml` (or `$XDG_CONFIG_HOME/omac/config.yaml`):
+
+  ```yaml
+  mcp:
+    unregistered: allow
+  ```
+
+- **Not from a project.** A project's `.opencode/oh-my-agentic-coder.yaml` cannot set this, so a repository you open cannot switch the protection off. The setting is yours.
+- **Different setups for different work.** The global config applies to everything you start. If you want the protection for your own work and the opt-out only at the customer, keep the default and start the customer sessions with `--mcp-unregistered=allow`, for example through a shell alias such as `alias omac-customer='omac start claude --mcp-unregistered=allow'`.
+
+omac passes neither the strict flag nor anything else that hides Claude's own servers in `warn` and `allow` modes. Servers you registered with `omac mcp add` are still added next to them.
+
+What you give up when you skip it:
+
+- The plugin and config servers load inside the sandbox. Any credential or OAuth login such a server uses is kept in Claude Code's own state directory, which the agent can read.
+- Claude Code may load your claude.ai connectors too (see the note above).
+- omac's network proxy still asks before the agent reaches a new host, so you can deny a host, but omac sees no tool names and applies no per-tool approvals for those servers.
+
+For a server that needs a credential, the better way is to register it, so its secret stays outside the sandbox: run the `omac mcp add` command that omac prints for it, or `omac mcp add-json`. Keep `allow` for servers that need no secret.
+
 ## Other harnesses
 
 omac supports six harnesses, but only OpenCode and Claude Code can receive registered servers. For Codex, Copilot CLI, pi and CodeWhale omac cannot hand a registered server to the harness yet, so `omac mcp add`, `add-json` and `register` reject them:
