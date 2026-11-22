@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 const (
@@ -40,7 +41,7 @@ func AddCommand(e Existing) string {
 	words = append(words, e.Name, "--", e.Command)
 	words = append(words, e.Args...)
 	for _, w := range words {
-		if hasControlChar(w) {
+		if strings.IndexFunc(w, displaytext.Unsafe) >= 0 {
 			return noAddCommand
 		}
 	}
@@ -49,15 +50,6 @@ func AddCommand(e Existing) string {
 		quoted[i] = shellQuote(w)
 	}
 	return strings.Join(quoted, " ")
-}
-
-func hasControlChar(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			return true
-		}
-	}
-	return false
 }
 
 func shellQuote(s string) string {

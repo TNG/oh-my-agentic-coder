@@ -3,9 +3,11 @@ package mcpinject
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/displaytext"
 )
 
 const refusalExposure = `An MCP entry in the harness config runs inside the sandbox or keeps its login in the harness's state directory, where the agent can reach it.`
@@ -111,11 +113,12 @@ func EvaluateUnsupported(p Policy, harness string, registered []string, ex []Exi
 // to loaded or refused entries are left out.
 func scanProblems(ex []Existing, f []Finding, ignored bool) (problems []string, hinted bool) {
 	for _, e := range ex {
-		problem := fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File)
+		file := shown(e.File)
+		problem := fmt.Sprintf("unregistered MCP server %q in %s", e.Name, file)
 		if e.AlsoRegistered {
-			problem = fmt.Sprintf("%q in %s (also registered with omac; the harness entry still runs inside the sandbox)", e.Name, e.File)
+			problem = fmt.Sprintf("%q in %s (also registered with omac; the harness entry still runs inside the sandbox)", e.Name, file)
 			if ignored {
-				problem = fmt.Sprintf("%q in %s (also registered with omac)", e.Name, e.File)
+				problem = fmt.Sprintf("%q in %s (also registered with omac)", e.Name, file)
 			}
 		}
 		if e.PluginProvided {
@@ -137,7 +140,7 @@ func scanProblems(ex []Existing, f []Finding, ignored bool) (problems []string, 
 		if finding.Kind == FindingParseError {
 			verb = "parse"
 		}
-		problem := fmt.Sprintf("cannot %s MCP config %s (%s)", verb, finding.File, finding.Detail)
+		problem := fmt.Sprintf("cannot %s MCP config %s (%s)", verb, shown(finding.File), shown(finding.Detail))
 		if finding.PluginProvided {
 			problem += " (provided by a plugin)"
 		}
@@ -163,10 +166,20 @@ func UnloadedNames(ex []Existing, f []Finding) []string {
 		}
 	}
 	for _, e := range ex {
-		add(e.Name)
+		add(shown(e.Name))
 	}
 	for _, finding := range f {
-		add(finding.File)
+		add(shown(finding.File))
 	}
 	return names
+}
+
+// shown returns s for the terminal: as it is, or quoted with escapes when it
+// holds a character that could change how the line displays. Server names,
+// file names and parser messages come from files the agent may have written.
+func shown(s string) string {
+	if strings.IndexFunc(s, displaytext.Unsafe) < 0 {
+		return s
+	}
+	return strconv.Quote(s)
 }

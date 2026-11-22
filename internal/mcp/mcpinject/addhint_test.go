@@ -135,3 +135,29 @@ func TestEvaluateRefusalHintsHaveNoValues(t *testing.T) {
 		}
 	}
 }
+
+// Names, file names and parser messages come from files the agent can write;
+// none may reach the terminal with an escape sequence or a bidi override.
+func TestTerminalOutputNeverCarriesDisplayControls(t *testing.T) {
+	const esc = "x\x1b]52;c;ZXZpbA==\x07"
+	const bidi = "safe‮exe.sh"
+	ex := []Existing{
+		{Harness: "claude-code", Name: esc, Transport: "stdio", Command: "npx", File: "/w/.claude/agents/" + bidi},
+		{Harness: "claude-code", Name: "ok", Transport: "stdio", Command: "npx", Args: []string{bidi}, File: "/w/.mcp.json"},
+	}
+	f := []Finding{{File: "/w/" + esc, Kind: FindingParseError, Detail: "bad " + bidi}}
+	var out []string
+	warnings, _ := Evaluate(Policy{Unregistered: ModeWarn, Active: true}, ex, f)
+	out = append(out, warnings...)
+	out = append(out, UnloadedNames(ex, f)...)
+	for _, line := range out {
+		for _, r := range line {
+			if r == 0x1b || r == 0x07 || r == '‮' {
+				t.Fatalf("display control in %q", line)
+			}
+		}
+	}
+	if hint := AddCommand(ex[1]); hint != noAddCommand {
+		t.Errorf("hint with a bidi override: %q", hint)
+	}
+}
