@@ -760,6 +760,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer f.Close()
 	tcpPort := f.TCPPort()
+	mcp.watch(ctx, f)
 	if err := mcp.buildInjection(harness, socketPath, tcpPort, f.FacadeToken, sandboxTmp); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitIOError
@@ -780,6 +781,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env: env, facade: f, sup: sup, auditor: auditor, ctx: ctx,
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
 		skipSecretPattern: skipSecretPattern,
+		mcp:               mcp,
 		mounted:           map[string]string{},
 	}
 	for _, a := range approved {

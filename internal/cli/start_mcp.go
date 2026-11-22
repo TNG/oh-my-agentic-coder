@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
@@ -25,10 +26,25 @@ import (
 type mcpPlan struct {
 	policy  mcpinject.Policy
 	entries []*mcpreg.Entry
+	harness string
 
 	sup       *supervisor.Supervisor
-	started   []*mcpreg.Entry
+	servers   []*mcpServer
 	injection mcpinject.Injection
+
+	exe     string
+	rtDir   string
+	workdir string
+	prefix  string
+	stderr  *os.File
+	auditor audit.Auditor
+
+	stop     chan struct{}
+	stopOnce sync.Once
+	watchers sync.WaitGroup
+
+	noticeMu sync.Mutex
+	noticed  map[string]bool
 }
 
 const mcpGatewayShutdownTimeout = 5 * time.Second
@@ -86,7 +102,7 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, refusal)
 		return nil, ExitConfigInvalid
 	}
-	return &mcpPlan{policy: policy, entries: entries}, ExitOK
+	return &mcpPlan{policy: policy, entries: entries, harness: harness.Name, stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
 }
 
 // launchMCPGateways starts one gateway per registered server on the host and
@@ -101,6 +117,7 @@ func (p *mcpPlan) launchMCPGateways(ctx context.Context, env *Env, prefix string
 		return nil, fmt.Errorf("MCP gateway: %w", err)
 	}
 	p.sup = supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, mcpSpawnAuthorizer)
+	p.exe, p.rtDir, p.workdir, p.prefix, p.stderr, p.auditor = exe, rtDir, env.Workdir, prefix, env.Stderr, auditor
 
 	var routes []facade.Route
 	for _, entry := range p.entries {
@@ -108,31 +125,30 @@ func (p *mcpPlan) launchMCPGateways(ctx context.Context, env *Env, prefix string
 		if !ok {
 			continue
 		}
-		running, err := p.sup.AddSidecar(ctx, supervisor.SidecarSpec{
-			Name:           "mcp/" + entry.Name,
-			SkillName:      entry.Name,
-			SkillDir:       entry.SnapshotDir,
-			Command:        []string{exe, "mcp", "serve", "--def", entry.DefPath},
-			EnvPassthrough: entry.Def.Server.EnvPassthrough,
-			Secrets:        serverSecrets,
-			Health:         config.HealthSpec{Path: "/status"},
-			LogPath:        filepath.Join(rtDir, "logs", "mcp-"+entry.Name+".log"),
-			Workdir:        env.Workdir,
-			RequireSecret:  true,
-		})
-		if err != nil {
+		s := &mcpServer{p: p, name: entry.Name, entry: entry, spec: p.spec(entry, serverSecrets), revive: make(chan struct{}, 1)}
+		if err := s.spawn(ctx); err != nil {
 			return nil, fmt.Errorf("MCP server %q: %w", entry.Name, err)
 		}
-		p.started = append(p.started, entry)
-		routes = append(routes, facade.Route{
-			Namespace: mcpreg.FacadeNamespace,
-			Mount:     entry.Name,
-			Upstream:  running.Upstream,
-			Skill:     entry.Name,
-			State:     facade.RouteReady,
-		})
+		p.servers = append(p.servers, s)
+		routes = append(routes, s.route())
 	}
 	return routes, nil
+}
+
+// spec describes how to run the gateway of one registered server.
+func (p *mcpPlan) spec(entry *mcpreg.Entry, serverSecrets map[string]secrets.Secret) supervisor.SidecarSpec {
+	return supervisor.SidecarSpec{
+		Name:           "mcp/" + entry.Name,
+		SkillName:      entry.Name,
+		SkillDir:       entry.SnapshotDir,
+		Command:        []string{p.exe, "mcp", "serve", "--def", entry.DefPath},
+		EnvPassthrough: entry.Def.Server.EnvPassthrough,
+		Secrets:        serverSecrets,
+		Health:         config.HealthSpec{Path: "/status"},
+		LogPath:        filepath.Join(p.rtDir, "logs", "mcp-"+entry.Name+".log"),
+		Workdir:        p.workdir,
+		RequireSecret:  true,
+	}
 }
 
 func (p *mcpPlan) loadSecrets(env *Env, prefix string, entry *mcpreg.Entry) (map[string]secrets.Secret, bool) {
@@ -159,6 +175,8 @@ func (p *mcpPlan) shutdown() {
 	if p == nil || p.sup == nil {
 		return
 	}
+	p.stopOnce.Do(func() { close(p.stop) })
+	p.watchers.Wait()
 	p.sup.ShutdownAll(mcpGatewayShutdownTimeout)
 }
 
@@ -168,11 +186,11 @@ func (p *mcpPlan) buildInjection(harness config.Harness, socketPath string, tcpP
 	if p == nil {
 		return nil
 	}
-	servers := make([]mcpinject.Server, 0, len(p.started))
-	for _, entry := range p.started {
+	servers := make([]mcpinject.Server, 0, len(p.servers))
+	for _, srv := range p.servers {
 		servers = append(servers, mcpinject.Server{
-			Name: entry.Name,
-			Argv: mcpreg.BridgePath(entry.Name),
+			Name: srv.name,
+			Argv: mcpreg.BridgePath(srv.name),
 			Env: map[string]string{
 				"OMAC_BASE":         fmt.Sprintf("http://127.0.0.1:%d/", tcpPort),
 				"OMAC_SOCKET":       socketPath,

@@ -17,8 +17,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 )
 
@@ -27,6 +29,38 @@ const (
 	deleteTimeout        = 5 * time.Second
 	maxLineBytes         = 16 << 20
 )
+
+// A gateway that is down is retried for sidecarDownRetry, sleeping
+// sidecarDownPause between attempts. Variables so tests can shorten them.
+var (
+	sidecarDownRetry = 10 * time.Second
+	sidecarDownPause = 250 * time.Millisecond
+)
+
+// httpError is a non-2xx answer from the facade or the gateway behind it.
+type httpError struct {
+	status int
+	reason string
+	detail string
+}
+
+func (e *httpError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.status, e.detail) }
+
+// neverReached reports whether err proves the request did not reach the MCP
+// server, so sending it again cannot run anything twice: the sidecar is down
+// (503) or nothing listens at the facade.
+func neverReached(err error) bool {
+	var he *httpError
+	if errors.As(err, &he) {
+		return he.status == http.StatusServiceUnavailable && he.reason == "sidecar-down"
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
+}
+
+func sessionGone(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.status == http.StatusNotFound && he.reason == mcppolicy.ReasonUnknownSession
+}
 
 type message struct {
 	ID     json.RawMessage `json:"id"`
@@ -52,6 +86,15 @@ type bridge struct {
 	mu       sync.Mutex
 	session  string
 	protocol string
+	initLine []byte
+
+	// reconnectMu serializes reconnects so concurrent failures open one session.
+	reconnectMu sync.Mutex
+	reinits     int
+
+	streamMu     sync.Mutex
+	streamCancel context.CancelFunc
+	streams      sync.WaitGroup
 }
 
 // Run relays newline-delimited JSON-RPC from in to the facade mount for the
@@ -100,7 +143,6 @@ func (b *bridge) run(ctx context.Context, in io.Reader) error {
 
 	lines := readLines(in)
 	var inflight sync.WaitGroup
-	var getStream sync.WaitGroup
 	initialized := false
 
 loop:
@@ -121,13 +163,12 @@ loop:
 			continue
 		}
 		if !initialized && msg.Method == "initialize" {
+			b.mu.Lock()
+			b.initLine = line
+			b.mu.Unlock()
 			if b.send(ctx, line, msg) {
 				initialized = true
-				getStream.Add(1)
-				go func() {
-					defer getStream.Done()
-					b.listen(ctx)
-				}()
+				b.startStream(ctx)
 			}
 			continue
 		}
@@ -141,8 +182,25 @@ loop:
 	inflight.Wait()
 	b.terminate()
 	cancel()
-	getStream.Wait()
+	b.streams.Wait()
 	return nil
+}
+
+// startStream opens the GET stream for the current session, replacing the
+// previous one.
+func (b *bridge) startStream(ctx context.Context) {
+	b.streamMu.Lock()
+	defer b.streamMu.Unlock()
+	if b.streamCancel != nil {
+		b.streamCancel()
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	b.streamCancel = cancel
+	b.streams.Add(1)
+	go func() {
+		defer b.streams.Done()
+		b.listen(streamCtx)
+	}()
 }
 
 func readLines(in io.Reader) <-chan []byte {
@@ -200,7 +258,7 @@ func (b *bridge) newRequest(ctx context.Context, method string, body []byte, acc
 // send posts one client message and relays the reply. It reports whether the
 // exchange succeeded; a failed request is answered with a JSON-RPC error.
 func (b *bridge) send(ctx context.Context, line []byte, msg message) bool {
-	err := b.post(ctx, line, msg)
+	err := b.deliver(ctx, line, msg)
 	if err == nil {
 		return true
 	}
@@ -211,6 +269,101 @@ func (b *bridge) send(ctx context.Context, line []byte, msg message) bool {
 	return false
 }
 
+// deliver posts the message, waiting out a gateway restart. When the gateway
+// has lost the session (it was restarted) the bridge opens a new one and sends
+// the message once more. Only failures that prove the message never reached
+// the server are retried; a dropped response is not.
+func (b *bridge) deliver(ctx context.Context, line []byte, msg message) error {
+	session := b.currentSession()
+	err := b.postWhenUp(ctx, line, msg)
+	if sessionGone(err) && msg.Method != "initialize" && b.hasInitialize() {
+		if rerr := b.reconnect(ctx, session); rerr != nil {
+			return fmt.Errorf("reconnect after gateway restart: %w", rerr)
+		}
+		err = b.postWhenUp(ctx, line, msg)
+	}
+	return err
+}
+
+// postWhenUp posts the message and retries while the gateway is down.
+func (b *bridge) postWhenUp(ctx context.Context, line []byte, msg message) error {
+	deadline := time.Now().Add(sidecarDownRetry)
+	for {
+		err := b.post(ctx, line, msg, false)
+		if err == nil || !neverReached(err) || !time.Now().Add(sidecarDownPause).Before(deadline) {
+			return err
+		}
+		select {
+		case <-time.After(sidecarDownPause):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
+func (b *bridge) currentSession() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.session
+}
+
+func (b *bridge) hasInitialize() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.initLine != nil
+}
+
+// reconnect opens a new session by replaying the client's initialize request
+// under an internal id and swallowing its answer, then announces
+// notifications/initialized and reopens the GET stream. It does nothing when
+// another request already replaced the session that failed.
+func (b *bridge) reconnect(ctx context.Context, failed string) error {
+	b.reconnectMu.Lock()
+	defer b.reconnectMu.Unlock()
+	if b.currentSession() != failed {
+		return nil
+	}
+	b.mu.Lock()
+	cached := b.initLine
+	b.reinits++
+	id := fmt.Sprintf("omac-bridge-reinit-%d", b.reinits)
+	b.mu.Unlock()
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(cached, &fields); err != nil {
+		return err
+	}
+	fields["id"], _ = json.Marshal(id)
+	line, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	if err := b.postFresh(ctx, line, message{ID: fields["id"], Method: "initialize"}); err != nil {
+		return err
+	}
+	initialized := []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	if err := b.post(ctx, initialized, message{Method: "notifications/initialized"}, false); err != nil {
+		return err
+	}
+	b.startStream(ctx)
+	return nil
+}
+
+func (b *bridge) postFresh(ctx context.Context, line []byte, msg message) error {
+	deadline := time.Now().Add(sidecarDownRetry)
+	for {
+		err := b.post(ctx, line, msg, true)
+		if err == nil || !neverReached(err) || !time.Now().Add(sidecarDownPause).Before(deadline) {
+			return err
+		}
+		select {
+		case <-time.After(sidecarDownPause):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
 func describe(msg message) string {
 	if msg.Method != "" {
 		return msg.Method
@@ -218,10 +371,20 @@ func describe(msg message) string {
 	return "response"
 }
 
-func (b *bridge) post(ctx context.Context, line []byte, msg message) error {
+// post sends one message. With fresh set the request carries no session and
+// the answer is not written to the client: it replays an initialize.
+func (b *bridge) post(ctx context.Context, line []byte, msg message, fresh bool) error {
 	req, err := b.newRequest(ctx, http.MethodPost, line, "application/json, text/event-stream")
 	if err != nil {
 		return err
+	}
+	if fresh {
+		req.Header.Del("Mcp-Session-Id")
+		req.Header.Del("MCP-Protocol-Version")
+	}
+	emit := b.writeLine
+	if fresh {
+		emit = func([]byte) error { return nil }
 	}
 	resp, err := b.client.Do(req)
 	if err != nil {
@@ -234,7 +397,7 @@ func (b *bridge) post(ctx context.Context, line []byte, msg message) error {
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
+		return &httpError{status: resp.StatusCode, reason: resp.Header.Get("X-Omac-Reason"), detail: strings.TrimSpace(string(detail))}
 	}
 	if msg.Method == "initialize" {
 		if id := resp.Header.Get("Mcp-Session-Id"); id != "" {
@@ -246,7 +409,7 @@ func (b *bridge) post(ctx context.Context, line []byte, msg message) error {
 
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if mediaType == "text/event-stream" {
-		answered, err := b.relayEvents(resp.Body, msg)
+		answered, err := b.relayEvents(resp.Body, msg, emit)
 		if err == nil && !answered && msg.isRequest() {
 			err = errors.New("event stream ended without a response")
 		}
@@ -263,16 +426,16 @@ func (b *bridge) post(ctx context.Context, line []byte, msg message) error {
 		return nil
 	}
 	b.observe(msg, body)
-	return b.writeLine(body)
+	return emit(body)
 }
 
 // relayEvents writes each SSE data event as one line and stops once the
 // response to req has been written. It reports whether that response arrived.
-func (b *bridge) relayEvents(body io.Reader, req message) (bool, error) {
+func (b *bridge) relayEvents(body io.Reader, req message, emit func([]byte) error) (bool, error) {
 	var answered bool
 	err := readEvents(body, func(data []byte) bool {
 		b.observe(req, data)
-		if err := b.writeLine(data); err != nil {
+		if err := emit(data); err != nil {
 			b.logf("write to stdout: %v", err)
 		}
 		if req.isRequest() {

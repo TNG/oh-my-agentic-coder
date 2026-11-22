@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
@@ -45,15 +46,61 @@ func fakeMCPServer() {
 		case "initialize":
 			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}}
 		case "tools/list":
-			result = map[string]any{"tools": []any{map[string]any{
-				"name": "whoami", "description": os.Getenv("FAKE_TOKEN"),
-				"inputSchema": map[string]any{"type": "object"},
-			}}}
+			result = map[string]any{"tools": fakeMCPTools(os.Getenv("FAKE_TOKEN"))}
+		case "tools/call":
+			var call struct {
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
+			}
+			_ = json.Unmarshal(in.Bytes(), &call)
+			if call.Params.Name == "hang" {
+				select {}
+			}
+			result = map[string]any{"content": []any{}}
 		default:
 			result = map[string]any{}
 		}
 		_ = out.Encode(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
 	}
+}
+
+// fakeMCPTools is the tool list of the fake server; whoami's description is
+// the secret so a test can see that it arrived.
+func fakeMCPTools(token string) []any {
+	schema := map[string]any{"type": "object"}
+	return []any{
+		map[string]any{"name": "whoami", "description": token, "inputSchema": schema},
+		map[string]any{"name": "hang", "description": "never answers", "inputSchema": schema},
+	}
+}
+
+// fakeMCPDefinition is a definition of the fake server that classifies and pins
+// its tools, so the gateway lets them through.
+func fakeMCPDefinition(name, exe string) string {
+	perTool := map[string]string{}
+	for _, tool := range fakeMCPTools("tok-from-keychain") {
+		raw, _ := json.Marshal(tool)
+		hash, err := mcppolicy.ToolHash(raw)
+		if err != nil {
+			panic(err)
+		}
+		perTool[tool.(map[string]any)["name"].(string)] = hash
+	}
+	return fmt.Sprintf(`name: %s
+server:
+  command: [%q]
+  env:
+    OMAC_TEST_FAKE_MCP: "1"
+secrets: [FAKE_TOKEN]
+tools:
+  - {name: whoami, class: read}
+  - {name: hang, class: read}
+pin:
+  tools_hash: %s
+  tools: {hang: %s, whoami: %s}
+  pinned_at: 2026-01-01T00:00:00Z
+`, name, exe, mcppolicy.ListHash(perTool), perTool["hang"], perTool["whoami"])
 }
 
 type mcpRig struct {
@@ -127,7 +174,7 @@ func (r *mcpRig) register(name string, withSecret bool, harnesses ...string) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	def := fmt.Sprintf("name: %s\nserver:\n  command: [%q]\n  env:\n    OMAC_TEST_FAKE_MCP: \"1\"\nsecrets: [FAKE_TOKEN]\n", name, exe)
+	def := fakeMCPDefinition(name, exe)
 	defPath := filepath.Join(r.t.TempDir(), "mcp.yaml")
 	if err := os.WriteFile(defPath, []byte(def), 0o600); err != nil {
 		r.t.Fatal(err)

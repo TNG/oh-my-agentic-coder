@@ -314,7 +314,15 @@ func TestHTTPFailureBecomesJSONRPCError(t *testing.T) {
 	}
 }
 
+func shortRetry(t *testing.T) {
+	t.Helper()
+	oldRetry, oldPause := sidecarDownRetry, sidecarDownPause
+	sidecarDownRetry, sidecarDownPause = 300*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { sidecarDownRetry, sidecarDownPause = oldRetry, oldPause })
+}
+
 func TestConnectionFailureBecomesJSONRPCError(t *testing.T) {
+	shortRetry(t)
 	srv := httptest.NewServer(http.NotFoundHandler())
 	base := srv.URL
 	srv.Close()
@@ -387,5 +395,237 @@ func TestMissingEndpointIsError(t *testing.T) {
 	err := Run(context.Background(), "demo", strings.NewReader(""), io.Discard, env(nil))
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// restartingGateway answers like a gateway that loses all sessions on restart.
+type restartingGateway struct {
+	*fakeServer
+	mu       sync.Mutex
+	sessions map[string]bool
+	epoch    int
+	calls    int
+}
+
+func newRestartingGateway() *restartingGateway {
+	g := &restartingGateway{fakeServer: newFake(), sessions: map[string]bool{}}
+	g.reply = g.answer
+	return g
+}
+
+func (g *restartingGateway) restart() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.sessions = map[string]bool{}
+	g.epoch++
+}
+
+func (g *restartingGateway) toolCalls() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
+}
+
+func (g *restartingGateway) answer(w http.ResponseWriter, r *http.Request, body []byte) {
+	var m message
+	_ = json.Unmarshal(body, &m)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if m.Method == "initialize" {
+		id := fmt.Sprintf("sess-%d", g.epoch)
+		g.sessions[id] = true
+		w.Header().Set("Mcp-Session-Id", id)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18"}}`, m.ID)
+		return
+	}
+	if !g.sessions[r.Header.Get("Mcp-Session-Id")] {
+		w.Header().Set("X-Omac-Reason", "unknown-session")
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	if m.Method == "tools/call" {
+		g.calls++
+	}
+	if !m.isRequest() {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}`, m.ID)
+}
+
+func TestReplaysInitializeOnUnknownSession(t *testing.T) {
+	g := newRestartingGateway()
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	pr, pw := io.Pipe()
+	var out syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), "demo", pr, &out, env(map[string]string{"OMAC_BASE": srv.URL}))
+	}()
+
+	fmt.Fprintln(pw, initLine)
+	fmt.Fprintln(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	waitFor(t, func() bool { return len(out.lines()) == 1 && len(g.byMethod(http.MethodGet)) == 1 })
+
+	g.restart()
+	fmt.Fprintln(pw, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"x"}}`)
+	waitFor(t, func() bool { return len(out.lines()) == 2 })
+	if got := out.lines()[1]; got != `{"jsonrpc":"2.0","id":7,"result":{"ok":true}}` {
+		t.Errorf("reply after restart = %s", got)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	if g.toolCalls() != 1 {
+		t.Errorf("tools/call reached the server %d times, want exactly 1", g.toolCalls())
+	}
+	var inits, initialized int
+	for _, r := range g.byMethod(http.MethodPost) {
+		var m message
+		_ = json.Unmarshal([]byte(r.Body), &m)
+		switch {
+		case m.Method == "initialize":
+			inits++
+			if inits == 2 {
+				if string(m.ID) != `"omac-bridge-reinit-1"` {
+					t.Errorf("replayed initialize id = %s", m.ID)
+				}
+				if r.Header.Get("Mcp-Session-Id") != "" {
+					t.Errorf("replayed initialize carried a session: %v", r.Header)
+				}
+			}
+		case m.Method == "notifications/initialized":
+			initialized++
+		}
+	}
+	if inits != 2 || initialized != 2 {
+		t.Errorf("initialize x%d, notifications/initialized x%d; want 2 each", inits, initialized)
+	}
+	if n := len(g.byMethod(http.MethodGet)); n != 2 {
+		t.Errorf("GET streams opened = %d, want 2", n)
+	}
+	for _, l := range out.lines() {
+		if strings.Contains(l, "omac-bridge-reinit") {
+			t.Errorf("internal reply leaked to the client: %s", l)
+		}
+	}
+}
+
+func TestUnknownSessionRetriesOnlyOnce(t *testing.T) {
+	f := newFake()
+	var posts int
+	var mu sync.Mutex
+	f.reply = func(w http.ResponseWriter, r *http.Request, body []byte) {
+		var m message
+		_ = json.Unmarshal(body, &m)
+		if m.Method == "initialize" {
+			jsonReply(w, body)
+			return
+		}
+		mu.Lock()
+		posts++
+		mu.Unlock()
+		w.Header().Set("X-Omac-Reason", "unknown-session")
+		http.Error(w, "gone", http.StatusNotFound)
+	}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	lines := runOnce(t, env(map[string]string{"OMAC_BASE": srv.URL}), initLine+"\n"+`{"jsonrpc":"2.0","id":5,"method":"tools/call"}`+"\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"id":5`) || !strings.Contains(lines[1], `"error"`) {
+		t.Fatalf("lines = %q", lines)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 2 {
+		t.Errorf("tools/call posted %d times, want 2 (original and one retry)", posts)
+	}
+}
+
+func TestSidecarDownIsRetried(t *testing.T) {
+	shortRetry(t)
+	f := newFake()
+	var mu sync.Mutex
+	failures := 3
+	f.reply = func(w http.ResponseWriter, r *http.Request, body []byte) {
+		var m message
+		_ = json.Unmarshal(body, &m)
+		mu.Lock()
+		down := m.Method == "tools/call" && failures > 0
+		if down {
+			failures--
+		}
+		mu.Unlock()
+		if down {
+			w.Header().Set("X-Omac-Reason", "sidecar-down")
+			http.Error(w, "omac: sidecar-down", http.StatusServiceUnavailable)
+			return
+		}
+		jsonReply(w, body)
+	}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	lines := runOnce(t, env(map[string]string{"OMAC_BASE": srv.URL}), initLine+"\n"+`{"jsonrpc":"2.0","id":5,"method":"tools/call"}`+"\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"result"`) {
+		t.Fatalf("lines = %q", lines)
+	}
+}
+
+func TestSidecarDownGivesUpWithError(t *testing.T) {
+	shortRetry(t)
+	f := newFake()
+	f.reply = func(w http.ResponseWriter, r *http.Request, body []byte) {
+		var m message
+		_ = json.Unmarshal(body, &m)
+		if m.Method == "initialize" {
+			jsonReply(w, body)
+			return
+		}
+		w.Header().Set("X-Omac-Reason", "sidecar-down")
+		http.Error(w, "omac: sidecar-down", http.StatusServiceUnavailable)
+	}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	lines := runOnce(t, env(map[string]string{"OMAC_BASE": srv.URL}), initLine+"\n"+`{"jsonrpc":"2.0","id":5,"method":"tools/call"}`+"\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"id":5`) || !strings.Contains(lines[1], `"error"`) {
+		t.Fatalf("lines = %q", lines)
+	}
+}
+
+// A response lost after the request was sent is not retried: the server may
+// already have run the tool.
+func TestDroppedResponseIsNotRetried(t *testing.T) {
+	f := newFake()
+	var mu sync.Mutex
+	calls := 0
+	f.reply = func(w http.ResponseWriter, r *http.Request, body []byte) {
+		var m message
+		_ = json.Unmarshal(body, &m)
+		if m.Method != "tools/call" {
+			jsonReply(w, body)
+			return
+		}
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	lines := runOnce(t, env(map[string]string{"OMAC_BASE": srv.URL}), initLine+"\n"+`{"jsonrpc":"2.0","id":"c1","method":"tools/call"}`+"\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"id":"c1"`) || !strings.Contains(lines[1], `"error"`) {
+		t.Fatalf("lines = %q", lines)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("tools/call sent %d times, want 1", calls)
 	}
 }

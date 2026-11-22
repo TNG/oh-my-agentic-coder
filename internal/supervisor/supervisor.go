@@ -73,6 +73,9 @@ type SidecarSpec struct {
 	// RequireSecret makes the health probe also demand a 401 for a request
 	// without the per-spawn secret, proving the sidecar enforces it.
 	RequireSecret bool
+	// KeepLog appends to LogPath instead of rotating the previous log to
+	// LogPath.1, so a respawned sidecar continues the log of its predecessor.
+	KeepLog bool
 }
 
 // Running represents a started sidecar.
@@ -265,7 +268,7 @@ func (s *Supervisor) startOne(ctx context.Context, spec SidecarSpec) (*Running, 
 		return nil, fmt.Errorf("%s: mkdir logs: %w", spec.Name, err)
 	}
 	// Rotate previous log.
-	if _, err := os.Stat(spec.LogPath); err == nil {
+	if _, err := os.Stat(spec.LogPath); err == nil && !spec.KeepLog {
 		_ = os.Rename(spec.LogPath, spec.LogPath+".1")
 	}
 	lf, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

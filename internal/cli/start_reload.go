@@ -51,6 +51,8 @@ type startReloader struct {
 	// explicitly to tolerate an outdated pattern would still refuse to mount a
 	// skill registered mid-session.
 	skipSecretPattern bool
+	// mcp is the MCP plan of this launch; nil when omac does not inject MCP.
+	mcp *mcpPlan
 
 	mu      sync.Mutex
 	mounted map[string]string // skill name -> mount, for skills mounted on the facade
@@ -386,6 +388,9 @@ func (r *startReloader) manifest() map[string]any {
 // reload scans the workdir for registered skills that aren't mounted yet and
 // brings them up on the running facade. Returns the names newly mounted.
 func (r *startReloader) reload() []string {
+	for _, notice := range r.mcp.refresh(r.ctx, r.facade) {
+		fmt.Fprintf(r.env.Stderr, "omac start: %s\n", notice)
+	}
 	wReg, err := registry.Load(r.env.Workdir)
 	if err != nil {
 		return nil
