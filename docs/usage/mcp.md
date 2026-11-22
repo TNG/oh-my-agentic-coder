@@ -104,7 +104,7 @@ omac mcp tools demo --classify         # review, classify and record as reviewed
 omac mcp review demo                   # after a change: see what changed and review again
 ```
 
-`omac mcp tools` starts the server on the host with its secrets and lists its tools: a proposed class and the reason, the current class and the review status (`reviewed`, `changed`, `new`, `removed`). The proposal comes from the annotations the server attaches to its tools. They are claims, not facts, so read each tool yourself.
+`omac mcp tools` starts the server on the host with its secrets and lists its tools: a proposed class and the reason, the current class and the review status (`reviewed`, `changed`, `new`, `removed`). The proposal comes from the annotations the server attaches to its tools. They are claims, not facts, so read each tool yourself. Below the table, every tool is listed with its description and a summary of its input parameters (name, type, and `required`), so you can read what a tool does before you classify it. That text comes from the server and is untrusted: control and escape characters are removed, it is shown on one line and cut at 500 characters, and it may still try to instruct the agent, so judge it as you would any text from a third party.
 
 | Class | Meaning |
 |---|---|
@@ -115,7 +115,7 @@ omac mcp review demo                   # after a change: see what changed and re
 
 `--classify` asks for a class per tool (Enter takes the proposal) and then writes the classes and records the tools as reviewed in one step. To script it, give `--set NAME=CLASS` (repeatable) and `--rest CLASS` for all other tools. `--rest` defaults to `off`, so a script that names only the tools it wants cannot enable the rest by accident.
 
-`omac mcp review` starts the server, shows which tools were added, removed or changed since the last review, refuses while a live tool has no class, and asks `Accept the current tools of <name> as reviewed? [y/N]` (`--yes` skips the question). When nothing changed it says so and writes nothing. Both commands run only on the host. After either, and after any registration change, a running `omac start` session restarts that server's gateway by itself.
+`omac mcp review` starts the server, shows which tools were added, removed or changed since the last review (for an added tool its description and parameters, for a changed tool the description and parameters from the last review next to the current ones, for a removed tool its last reviewed text), refuses while a live tool has no class, and asks `Accept the current tools of <name> as reviewed? [y/N]` (`--yes` skips the question). When nothing changed it says so and writes nothing. Both commands run only on the host. After either, and after any registration change, a running `omac start` session restarts that server's gateway by itself.
 
 ## Definition reference
 
@@ -151,7 +151,7 @@ approvals:
 | `access` | `read-only`, `read-write` or `read-write-delete` (default). Tools of a class above the access mode are hidden and refused. |
 | `tools` | The classes: a list of `name` and `class` (`read`, `write`, `delete`, `off`). A tool that is not listed is refused. |
 | `approvals` | Whether a call asks you first, per class: `none` or `required`. Defaults: `read: none`, `write: required`, `delete: required`. |
-| `reviewed` | `tools_hash`, `tools` (a hash per tool) and `at` (when the tools were reviewed). Written by omac. Do not edit it by hand: it is rewritten by `omac mcp tools --classify` and `omac mcp review`. |
+| `reviewed` | `tools_hash`, `tools` (a hash per tool), `text` (the description and parameter summary of each tool as you saw it, capped, so a later review can show what changed; reviews recorded before this existed have none and show only that the fingerprint differs) and `at` (when the tools were reviewed). Written by omac. Do not edit it by hand: it is rewritten by `omac mcp tools --classify` and `omac mcp review`. |
 
 Only stdio servers are supported.
 

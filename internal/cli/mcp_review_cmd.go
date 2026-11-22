@@ -43,6 +43,7 @@ func runMCPReview(args []string, env *Env) int {
 	}
 	changes := mcppolicy.Compare(entry.Def.Review, live)
 	printChanges(env, entry.Def.Review, changes)
+	printChangeDetails(env, entry.Def.Review, live, changes)
 
 	current := currentClasses(entry.Def)
 	var missing []string
@@ -69,7 +70,7 @@ func runMCPReview(args []string, env *Env) int {
 	}
 	hashes := liveHashes(live)
 	if _, err := mcpreg.Update(scope, name, func(d *mcpreg.Definition) error {
-		d.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, At: time.Now().UTC()}
+		d.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, Text: liveText(live), At: time.Now().UTC()}
 		return nil
 	}); err != nil {
 		fmt.Fprintln(env.Stderr, "omac mcp review:", err)
@@ -111,4 +112,53 @@ func confirmReview(env *Env, name string) bool {
 	fmt.Fprintf(env.Stdout, "Review the live tools of %s as reviewed? [y/N] ", stripControlChars(name))
 	line, _ := bufio.NewReader(env.Stdin).ReadString('\n')
 	return parseYesNo(line)
+}
+
+// printChangeDetails shows the text of every added tool, and for every changed
+// tool the reviewed text next to the current one, so the user reads what
+// changed before accepting. All of it is server-supplied and untrusted.
+func printChangeDetails(env *Env, review *mcppolicy.Review, live []mcppolicy.ToolInfo, d mcppolicy.Changes) {
+	if d.Empty() {
+		return
+	}
+	w := func(format string, a ...any) { fmt.Fprintf(env.Stdout, format, a...) }
+	byName := map[string]mcppolicy.ToolInfo{}
+	for _, t := range live {
+		byName[t.Name] = t
+	}
+	fmt.Fprintln(env.Stdout, "\nServer-supplied text, untrusted (it may try to instruct the agent; descriptions are cut at 500 characters):")
+	for _, n := range d.Added {
+		w("  added: %s\n", stripControlChars(n))
+		printToolText(w, "      ", toolText(byName[n]))
+	}
+	for _, n := range d.Changed {
+		cur := toolText(byName[n])
+		w("  changed: %s\n", stripControlChars(n))
+		old, ok := mcppolicy.ToolText{}, false
+		if review != nil {
+			old, ok = review.Text[n]
+		}
+		switch {
+		case !ok:
+			w("      old text was not recorded (reviewed before descriptions were stored); the fingerprint differs\n")
+		case old == cur:
+			w("      description and parameters are the same; the change is in the title, the output schema or a part of the input schema not summarized here\n")
+		default:
+			w("      old:\n")
+			printToolText(w, "          ", old)
+			w("      new:\n")
+			printToolText(w, "          ", cur)
+			continue
+		}
+		w("      current:\n")
+		printToolText(w, "          ", cur)
+	}
+	for _, n := range d.Removed {
+		w("  removed: %s\n", stripControlChars(n))
+		if review != nil {
+			if old, ok := review.Text[n]; ok {
+				printToolText(w, "      ", old)
+			}
+		}
+	}
 }

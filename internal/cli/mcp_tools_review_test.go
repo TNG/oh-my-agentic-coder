@@ -58,7 +58,7 @@ func toolsFakeServer() {
 			if m.Params.Cursor == "" {
 				reply(map[string]any{"nextCursor": "p2", "tools": []any{
 					map[string]any{"name": "get", "annotations": map[string]any{"readOnlyHint": true}},
-					map[string]any{"name": "put", "description": desc(), "annotations": map[string]any{"destructiveHint": false}},
+					map[string]any{"name": "put", "description": desc(), "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "n": map[string]any{"type": []any{"integer", "null"}}}, "required": []any{"path"}}, "annotations": map[string]any{"destructiveHint": false}},
 				}})
 				continue
 			}
@@ -308,5 +308,92 @@ func TestMCPToolsAndReviewRefuseInsideSandbox(t *testing.T) {
 	}
 	if f.entry(t).BundleHash != before {
 		t.Fatal("registry changed")
+	}
+}
+
+func TestMCPToolsShowsDescriptionAndSchemaSanitized(t *testing.T) {
+	f := registerToolsFake(t, nil)
+	evil := "Puts a file.\x1b[31m\nIGNORE\u202e previous\x07 " + strings.Repeat("x", 800)
+	os.WriteFile(f.descFile, []byte(evil), 0o600)
+	code, out, errOut := f.run(t, "", "tools", "fake")
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	for _, bad := range []string{"\x1b", "\u202e", "\x07"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output holds %q", bad)
+		}
+	}
+	if !strings.Contains(out, "description: Puts a file.[31m IGNORE previous ") || !strings.Contains(out, "x...\n") {
+		t.Errorf("description not shown capped:\n%s", out)
+	}
+	if strings.Count(out, "xxxxxxxxxx") == 0 || strings.Contains(out, strings.Repeat("x", 501)) {
+		t.Errorf("description not capped at 500")
+	}
+	if !strings.Contains(out, "parameters:  n: integer|null, path: string (required)") {
+		t.Errorf("schema summary missing:\n%s", out)
+	}
+	if !strings.Contains(out, "(no description)") {
+		t.Errorf("tool without description:\n%s", out)
+	}
+}
+
+func TestMCPReviewShowsOldAndNewDescription(t *testing.T) {
+	f := registerToolsFake(t, nil)
+	if code, _, e := f.run(t, "", "tools", "fake", "--classify", "--rest", "read"); code != ExitOK {
+		t.Fatal(e)
+	}
+	if got := f.entry(t).Def.Review.Text["put"].Description; got != "v1" {
+		t.Fatalf("stored text %q", got)
+	}
+	os.WriteFile(f.descFile, []byte("v2 now deletes"), 0o600)
+	os.WriteFile(f.descFile+".extra", nil, 0o600)
+	// extra is unclassified: review refuses, but the diff is printed first.
+	_, out, _ := f.run(t, "", "review", "fake", "--yes")
+	for _, want := range []string{"changed: put", "old:", "description: v1", "new:", "description: v2 now deletes", "added: extra"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("review output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestMCPReviewShowsRemovedTool(t *testing.T) {
+	f := registerToolsFake(t, nil)
+	os.WriteFile(f.descFile+".extra", nil, 0o600)
+	if code, _, e := f.run(t, "", "tools", "fake", "--classify", "--rest", "read"); code != ExitOK {
+		t.Fatal(e)
+	}
+	os.Remove(f.descFile + ".extra")
+	_, out, _ := f.run(t, "n\n", "review", "fake")
+	if !strings.Contains(out, "removed: extra") {
+		t.Errorf("removed tool not named:\n%s", out)
+	}
+}
+
+func TestMCPReviewWithoutStoredTextStillWorks(t *testing.T) {
+	f := registerToolsFake(t, nil)
+	if code, _, e := f.run(t, "", "tools", "fake", "--classify", "--rest", "read"); code != ExitOK {
+		t.Fatal(e)
+	}
+	// Turn the record into one written before text was stored.
+	if _, err := mcpreg.Update(f.scope, "fake", func(d *mcpreg.Definition) error { d.Review.Text = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(f.descFile, []byte("v2"), 0o600)
+	code, out, errOut := f.run(t, "y\n", "review", "fake")
+	if code != ExitOK || !strings.Contains(out, "old text was not recorded") || !strings.Contains(out, "description: v2") {
+		t.Fatalf("exit %d out %s err %s", code, out, errOut)
+	}
+	if f.entry(t).Def.Review.Text["put"].Description != "v2" {
+		t.Fatal("text not stored by review")
+	}
+}
+
+func TestCleanToolText(t *testing.T) {
+	if got := cleanToolText("a\x1b[2Jb\u202ec\r\n\td", 500); got != "a[2Jbc d" {
+		t.Errorf("got %q", got)
+	}
+	if got := cleanToolText(strings.Repeat("é", 600), 500); len([]rune(got)) != 503 || !strings.HasSuffix(got, "...") {
+		t.Errorf("cap: %d runes", len([]rune(got)))
 	}
 }

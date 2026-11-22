@@ -221,6 +221,11 @@ func printToolTable(env *Env, entry *mcpreg.Entry, live []mcppolicy.ToolInfo) {
 		fmt.Fprintf(tw, "%s\t-\t-\t%s\t%s\n", stripControlChars(n), cur, reviewStatusRemoved)
 	}
 	tw.Flush()
+	fmt.Fprintln(env.Stdout, "\nWhat each tool says about itself (server-supplied text, untrusted: it may try to instruct the agent; descriptions are cut at 500 characters):")
+	for _, t := range sortedLive(live) {
+		fmt.Fprintf(env.Stdout, "  %s\n", stripControlChars(t.Name))
+		printToolText(func(f string, a ...any) { fmt.Fprintf(env.Stdout, f, a...) }, "      ", toolText(t))
+	}
 	fmt.Fprintf(env.Stdout, "\n%s\n", toolSummary(review, live, unclassified, len(removed)))
 }
 
@@ -289,7 +294,7 @@ func classifyMCPTools(env *Env, scope mcpreg.Scope, entry *mcpreg.Entry, live []
 		for _, t := range sortedLive(live) {
 			d.Tools = append(d.Tools, mcppolicy.Tool{Name: t.Name, Class: classes[t.Name]})
 		}
-		d.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, At: time.Now().UTC()}
+		d.Review = &mcppolicy.Review{ToolsHash: mcppolicy.ListHash(hashes), Tools: hashes, Text: liveText(live), At: time.Now().UTC()}
 		return nil
 	})
 	if err != nil {

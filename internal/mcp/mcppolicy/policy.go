@@ -101,12 +101,22 @@ func (a Approvals) For(c Class) approval.Mode {
 	return mode
 }
 
+// ToolText is the short, sanitized, length-capped text of a tool the user saw
+// at review time: its description and a summary of its input parameters. It
+// is only there to show what changed later; the hashes decide.
+type ToolText struct {
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Params      string `yaml:"params,omitempty"      json:"params,omitempty"`
+}
+
 // Review records the tool list the user reviewed: a hash per tool and one over
-// the whole list.
+// the whole list. Text holds the reviewed description of each tool; reviews
+// made before it existed have none and still work.
 type Review struct {
-	ToolsHash string            `yaml:"tools_hash" json:"tools_hash"`
-	Tools     map[string]string `yaml:"tools"      json:"tools"`
-	At        time.Time         `yaml:"at"  json:"at"`
+	ToolsHash string              `yaml:"tools_hash" json:"tools_hash"`
+	Tools     map[string]string   `yaml:"tools"      json:"tools"`
+	Text      map[string]ToolText `yaml:"text,omitempty" json:"text,omitempty"`
+	At        time.Time           `yaml:"at"  json:"at"`
 }
 
 // Policy is the effective policy of one registered server.
