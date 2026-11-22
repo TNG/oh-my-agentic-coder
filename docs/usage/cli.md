@@ -34,7 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
-| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn`, `ignore` or `refuse`. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config). |
+| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn` or `refuse`. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config). |
 
 For all flags: `omac start --help`.
 

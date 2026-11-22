@@ -6,53 +6,31 @@ import (
 	"strings"
 )
 
+const refusalExplanation = `An MCP entry in the harness config runs inside the sandbox or keeps its login in the harness's state directory, where the agent can reach it.
+Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow.
+If an entry already holds a token, rotate it.`
+
 // Evaluate applies the policy to what Scan found. Entries named like a
 // registered server are shadowed by the injected one and never offend.
 func Evaluate(p Policy, ex []Existing, f []Finding, registered map[string]bool) (warnings []string, refusal error) {
-	if !p.Active {
+	if !p.Active || p.Unregistered == ModeAllow {
 		return nil, nil
 	}
-	var refusals []string
-	report := func(refuse bool, msg string) {
-		if refuse {
-			refusals = append(refusals, msg)
-		} else {
-			warnings = append(warnings, msg)
-		}
-	}
-
+	var problems []string
 	for _, e := range ex {
-		if registered[e.Name] {
-			continue
-		}
-		msg := fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File)
-		switch p.Unregistered {
-		case ModeWarn:
-			report(false, msg)
-		case ModeRefuse:
-			report(true, msg)
+		if !registered[e.Name] {
+			problems = append(problems, fmt.Sprintf("unregistered MCP server %q in %s", e.Name, e.File))
 		}
 	}
-
 	for _, finding := range f {
-		switch finding.Kind {
-		case FindingParseError:
-			failClosed := p.Unregistered == ModeRefuse || p.LiteralCredentials == CredRefuse
-			quiet := p.Unregistered == ModeAllow && p.LiteralCredentials == CredAllow
-			if !quiet {
-				report(failClosed, fmt.Sprintf("cannot parse MCP config %s (%s)", finding.File, finding.Field))
-			}
-		case FindingLiteralCredential:
-			if p.LiteralCredentials == CredAllow {
-				continue
-			}
-			report(p.LiteralCredentials == CredRefuse,
-				fmt.Sprintf("literal credential in %s: server %q, %s", finding.File, finding.Server, finding.Field))
-		}
+		problems = append(problems, fmt.Sprintf("cannot parse MCP config %s (%s)", finding.File, finding.Detail))
 	}
 
-	if len(refusals) > 0 {
-		return warnings, errors.New("MCP policy refuses this start:\n  " + strings.Join(refusals, "\n  "))
+	if p.Unregistered == ModeWarn {
+		return problems, nil
 	}
-	return warnings, nil
+	if len(problems) > 0 {
+		return nil, errors.New("MCP policy refuses this start:\n  " + strings.Join(problems, "\n  ") + "\n" + refusalExplanation)
+	}
+	return nil, nil
 }

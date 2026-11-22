@@ -207,8 +207,10 @@ func TestMCPRefusalHappensBeforeAnySpawn(t *testing.T) {
 	if code != ExitConfigInvalid {
 		t.Fatalf("exit %d, want %d\n%s", code, ExitConfigInvalid, stderr)
 	}
-	if !strings.Contains(stderr, `"other"`) || !strings.Contains(stderr, ".mcp.json") {
-		t.Errorf("refusal does not name the entry and file:\n%s", stderr)
+	for _, want := range []string{`"other"`, ".mcp.json", "omac mcp register", "--mcp-unregistered=allow", "rotate"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, stderr)
+		}
 	}
 	if _, _, ran := r.captured(); ran {
 		t.Error("the inner command ran")
@@ -230,17 +232,50 @@ func TestMCPUnregisteredFlagOverridesRefusal(t *testing.T) {
 	if !strings.Contains(stderr, `unregistered MCP server "other"`) {
 		t.Errorf("no warning:\n%s", stderr)
 	}
-	args, _, _ := r.captured()
-	for _, a := range args {
-		if a == "--strict-mcp-config" {
-			t.Errorf("warn mode must leave existing entries active: %v", args)
-		}
+	if _, _, ran := r.captured(); !ran {
+		t.Error("warn mode did not start the inner command")
+	}
+}
+
+func TestMCPAllowChangesNothing(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.writeFile(".mcp.json", unregisteredClaudeEntry)
+
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = "allow" })
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if strings.Contains(stderr, "unregistered") {
+		t.Errorf("allow mode printed a warning:\n%s", stderr)
+	}
+}
+
+func TestMCPShadowedEntryIsNotRefused(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.writeFile(".mcp.json", `{"mcpServers":{"demo":{"command":"x"}}}`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+}
+
+func TestMCPUnparseableConfigRefuses(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.writeFile(".mcp.json", `{ not json`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitConfigInvalid || !strings.Contains(stderr, "cannot parse MCP config") {
+		t.Fatalf("exit %d\n%s", code, stderr)
 	}
 }
 
 func TestMCPInactiveWithNothingRegisteredChangesNothing(t *testing.T) {
 	r := newMCPRig(t)
-	r.writeFile(".mcp.json", `{"mcpServers":{"other":{"command":"x","env":{"API_TOKEN":"abc123literal"}}}}`)
+	r.writeFile(".mcp.json", `{"mcpServers":{"other":{"command":"x"}}}`)
 
 	code, stderr := r.launch("claude", r.capture, nil)
 	if code != ExitOK {
@@ -255,10 +290,8 @@ func TestMCPInactiveWithNothingRegisteredChangesNothing(t *testing.T) {
 			t.Errorf("unexpected argument %q in %v", a, args)
 		}
 	}
-	for _, name := range []string{"OPENCODE_CONFIG_CONTENT", "ENABLE_CLAUDEAI_MCP_SERVERS"} {
-		if v, ok := env[name]; ok && v != "" {
-			t.Errorf("%s = %q, want unset", name, v)
-		}
+	if v := env["OPENCODE_CONFIG_CONTENT"]; v != "" {
+		t.Errorf("OPENCODE_CONFIG_CONTENT = %q, want unset", v)
 	}
 	if logs := r.gatewayLogs(); len(logs) != 0 {
 		t.Errorf("a gateway started: %v", logs)
@@ -317,8 +350,11 @@ func TestMCPClaudeInjectionReachesInnerArgsAndEnv(t *testing.T) {
 	if mcpIdx < 0 || userIdx < 0 || mcpIdx > userIdx {
 		t.Errorf("--mcp-config must precede user args: %v", args)
 	}
-	if !containsString(args, "--strict-mcp-config") || env["ENABLE_CLAUDEAI_MCP_SERVERS"] != "false" {
-		t.Errorf("refuse mode must be exclusive: args=%v env=%q", args, env["ENABLE_CLAUDEAI_MCP_SERVERS"])
+	if containsString(args, "--strict-mcp-config") {
+		t.Errorf("existing entries must stay active: %v", args)
+	}
+	if _, ok := env["ENABLE_CLAUDEAI_MCP_SERVERS"]; ok {
+		t.Error("connectors variable must not be set")
 	}
 	for k, v := range env {
 		if strings.Contains(v, "tok-from-keychain") {
@@ -368,9 +404,8 @@ func TestMCPMissingSecretSkipsServerWithWarning(t *testing.T) {
 	if logs := r.gatewayLogs(); len(logs) != 0 {
 		t.Errorf("a gateway started for a server without its secret: %v", logs)
 	}
-	servers, _ := r.claudeConfig()["mcpServers"].(map[string]any)
-	if _, ok := servers["demo"]; ok {
-		t.Error("skipped server was injected")
+	if _, err := os.Stat(r.argsPath + ".cfg"); err == nil {
+		t.Error("a skipped server left an --mcp-config injection")
 	}
 }
 
@@ -402,7 +437,7 @@ func TestMCPUserExportedConfigIsNotForwardedWithoutInjection(t *testing.T) {
 	for _, name := range []string{"opencode", "claude"} {
 		harness, _ := config.LookupHarness(name)
 		for _, v := range append(harness.ForwardedEnvVars(), harnessEnvAllowVars(harness, sandboxPlan{})...) {
-			if v == "OPENCODE_CONFIG_CONTENT" || v == "ENABLE_CLAUDEAI_MCP_SERVERS" {
+			if v == "OPENCODE_CONFIG_CONTENT" {
 				t.Errorf("harness %s forwards %s on its own", name, v)
 			}
 		}
@@ -441,8 +476,11 @@ func TestMCPUnregisteredFlagValidation(t *testing.T) {
 		t.Errorf("invalid value: exit %d, want %d (%s)", code, ExitMisuse, stderr())
 	}
 	for _, cmd := range []string{"start", "continue", "resume"} {
-		opts, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=ignore"}, env)
-		if code != ExitOK || opts.mcpUnregistered != "ignore" {
+		if _, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=ignore"}, env); code != ExitMisuse {
+			t.Errorf("%s: ignore: exit %d, want %d", cmd, code, ExitMisuse)
+		}
+		opts, code := parseLaunchArgs(cmd, []string{"--mcp-unregistered=warn"}, env)
+		if code != ExitOK || opts.mcpUnregistered != "warn" {
 			t.Errorf("%s: code=%d value=%q", cmd, code, opts.mcpUnregistered)
 		}
 	}

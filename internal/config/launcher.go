@@ -83,21 +83,15 @@ type AuditConfig struct {
 // MCPConfig controls how omac treats MCP servers that are not registered.
 // Empty values select the defaults chosen when the config is resolved.
 type MCPConfig struct {
-	Unregistered       string `yaml:"unregistered"        json:"unregistered"`
-	LiteralCredentials string `yaml:"literal_credentials" json:"literal_credentials"`
+	Unregistered string `yaml:"unregistered" json:"unregistered"`
 }
 
 // Validate rejects values that are not a known mode. Empty values are valid.
 func (m MCPConfig) Validate() error {
 	switch m.Unregistered {
-	case "", "allow", "warn", "ignore", "refuse":
-	default:
-		return fmt.Errorf("mcp.unregistered must be allow, warn, ignore or refuse, got %q", m.Unregistered)
-	}
-	switch m.LiteralCredentials {
 	case "", "allow", "warn", "refuse":
 	default:
-		return fmt.Errorf("mcp.literal_credentials must be allow, warn or refuse, got %q", m.LiteralCredentials)
+		return fmt.Errorf("mcp.unregistered must be allow, warn or refuse, got %q", m.Unregistered)
 	}
 	return nil
 }

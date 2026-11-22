@@ -23,9 +23,8 @@ import (
 // mcpPlan is the MCP part of one launch. A nil *mcpPlan means omac leaves
 // MCP alone: nothing is registered and no mode was set.
 type mcpPlan struct {
-	policy   mcpinject.Policy
-	entries  []*mcpreg.Entry
-	existing []mcpinject.Existing
+	policy  mcpinject.Policy
+	entries []*mcpreg.Entry
 
 	sup       *supervisor.Supervisor
 	started   []*mcpreg.Entry
@@ -84,7 +83,7 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, refusal)
 		return nil, ExitConfigInvalid
 	}
-	return &mcpPlan{policy: policy, entries: entries, existing: existing}, ExitOK
+	return &mcpPlan{policy: policy, entries: entries}, ExitOK
 }
 
 // launchMCPGateways starts one gateway per registered server on the host and
@@ -178,7 +177,7 @@ func (p *mcpPlan) buildInjection(harness config.Harness, socketPath string, tcpP
 			},
 		})
 	}
-	injection, err := mcpinject.Build(harness.MCPInjection, servers, p.existing, p.policy, sandboxTmp)
+	injection, err := mcpinject.Build(harness.MCPInjection, servers, p.policy, sandboxTmp)
 	if err != nil {
 		return fmt.Errorf("MCP injection: %w", err)
 	}

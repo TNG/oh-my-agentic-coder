@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-const mcpYAML = "mcp:\n  unregistered: refuse\n  literal_credentials: warn\n"
+const mcpYAML = "mcp:\n  unregistered: refuse\n"
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -58,7 +58,7 @@ func TestLoadLauncherHonorsGlobalMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := MCPConfig{Unregistered: "refuse", LiteralCredentials: "warn"}
+	want := MCPConfig{Unregistered: "refuse"}
 	if lc.MCP != want {
 		t.Fatalf("got %+v, want %+v", lc.MCP, want)
 	}
@@ -67,7 +67,7 @@ func TestLoadLauncherHonorsGlobalMCP(t *testing.T) {
 func TestLoadLauncherRejectsInvalidGlobalMCP(t *testing.T) {
 	for _, body := range []string{
 		"mcp:\n  unregistered: block\n",
-		"mcp:\n  literal_credentials: ignore\n",
+		"mcp:\n  unregistered: ignore\n",
 	} {
 		home := t.TempDir()
 		t.Setenv("HOME", home)

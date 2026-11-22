@@ -16,7 +16,7 @@ func TestLoadLauncherReadsGlobalConfigFromXDGConfigHome(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(xdg, "omac"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(xdg, "omac", "config.yaml"), []byte("mcp:\n  unregistered: ignore\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(xdg, "omac", "config.yaml"), []byte("mcp:\n  unregistered: warn\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -27,8 +27,8 @@ func TestLoadLauncherReadsGlobalConfigFromXDGConfigHome(t *testing.T) {
 	if want := filepath.Join(xdg, "omac", "config.yaml"); path != want {
 		t.Fatalf("config path = %q, want %q", path, want)
 	}
-	if lc.MCP.Unregistered != "ignore" {
-		t.Fatalf("mcp.unregistered = %q, want ignore", lc.MCP.Unregistered)
+	if lc.MCP.Unregistered != "warn" {
+		t.Fatalf("mcp.unregistered = %q, want warn", lc.MCP.Unregistered)
 	}
 }
 
@@ -42,7 +42,7 @@ func TestLoadLauncherIgnoresHomeConfigWhenXDGConfigHomeIsSet(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".config", "omac"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".config", "omac", "config.yaml"), []byte("mcp:\n  unregistered: ignore\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".config", "omac", "config.yaml"), []byte("mcp:\n  unregistered: warn\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

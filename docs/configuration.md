@@ -35,8 +35,7 @@ audit:
 cache:
   scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
 mcp:
-  unregistered: refuse              # harness MCP entries omac did not register: allow | warn | ignore | refuse (default refuse once a server is registered)
-  literal_credentials: refuse       # credentials written into harness MCP config: allow | warn | refuse (default refuse once a server is registered)
+  unregistered: refuse              # harness MCP entries omac did not register: allow | warn | refuse (default refuse once a server is registered)
 ```
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
@@ -154,7 +153,7 @@ A few things to know:
 
 ### Running an MCP server the harness launches
 
-An MCP server is configured in the harness, not in omac.
+An MCP server is configured in the harness, not in omac. Once you register an [MCP gateway](./usage/mcp.md) server, omac refuses to start while such harness entries exist, unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
 
 - **A token**, if the server authenticates with an API key: add the variable to `environment.allow_vars` (see above) and export it before `omac start`.

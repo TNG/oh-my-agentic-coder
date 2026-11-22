@@ -11,7 +11,7 @@ An MCP server gives the agent typed tools for an external service, such as Jira 
 |---|---|
 | The agent to call a service with a secret, and the secret must stay out of the sandbox, and a stdio MCP server for it exists | The MCP gateway (this page) |
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
-| An MCP server with no secret, or you accept that the agent can read its token | A plain entry in the harness's own MCP config; see [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
+| An MCP server with no secret, or you accept that the agent can read its token | A plain entry in the harness's own MCP config. omac refuses to start with such an entry once you register a server, unless you allow it; see [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
 If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration.
 
@@ -103,41 +103,42 @@ If a secret is missing from the keychain, omac prints a warning and skips that s
 
 ## Existing MCP entries in the harness config
 
-Once at least one server is registered, omac looks at the MCP entries in the harness's own config files (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) and applies `mcp.unregistered`:
+An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.json`, `~/.claude.json`) either runs inside the sandbox or keeps its login in the harness's state directory. In both cases the agent can reach its credentials. omac therefore refuses to start while such an entry exists, unless a registered server has the same name. omac never removes, disables or rewrites these entries. It only adds your registered servers next to them.
+
+Fix a refusal in one of three ways:
+
+- **Register the server** with `omac mcp register`, so its credentials stay on the host.
+- **Remove the entry** from the harness config.
+- **Allow it for one run** with `omac start --mcp-unregistered=allow`.
+
+If an entry already holds a token, rotate it: agents that ran earlier may have read it.
+
+While only stdio servers are supported, a remote or OAuth server cannot be used through the harness with the default `refuse`. It needs `--mcp-unregistered=allow` for that run.
+
+`mcp.unregistered` sets the default:
 
 | Value | Effect |
 |---|---|
-| `refuse` (default once a server is registered) | `omac start` stops and names each entry and file. |
-| `warn` | Starts, lists the entries as a warning. They stay active. |
-| `allow` | Starts without comment. The entries stay active. |
-| `ignore` | Starts and disables the entries. Only registered servers are available. |
-
-`mcp.literal_credentials` controls what happens when a harness config holds a credential written directly into a header, a server's `env` or a URL query string (`?token=...`):
-
-| Value | Effect |
-|---|---|
-| `refuse` (default, same switch-on rule) | `omac start` stops and names the entry. |
-| `warn` | Starts with a warning. |
+| `refuse` (default once a server is registered) | `omac start` stops and names each entry and its file. A config file omac cannot parse also stops it, because it may hide entries. |
+| `warn` | Starts and prints a warning for each entry and each unparseable file. |
 | `allow` | Starts without comment. |
 
-Both settings go in the user-global launcher config, `~/.config/omac/config.yaml`:
+It goes in the user-global launcher config, `~/.config/omac/config.yaml`:
 
 ```yaml
 mcp:
-  unregistered: refuse          # allow | warn | ignore | refuse
-  literal_credentials: refuse   # allow | warn | refuse
+  unregistered: refuse          # allow | warn | refuse
 ```
 
-- **Project-local files cannot set this.** A project's `.opencode/oh-my-agentic-coder.yaml` is ignored for `mcp:`, so opening a repository cannot switch the checks off.
+- **Project-local files cannot set this.** A project's `.opencode/oh-my-agentic-coder.yaml` is ignored for `mcp:`, so opening a repository cannot switch the check off.
 - **Where it is read from.** `~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml` when that variable is set. The registry uses the same directory.
-- **One run:** `omac start --mcp-unregistered=ignore` overrides `mcp.unregistered` for that run. This is the way past a refusal caused by a checked-in `.mcp.json`. There is no flag for `literal_credentials`.
-- `mcp.unregistered` and `mcp.literal_credentials` apply only once a server is registered or you set the value explicitly. With nothing registered and nothing set, omac does not look at your MCP config.
+- **One run:** `omac start --mcp-unregistered=<allow|warn|refuse>` overrides the setting for that run. This is the way past a refusal caused by a checked-in `.mcp.json`.
+- `mcp.unregistered` applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not look at your MCP config.
 
 ## Troubleshooting
 
-- **Start refused: unregistered MCP entry.** The message names the entry and the file. Register the server with `omac mcp register`, remove the entry, or run once with `--mcp-unregistered=ignore` (or `warn`).
-- **Start refused: literal credential.** A harness config file contains a token. Move it out of that file, register the server so omac holds the credential, and rotate the token: it has been readable by the agent. See [Residual risks](#residual-risks).
-- **Start refused: config file cannot be parsed.** omac cannot check a config file it cannot read (for example JSONC or `~/.claude.json`), so in `refuse` mode it stops. Fix the file, or set `mcp.unregistered` to `warn`, `allow` or `ignore`.
+- **Start refused: unregistered MCP entry.** The message names the entry and the file. Register the server with `omac mcp register`, remove the entry, or run once with `--mcp-unregistered=allow` (or `warn`).
+- **Start refused: config file cannot be parsed.** omac cannot check a config file it cannot read (for example JSONC or `~/.claude.json`), so in `refuse` mode it stops. Fix the file, or run once with `--mcp-unregistered=warn` or `allow`.
 - **A server is missing in the agent, with a warning at start.** A secret is not in the keychain. Run `omac mcp deregister <name>` and register it again.
 - **I changed the definition and nothing happened.** Register it again.
 
@@ -178,8 +179,8 @@ Before you register a server:
 
 ### Residual risks
 
-- **OAuth tokens in a harness's own state directory** (for example from a login inside the harness) are not protected by omac, and the credential scan cannot see them.
-- **Credentials already in readable harness config files** may already be exposed to agents that ran earlier. Rotate them. This is why `literal_credentials` refuses by default.
+- **OAuth tokens in a harness's own state directory** (for example from a login inside the harness) are not protected by omac, and the scan of harness config files does not see them.
+- **Credentials already in readable harness config files** may already be exposed to agents that ran earlier. Rotate them.
 - **Third-party server code and its dependencies** run with your credential. A compromised package is a compromised credential.
 
 ### Not covered yet
