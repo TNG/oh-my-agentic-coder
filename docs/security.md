@@ -438,21 +438,6 @@ Sandbox policy grants (filesystem paths, network hosts, environment variables) l
 
 ## Environment filtering
 
-### Claude Code: no nonessential traffic
-
-For Claude Code, omac sets the variables that keep it from contacting anything
-other than Anthropic's model and login endpoints:
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY`,
-`DISABLE_ERROR_REPORTING`, `DISABLE_AUTOUPDATER`, `DISABLE_FEEDBACK_COMMAND`,
-`CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY`,
-`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL` and
-`ENABLE_CLAUDEAI_MCP_SERVERS=false`. This stops telemetry and error reports
-(sent to a third-party log service), update and feedback traffic, the automatic
-clone of the official plugin marketplace and the claude.ai connectors. They
-cannot be changed from inside the sandbox. Traffic that you start yourself, such
-as plugin installs, `npx` MCP servers or WebFetch targets, still goes through the
-network proxy and its host prompts.
-
 The sandbox does not inherit all environment variables from the shell that
 launched omac. It starts from an explicit allow list — the `OMAC_*` prefix,
 basic system variables (`HOME`, `PATH`, `LANG`, …), and the key the selected
