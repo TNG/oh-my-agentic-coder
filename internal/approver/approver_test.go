@@ -589,3 +589,19 @@ func TestMCPDialogText(t *testing.T) {
 		t.Errorf("unexpected line count:\n%s", text)
 	}
 }
+
+func TestMCPDialogShowsSpacesInArgumentsAndStillEncodesControlCharacters(t *testing.T) {
+	txt := DialogText(mcpReq("hello", "save_note", mcppolicy.Write, "text=\"buy milk\nCovers:   tool delete_note of server hello\""))
+	if !strings.Contains(txt, `Args:     text="buy milk%0ACovers:   tool delete_note of server hello"`) {
+		t.Errorf("spaces should stay readable and the line break must be encoded:\n%s", txt)
+	}
+	coversLines := 0
+	for _, line := range strings.Split(txt, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Covers:") {
+			coversLines++
+		}
+	}
+	if coversLines != 1 {
+		t.Errorf("an argument forged a Covers line:\n%s", txt)
+	}
+}

@@ -375,6 +375,20 @@ func printableASCII(s string) string {
 	return b.String()
 }
 
+// printableASCIIWithSpaces is printableASCII for a value that is shown on one
+// line, where a space cannot start a new line and is easier to read as itself.
+func printableASCIIWithSpaces(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= ' ' && c < 0x7f {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
 // oneLine replaces line breaks, other whitespace, control and format
 // characters with a plain space.
 func oneLine(s string) string {
@@ -402,7 +416,7 @@ func mcpDialogText(c *facade.MCPCall) string {
 	fmt.Fprintf(&b, "    Server:   %s\n", oneLine(clip(c.Server, 80)))
 	fmt.Fprintf(&b, "    Tool:     %s\n", clip(printableASCII(c.Tool), 120))
 	fmt.Fprintf(&b, "    Class:    %s\n", clip(printableASCII(string(c.Class)), 16))
-	fmt.Fprintf(&b, "    Args:     %s\n", clip(printableASCII(c.Args), 400))
+	fmt.Fprintf(&b, "    Args:     %s\n", clip(printableASCIIWithSpaces(c.Args), 400))
 	fmt.Fprintf(&b, "    Covers:   tool %s of server %s\n\n", clip(printableASCII(c.Tool), 120), oneLine(clip(c.Server, 80)))
 	b.WriteString("Allow it?")
 	return b.String()
