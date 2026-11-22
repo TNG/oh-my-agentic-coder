@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approver"
+	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
 
 func addVerdict(t *testing.T, scope, skill, match string) {
@@ -113,6 +114,37 @@ func TestDeregisterSkillRemovesOnlyThatSkillsApprovalsInThisProject(t *testing.T
 	}
 	got := storedKeys(t)
 	if got[here+"|demo"] || !got[here+"|keep"] || !got["wd-elsewhere|demo"] || !got[here+"|mcp:demo"] || len(got) != 3 {
+		t.Fatalf("stored: %v", got)
+	}
+}
+
+func TestDeregisterGlobalSkillRemovesApprovalsOfAllScopes(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	reg, err := registry.LoadGlobal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Upsert(registry.Entry{Name: "demo", SkillDir: "/skills/demo", BundleHash: "x"})
+	reg.Upsert(registry.Entry{Name: "keep", SkillDir: "/skills/keep", BundleHash: "y"})
+	if err := registry.SaveGlobal(reg); err != nil {
+		t.Fatal(err)
+	}
+	here := projectScope(wd).Key
+	addVerdict(t, here, "demo", "POST /a")
+	addVerdict(t, "wd-elsewhere", "demo", "POST /a")
+	addVerdict(t, "wd-elsewhere", "keep", "POST /a")
+	addVerdict(t, here, "mcp:demo", "tool a (write)")
+
+	env, read := captureEnv(t, wd)
+	if code := runDeregister([]string{"--global", "demo"}, env); code != ExitOK {
+		t.Fatal(code)
+	}
+	if out, _ := read(); !strings.Contains(out, "removed 2 stored approval(s)") {
+		t.Errorf("output %q", out)
+	}
+	got := storedKeys(t)
+	if len(got) != 2 || !got["wd-elsewhere|keep"] || !got[here+"|mcp:demo"] {
 		t.Fatalf("stored: %v", got)
 	}
 }
