@@ -1437,10 +1437,11 @@ func TestLaunchEnvFuncClaudeNoNonessentialTraffic(t *testing.T) {
 	h, _ := LookupHarness("claude-code")
 	got := h.LaunchEnvFunc(h.ConfigHome(), "/tmp/omac-x")
 	for _, k := range []string{
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 		"DISABLE_TELEMETRY",
 		"DISABLE_ERROR_REPORTING",
-		"DISABLE_FEEDBACK_COMMAND",
-		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+		"DISABLE_AUTOUPDATER",
+		"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
 	} {
 		if got[k] != "1" {
 			t.Errorf("%s = %q; want 1", k, got[k])

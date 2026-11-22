@@ -402,30 +402,36 @@ func harnessRegistry() []Harness {
 				"ANTHROPIC_MODEL",
 				// Injected by LaunchEnvFunc.
 				"CLAUDE_CODE_TMPDIR",
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 				"DISABLE_TELEMETRY",
 				"DISABLE_ERROR_REPORTING",
+				"DISABLE_AUTOUPDATER",
 				"DISABLE_FEEDBACK_COMMAND",
 				"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
+				"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
 				"ENABLE_CLAUDEAI_MCP_SERVERS",
 			},
 			// claude's per-session temp dir reads CLAUDE_CODE_TMPDIR and
 			// otherwise hardcodes /tmp, ignoring TMPDIR. The macOS baseline
 			// deliberately does not grant /tmp, so claude would exit silently.
 			//
-			// The other variables keep Claude Code from sending telemetry to third
-			// parties. Auto-update and the official plugin marketplace stay on, so
-			// the umbrella CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is not set: no telemetry or error
-			// reports (they go to a third-party log service), no feedback
-			// traffic and no claude.ai connectors (ENABLE_CLAUDEAI_MCP_SERVERS
+			// The other variables keep Claude Code from contacting anything but
+			// Anthropic's model and login endpoints: no telemetry or error
+			// reports (they go to a third-party log service), no update or
+			// feedback traffic, no auto-install of the official plugin
+			// marketplace, and no claude.ai connectors (ENABLE_CLAUDEAI_MCP_SERVERS
 			// =false, which --strict-mcp-config does not cover).
 			LaunchEnvFunc: func(_, tmpDir string) map[string]string {
 				return map[string]string{
-					"CLAUDE_CODE_TMPDIR":                  tmpDir,
-					"DISABLE_TELEMETRY":                   "1",
-					"DISABLE_ERROR_REPORTING":             "1",
-					"DISABLE_FEEDBACK_COMMAND":            "1",
-					"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
-					"ENABLE_CLAUDEAI_MCP_SERVERS":         "false",
+					"CLAUDE_CODE_TMPDIR":                                   tmpDir,
+					"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":             "1",
+					"DISABLE_TELEMETRY":                                    "1",
+					"DISABLE_ERROR_REPORTING":                              "1",
+					"DISABLE_AUTOUPDATER":                                  "1",
+					"DISABLE_FEEDBACK_COMMAND":                             "1",
+					"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":                  "1",
+					"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
+					"ENABLE_CLAUDEAI_MCP_SERVERS":                          "false",
 				}
 			},
 			Session: &HarnessSession{
