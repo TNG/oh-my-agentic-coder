@@ -53,3 +53,22 @@ func TestHasSeesAChangeByAnotherStore(t *testing.T) {
 		t.Error("new verdict not seen through the cache")
 	}
 }
+
+func TestStoreRevokeWhere(t *testing.T) {
+	s := NewStore(t.TempDir())
+	for _, v := range []Verdict{{ID: "1", Skill: "a"}, {ID: "2", Skill: "a"}, {ID: "3", Skill: "b"}} {
+		if err := s.Add(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.RevokeWhere(func(v Verdict) bool { return v.Skill == "a" })
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if all, _ := s.List(); len(all) != 1 || all[0].ID != "3" {
+		t.Fatalf("left: %v", all)
+	}
+	if n, err := s.RevokeWhere(func(Verdict) bool { return false }); n != 0 || err != nil {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+}

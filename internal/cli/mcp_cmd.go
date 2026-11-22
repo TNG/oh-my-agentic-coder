@@ -417,6 +417,14 @@ func runMCPDeregister(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac mcp deregister:", err)
 		return ExitGeneric
 	}
-	fmt.Fprintf(env.Stdout, "deregistered %s (%s)\n", fs.Arg(0), mcpScopeLabel(scope))
+	// A server registered later under the same name must not inherit the
+	// stored approvals of this one. Best effort: the deregistration stands.
+	// A global server's answers are bound to any project (or serve's global
+	// scope), so all scopes go; a project server's only to its project.
+	n, rerr := revokeStoredApprovals("mcp:"+fs.Arg(0), projectScope(scope.DisplayPath).Key, scope.Key == mcpreg.GlobalScopeKey)
+	if rerr != nil {
+		fmt.Fprintf(env.Stderr, "omac mcp deregister: warning: could not remove stored approvals (%v)\n", rerr)
+	}
+	fmt.Fprintf(env.Stdout, "deregistered %s (%s); removed %d stored approval(s)\n", fs.Arg(0), mcpScopeLabel(scope), n)
 	return ExitOK
 }

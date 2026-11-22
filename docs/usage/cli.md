@@ -122,7 +122,7 @@ Note: the OS keychain must be running even in CI. On Linux this requires gnome-k
 
 ### omac deregister
 
-Removes a skill's registration. Source files are kept on disk. After deregistering, `omac start` will refuse to run until you re-register the skill or delete its directory.
+Removes a skill's registration and the stored approvals ("Allow always" answers) of that skill, so a different skill registered later under the same name does not inherit them: those of this project, or with `--global` those of every project. The command prints how many it removed; failing to remove them is only a warning. Source files are kept on disk. After deregistering, `omac start` will refuse to run until you re-register the skill or delete its directory.
 
 ```bash
 omac deregister <skill>
@@ -178,7 +178,7 @@ omac mcp diagnose --probe
 | `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, tools not reviewed yet, registrations for a harness that cannot receive MCP, and harness entries omac does not manage (for every harness with a known config location). Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
 | `omac mcp list` | Shows registered servers with tool count, classified count and `reviewed` or `not reviewed`. | `--all` includes stale project scopes |
 | `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, when the tools were last reviewed and every tool with its class. Never secret or environment values. | `--scope` |
-| `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |
+| `omac mcp deregister <name>` | Removes the server, its secrets and its stored approvals (this project's, or with `--scope global` all projects'), and prints how many approvals it removed. | `--scope` |
 
 Classes are `read`, `write`, `delete` and `off`. All of these refuse to run inside the sandbox. See [MCP servers](./mcp.md) for the details.
 
@@ -190,6 +190,8 @@ A skill can ask you before the agent calls one of its routes (see [approvals](..
 omac approvals list         # each stored answer: id, skill, route, project, date (MCP tools show as mcp:<server>)
 omac approvals revoke <id>  # the next request to that route asks again
 ```
+
+`omac deregister` and `omac mcp deregister` remove the stored answers of the skill or server they remove.
 
 Only "Allow always" answers are stored. Answers "for this session" end when `omac start` or `omac serve` stops.
 

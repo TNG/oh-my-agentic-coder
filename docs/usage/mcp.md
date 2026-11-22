@@ -77,7 +77,7 @@ On success `add` prints that no tool is callable yet and the next command: `omac
 ```bash
 omac mcp list                  # servers, scope, harnesses, tool count, classified count, reviewed or not reviewed
 omac mcp show demo             # one server in full
-omac mcp deregister demo       # removes the registration and its secrets from the keychain
+omac mcp deregister demo       # removes the registration, its secrets from the keychain and its stored approvals
 ```
 
 `omac mcp show` prints the command, the names of the `env` keys, the secrets with `stored` or `missing`, the access mode, the approvals, when the tools were last reviewed (date, tool count and the first 12 hex digits of the fingerprint) and every tool with its class. It never prints a secret or an environment value.
@@ -364,7 +364,7 @@ The agent can call the tools that are classified `read`, `write` or `delete`, ar
   - The summary shows each top-level argument with at most 40 characters of its value, nested objects and arrays reduced to their size, and the value of an argument whose name contains `token`, `secret`, `password`, `key`, `auth`, `bearer` or `credential` masked. Treat it as a hint, not as the complete call.
   - "Always" covers only that tool, in its current class, in that project. If you reclassify the tool, it asks again. Calls of different tools never share a dialog, so a denial for one never answers another.
   - "Deny for this session" covers only that tool, in its current class, on that server in that project. Until omac stops, the agent gets `approval-denied` for that tool without a dialog. It is not stored, so `omac approvals list` does not show it and a restart asks again.
-  - Revoke with `omac approvals list` and `omac approvals revoke <id>`. The rows appear as `mcp:<server>` and `tool <name> (<class>)`.
+  - Revoke with `omac approvals list` and `omac approvals revoke <id>`. The rows appear as `mcp:<server>` and `tool <name> (<class>)`. `omac mcp deregister <name>` also removes every stored approval of that server (for a project registration those of this project, for `--scope global` those of all projects), so a different server registered later under the same name does not inherit them; it prints how many it removed, and a failure to remove them is only a warning. `omac mcp add --replace` keeps them, because it is the same server with a changed command.
 - **What the agent sees on a refusal.** A JSON-RPC error that names the reason: `mcp-unlisted` (no class, `off`, or a method that is not allowed), `mcp-access` (the class is above the server's `access`), `mcp-unreviewed` (the tools were never reviewed), `mcp-changed` (the tools changed since the last review), `mcp-unparseable`, `approval-denied`, `approval-timeout`, `approval-unavailable` or `approval-abandoned`.
 
 omac decides per tool, as it does for skill sidecars. A rule on the arguments, such as "post to channel A but not channel B", belongs in the server itself, in the same way a skill sidecar checks it in its own code. omac does not add a second policy language on top. Use the approval dialog, which shows the arguments, for anything you want to see before it happens.

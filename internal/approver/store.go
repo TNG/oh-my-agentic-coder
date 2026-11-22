@@ -165,6 +165,39 @@ func (s *Store) Revoke(id string) (bool, error) {
 	return found, err
 }
 
+// RevokeWhere removes every verdict for which match returns true and returns
+// how many it removed. It writes nothing when none match.
+func (s *Store) RevokeWhere(match func(Verdict) bool) (int, error) {
+	all, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	any := false
+	for _, v := range all {
+		if match(v) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		return 0, nil
+	}
+	n := 0
+	err = s.mutate(func(f *file) {
+		n = 0
+		kept := f.Verdicts[:0]
+		for _, v := range f.Verdicts {
+			if match(v) {
+				n++
+				continue
+			}
+			kept = append(kept, v)
+		}
+		f.Verdicts = kept
+	})
+	return n, err
+}
+
 func (s *Store) mutate(fn func(*file)) error {
 	if s.dir == "" {
 		return errors.New("endpoint verdicts: no host-only config directory available")
