@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -473,7 +474,25 @@ func (s sseWriter) flush() {
 	}
 }
 
-func idKey(id json.RawMessage) string { return string(bytes.TrimSpace(id)) }
+// idKey is the key a request waits under for its response. It compares ids
+// by value, the way a server does after parsing them: 1, 1.0 and 1e0 are one
+// key, and so are "a" and "\u0061". With raw bytes as keys, a request with id
+// 1.0 and another with id 1 waited apart while the server answered both as 1,
+// so a tools/list reply could reach the waiter of another method and skip
+// the tools/list filter.
+func idKey(id json.RawMessage) string {
+	raw := bytes.TrimSpace(id)
+	var v any
+	if json.Unmarshal(raw, &v) == nil {
+		switch x := v.(type) {
+		case float64:
+			return "n:" + strconv.FormatFloat(x, 'g', -1, 64)
+		case string:
+			return "s:" + x
+		}
+	}
+	return "r:" + string(raw)
+}
 
 type session struct {
 	id      string

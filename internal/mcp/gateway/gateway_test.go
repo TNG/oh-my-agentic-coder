@@ -459,7 +459,7 @@ func realPath(t *testing.T, p string) string {
 // loop: later messages still reach their waiters.
 func TestDuplicateResponseDoesNotBlockTheReadLoop(t *testing.T) {
 	s := &session{log: io.Discard, waiters: map[string]chan []byte{}, events: make(chan []byte, 1)}
-	reply, err := s.register("1")
+	reply, err := s.register(idKey(json.RawMessage(`1`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,29 @@ func TestDuplicateResponseDoesNotBlockTheReadLoop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("route blocked on a duplicate response")
 	}
-	if got := string(<-reply); !strings.Contains(got, `"result":{}`) {
-		t.Errorf("first response lost: %s", got)
+	select {
+	case got := <-reply:
+		if !strings.Contains(string(got), `"result":{}`) {
+			t.Errorf("first response lost: %s", got)
+		}
+	default:
+		t.Fatal("no response for the waiter")
+	}
+}
+
+// Ids that a server reads as the same value wait under one key, so the
+// second one is refused as in flight instead of receiving the other's reply.
+func TestIDsEqualByValueShareOneWaiter(t *testing.T) {
+	for _, pair := range [][2]string{{`1`, `1.0`}, {`1`, `1e0`}, {`"a"`, `"\u0061"`}, {` 7`, `7 `}} {
+		s := &session{waiters: map[string]chan []byte{}}
+		if _, err := s.register(idKey(json.RawMessage(pair[0]))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.register(idKey(json.RawMessage(pair[1]))); err == nil {
+			t.Errorf("%s and %s waited apart", pair[0], pair[1])
+		}
+	}
+	if idKey(json.RawMessage(`1`)) == idKey(json.RawMessage(`"1"`)) {
+		t.Error("a number and a string id must differ")
 	}
 }

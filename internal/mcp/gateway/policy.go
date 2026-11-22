@@ -60,7 +60,7 @@ func (s *session) Call(ctx context.Context, method string, params any) (json.Raw
 	if err != nil {
 		return nil, err
 	}
-	key := strconv.Quote(id)
+	key := idKey(json.RawMessage(strconv.Quote(id)))
 	reply, err := s.register(key)
 	if err != nil {
 		return nil, err
