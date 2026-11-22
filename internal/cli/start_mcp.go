@@ -378,7 +378,7 @@ func (p *mcpPlan) buildInjection(harness config.Harness, userArgs []string, sock
 	for _, srv := range p.servers {
 		servers = append(servers, mcpinject.Server{
 			Name: srv.name,
-			Argv: mcpreg.BridgePath(srv.name),
+			Argv: bridgeArgv(p.exe, srv.name),
 			Env: map[string]string{
 				"OMAC_BASE":         fmt.Sprintf("http://127.0.0.1:%d/", tcpPort),
 				"OMAC_SOCKET":       socketPath,
@@ -442,6 +442,12 @@ func (p *mcpPlan) checkSandboxEnv(env *Env, prefix string, plan sandboxPlan, noS
 		}
 	}
 	return nil
+}
+
+// bridgeArgv is the command a harness spawns to bridge stdio to the gateway
+// of the named server: the running omac binary, by absolute path.
+func bridgeArgv(exe, name string) []string {
+	return []string{exe, "mcp", "bridge", name}
 }
 
 func executablePath() (string, error) {

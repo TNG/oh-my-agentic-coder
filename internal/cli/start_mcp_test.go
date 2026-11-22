@@ -532,7 +532,7 @@ func TestMCPClaudeInjectionReachesInnerArgsAndEnv(t *testing.T) {
 	if demo == nil {
 		t.Fatalf("demo missing from %v", cfg)
 	}
-	bridge := mcpreg.BridgePath("demo")
+	bridge := testBridgeArgv(t, "demo")
 	if demo["command"] != bridge[0] {
 		t.Errorf("command = %v, want %s", demo["command"], bridge[0])
 	}
@@ -588,7 +588,7 @@ func TestMCPOpenCodeInjectionReachesEnv(t *testing.T) {
 		t.Fatalf("OPENCODE_CONFIG_CONTENT: %v (%q)", err, env["OPENCODE_CONFIG_CONTENT"])
 	}
 	demo := cfg.MCP["demo"]
-	if !demo.Enabled || strings.Join(demo.Command, " ") != strings.Join(mcpreg.BridgePath("demo"), " ") {
+	if !demo.Enabled || strings.Join(demo.Command, " ") != strings.Join(testBridgeArgv(t, "demo"), " ") {
 		t.Errorf("demo entry = %+v", demo)
 	}
 	if strings.Contains(env["OPENCODE_CONFIG_CONTENT"], "tok-from-keychain") {
@@ -714,7 +714,7 @@ func TestMCPEndToEndBridgeRoundTrip(t *testing.T) {
 	r := newMCPRig(t)
 	r.register("demo", true, "claude-code")
 	out := filepath.Join(t.TempDir(), "bridge-out")
-	bridge := mcpreg.BridgePath("demo")
+	bridge := testBridgeArgv(t, "demo")
 	script := fmt.Sprintf(`#!/bin/sh
 env > "$OMAC_TEST_ENV"
 printf '%%s\n' \
@@ -886,4 +886,13 @@ func TestMCPMissingSecretWarnsOnceInALaunch(t *testing.T) {
 	if code, stderr := r.launch("claude", r.capture, nil); code != ExitOK || strings.Count(stderr, `MCP server "demo" skipped`) != 1 {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
+}
+
+func testBridgeArgv(t *testing.T, name string) []string {
+	t.Helper()
+	exe, err := executablePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bridgeArgv(exe, name)
 }

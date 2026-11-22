@@ -2,8 +2,6 @@
 package mcpreg
 
 import (
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
@@ -100,18 +98,4 @@ type Entry struct {
 	Def         *Definition `json:"-"`
 	SnapshotDir string      `json:"-"`
 	DefPath     string      `json:"-"`
-}
-
-// BridgePath returns the argv a harness spawns to bridge stdio to the
-// gateway of the named server: the running omac binary plus "mcp bridge name".
-func BridgePath(name string) []string {
-	exe, err := os.Executable()
-	if err == nil {
-		if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-			exe = resolved
-		}
-	} else {
-		exe = "omac"
-	}
-	return []string{exe, "mcp", "bridge", name}
 }
