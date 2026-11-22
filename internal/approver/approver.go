@@ -20,9 +20,14 @@ const (
 	LabelSession    = "Allow for this session"
 	LabelAlways     = "Allow always (this endpoint of this skill)"
 	LabelAlwaysTool = "Allow always (this tool of this server)"
+	LabelDenyTool   = "Deny for this session (this tool of this server)"
 	LabelDeny       = "Deny"
 	LabelDenyAll    = "Deny everything from this skill for this session"
 )
+
+// SourceSessionDeny marks a call refused by an earlier "Deny for this session"
+// answer, so the audit record and the agent's error say no dialog was shown.
+const SourceSessionDeny facade.ApprovalSource = "session-deny"
 
 // DefaultTimeout is how long a dialog waits for an answer. No answer is deny.
 const DefaultTimeout = 60 * time.Second
@@ -66,6 +71,7 @@ type Approver struct {
 	mu       sync.Mutex
 	session  map[string]bool     // verdict id -> allowed for this session
 	denyAll  map[string]bool     // scope+skill -> everything denied for this session
+	denyTool map[string]bool     // verdict id -> denied for this session
 	inflight map[string]*pending // identical requests share one dialog
 }
 
@@ -87,6 +93,7 @@ func New(cfg Config) *Approver {
 		sem:      make(chan struct{}, 1),
 		session:  map[string]bool{},
 		denyAll:  map[string]bool{},
+		denyTool: map[string]bool{},
 		inflight: map[string]*pending{},
 	}
 }
@@ -99,12 +106,16 @@ func (a *Approver) scope(ns string) Scope {
 }
 
 // known answers from stored state: a deny-everything for the skill, a session
-// verdict or an always-verdict.
+// deny or allow, or an always-verdict.
 func (a *Approver) known(skillKey, id string) (facade.ApprovalDecision, bool) {
 	a.mu.Lock()
 	if a.denyAll[skillKey] {
 		a.mu.Unlock()
 		return facade.ApprovalDecision{Source: facade.SourceDenyAll}, true
+	}
+	if a.denyTool[id] {
+		a.mu.Unlock()
+		return facade.ApprovalDecision{Scope: facade.ScopeSession, Source: SourceSessionDeny}, true
 	}
 	if a.session[id] {
 		a.mu.Unlock()
@@ -198,7 +209,7 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 	if req.MCP != nil {
 		title = "omac: approve MCP tool call"
 		notice = fmt.Sprintf("%s wants to call %s", oneLine(clip(req.MCP.Server, 80)), clip(printableASCII(req.MCP.Tool), 80))
-		labels = []string{LabelOnce, LabelSession, LabelAlwaysTool, LabelDeny}
+		labels = []string{LabelOnce, LabelSession, LabelAlwaysTool, LabelDenyTool, LabelDeny}
 	}
 	a.cfg.Chooser.Notify("omac: approval needed", notice)
 	dctx, cancel := context.WithTimeout(ctx, a.cfg.Timeout)
@@ -237,6 +248,11 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 			return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeSession, Source: facade.SourcePrompt}
 		}
 		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeAlways, Source: facade.SourcePrompt}
+	case LabelDenyTool:
+		a.mu.Lock()
+		a.denyTool[id] = true
+		a.mu.Unlock()
+		return facade.ApprovalDecision{Scope: facade.ScopeSession, Source: SourceSessionDeny}
 	case LabelDenyAll:
 		a.mu.Lock()
 		a.denyAll[skillKey] = true

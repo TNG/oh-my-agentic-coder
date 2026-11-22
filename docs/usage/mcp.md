@@ -253,9 +253,10 @@ The agent can call the tools that are classified `read`, `write` or `delete`, ar
 - **Methods.** `initialize`, `ping`, `tools/list`, `tools/call` and notifications pass. `resources/*`, `prompts/*` and every other method are refused.
 - **Strict parsing.** The proxy parses every `tools/call`. It refuses batches, duplicate or case-variant keys (`Name` for `name`), encoded bodies and anything it cannot parse. It forwards exactly the bytes it checked, so the server cannot read the message differently from the proxy.
 - **Checked twice.** The gateway, which runs separately, applies the same policy again on its own, so one bug in one place does not open a tool.
-- **Approvals.** Classes whose `approvals` mode is `required` (by default `write` and `delete`) raise a native dialog before the call. It shows the server, the tool, the class and a summary of the arguments, and offers **Allow once**, **Allow for this session**, **Allow always (this tool of this server)** and **Deny**. No answer within 60 seconds is a deny.
+- **Approvals.** Classes whose `approvals` mode is `required` (by default `write` and `delete`) raise a native dialog before the call. It shows the server, the tool, the class and a summary of the arguments, and offers **Allow once**, **Allow for this session**, **Allow always (this tool of this server)**, **Deny for this session (this tool of this server)** and **Deny**. **Deny** refuses only this call, so an agent that retries sees the dialog again. No answer within 60 seconds is a deny.
   - The summary shows each top-level argument with at most 40 characters of its value, nested objects and arrays reduced to their size, and the value of an argument whose name contains `token`, `secret`, `password`, `key`, `auth`, `bearer` or `credential` masked. Treat it as a hint, not as the complete call.
   - "Always" covers only that tool, in its current class, in that project. If you reclassify the tool, it asks again. Calls of different tools never share a dialog, so a denial for one never answers another.
+  - "Deny for this session" covers only that tool, in its current class, on that server in that project. Until omac stops, the agent gets `approval-denied` for that tool without a dialog. It is not stored, so `omac approvals list` does not show it and a restart asks again.
   - Revoke with `omac approvals list` and `omac approvals revoke <id>`. The rows appear as `mcp:<server>` and `tool <name> (<class>)`.
 - **What the agent sees on a refusal.** A JSON-RPC error that names the reason: `mcp-unlisted` (no class, `off`, or a method that is not allowed), `mcp-access` (the class is above the server's `access`), `mcp-unreviewed` (the tools were never reviewed), `mcp-changed` (the tools changed since the last review), `mcp-unparseable`, `approval-denied`, `approval-timeout`, `approval-unavailable` or `approval-abandoned`.
 
@@ -269,7 +270,9 @@ Tool descriptions are untrusted text. A malicious or compromised server can put 
 
 ### Audit
 
-The audit trail records every tool call. `facade.request` and `facade.approval` events carry `tool`, `tool_class` and `tool_args`: the same masked argument summary as the dialog, capped at 1 KiB, with every secret value of 8 or more characters that omac knows redacted. The `source` of a decision is `mcp-unparseable`, `mcp-unlisted`, `mcp-access`, `declared` (no approval needed), or one of the approver's own (`prompt`, `session`, `always`, `timeout`, `unavailable`, `abandoned`).
+The audit trail records every tool call. `facade.request` and `facade.approval` events carry `tool`, `tool_class` and `tool_args`: the same masked argument summary as the dialog, capped at 1 KiB, with every secret value of 8 or more characters that omac knows redacted. The `source` of a decision is `mcp-unparseable`, `mcp-unlisted`, `mcp-access`, `declared` (no approval needed), `retry` (see below), or one of the approver's own (`prompt`, `session`, `always`, `session-deny`, `timeout`, `unavailable`, `abandoned`).
+
+When the gateway restarts, the bridge retries the call that failed with the same request id. Within 15 seconds omac reuses the approval you already gave for that same call (same session, request id, tool and arguments), so you are not asked again, and the audit log records it as source `retry`. A changed argument, tool or request id still asks. Only allowances are reused; a deny is never reused this way.
 
 ## Security principles and what to consider
 

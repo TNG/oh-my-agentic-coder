@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -603,5 +604,90 @@ func TestMCPDialogShowsSpacesInArgumentsAndStillEncodesControlCharacters(t *test
 	}
 	if coversLines != 1 {
 		t.Errorf("an argument forged a Covers line:\n%s", txt)
+	}
+}
+
+type labelRecorder struct {
+	fakeChooser
+	labels []string
+}
+
+func (c *labelRecorder) Choose(ctx context.Context, title, text string, labels []string, def string) (string, error) {
+	c.labels = labels
+	return c.fakeChooser.Choose(ctx, title, text, labels, def)
+}
+
+func TestMCPDialogOffersDenyForSessionBetweenAlwaysAndDeny(t *testing.T) {
+	c := &labelRecorder{fakeChooser: fakeChooser{answers: []string{LabelDeny}}}
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: time.Second})
+	a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, ""))
+	want := []string{LabelOnce, LabelSession, LabelAlwaysTool, LabelDenyTool, LabelDeny}
+	if !slices.Equal(c.labels, want) {
+		t.Errorf("labels = %q, want %q", c.labels, want)
+	}
+}
+
+func TestMCPDenyForSessionAnswersWithoutDialogForThatToolOnly(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelDenyTool, LabelDeny}}
+	a := newApprover(t, c)
+	d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "a=1"))
+	if d.Allow || d.Source != SourceSessionDeny || d.Scope != facade.ScopeSession {
+		t.Fatalf("deny for session: %+v", d)
+	}
+	if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "other=2")); d.Allow || d.Source != SourceSessionDeny || c.asked() != 1 {
+		t.Errorf("same tool and class, other args: %+v, asked %d", d, c.asked())
+	}
+	for name, r := range map[string]facade.ApprovalRequest{
+		"class":  mcpReq("srv", "read", mcppolicy.Delete, ""),
+		"tool":   mcpReq("srv", "other", mcppolicy.Write, ""),
+		"server": mcpReq("srv2", "read", mcppolicy.Write, ""),
+	} {
+		if d := a.Approve(context.Background(), r); d.Source == SourceSessionDeny {
+			t.Errorf("%s: the session deny was reused", name)
+		}
+	}
+	if c.asked() != 4 {
+		t.Errorf("asked %d, want 4", c.asked())
+	}
+}
+
+func TestMCPDenyForSessionReachesWaitingCopiesAndIsNotStored(t *testing.T) {
+	dir := t.TempDir()
+	c := &fakeChooser{answers: []string{LabelDenyTool}, delay: 100 * time.Millisecond}
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	var wg sync.WaitGroup
+	var denied int32
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "id=1")); !d.Allow && d.Source == SourceSessionDeny {
+				atomic.AddInt32(&denied, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if denied != 4 || c.asked() != 1 {
+		t.Errorf("denied=%d asked=%d, want 4 by one dialog", denied, c.asked())
+	}
+	if vs, _ := NewStore(dir).List(); len(vs) != 0 {
+		t.Errorf("stored %+v", vs)
+	}
+	c2 := &fakeChooser{answers: []string{LabelOnce}}
+	b := New(Config{ScopeFor: oneProject, Chooser: c2, Store: NewStore(dir), Timeout: time.Second})
+	if d := b.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "")); !d.Allow || c2.asked() != 1 {
+		t.Errorf("a new approver kept the deny: %+v", d)
+	}
+}
+
+func TestMCPDenyForSessionLeavesSidecarSessionDenyAlone(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelDenyTool, LabelDenyAll}}
+	a := newApprover(t, c)
+	a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, ""))
+	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != facade.SourceDenyAll || c.asked() != 2 {
+		t.Errorf("sidecar deny-all: %+v, asked %d", d, c.asked())
+	}
+	if d := a.Approve(context.Background(), req("/other")); d.Source != facade.SourceDenyAll || c.asked() != 2 {
+		t.Errorf("deny-all did not stand: %+v", d)
 	}
 }
