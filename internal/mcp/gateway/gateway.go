@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpproc"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
@@ -527,7 +528,7 @@ func startSession(id string, o Options, env []string, onExit func(*session)) (*s
 	cmd.Env = env
 	cmd.Stderr = o.Log
 	cmd.WaitDelay = killWait
-	setProcessGroup(cmd)
+	mcpproc.SetProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -676,7 +677,7 @@ func (s *session) close() {
 		s.wmu.Lock()
 		s.stdin.Close()
 		s.wmu.Unlock()
-		killProcess(s.cmd)
+		mcpproc.Kill(s.cmd)
 		select {
 		case <-s.readEnd:
 		case <-time.After(killWait):

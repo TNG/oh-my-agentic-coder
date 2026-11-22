@@ -1,9 +1,9 @@
 //go:build unix && !linux
 
-package gateway
+package mcpproc
 
 import "syscall"
 
 // dieWithParent does nothing: only Linux has Pdeathsig. Elsewhere a child
-// ends when its stdin closes, which the OS does when the gateway dies.
+// ends when its stdin closes, which the OS does when its parent dies.
 func dieWithParent(*syscall.SysProcAttr) {}

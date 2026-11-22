@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpproc"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
@@ -45,7 +46,7 @@ func ListTools(ctx context.Context, e *mcpreg.Entry, sec map[string]secrets.Secr
 	cmd.Env = childEnv(e.Def, sec, baseEnv)
 	cmd.Stderr = tail
 	cmd.WaitDelay = killWait
-	setProcessGroup(cmd)
+	mcpproc.SetProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, "", err
@@ -59,7 +60,7 @@ func ListTools(ctx context.Context, e *mcpreg.Entry, sec map[string]secrets.Secr
 	}
 	tools, err := newClient(ctx, stdin, stdout).handshakeAndList(ctx)
 	stdin.Close()
-	killProcess(cmd)
+	mcpproc.Kill(cmd)
 	cmd.Wait()
 	if err != nil {
 		return nil, tail.String(), err
