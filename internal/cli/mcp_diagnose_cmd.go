@@ -183,7 +183,7 @@ func probeEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mcpProbeTimeout+5*time.Second)
 	defer cancel()
-	live, stderrTail, err := mcpProbeListTools(ctx, pinned, sec, os.Environ(), mcpProbeTimeout)
+	live, stderrTail, err := mcpProbeListTools(ctx, pinned, sec, probeBaseEnv(e.Def), mcpProbeTimeout)
 	if err != nil {
 		msg := "probe failed: " + stripControlChars(err.Error())
 		if tail := strings.TrimSpace(stripControlChars(stderrTail)); tail != "" {

@@ -249,3 +249,25 @@ func TestMCPShowAndListGolden(t *testing.T) {
 		t.Fatalf("list leaks a value: %q", out)
 	}
 }
+
+func TestMCPDiagnoseProbeHandsTheServerOnlyTheCleanedEnvironment(t *testing.T) {
+	f := newDiagFixture(t)
+	f.register(t, reviewedDef("srv", "sh", map[string]mcppolicy.Class{"echo": mcppolicy.Read}, "echo"))
+	t.Setenv("UNRELATED_HOST_TOKEN", "do-not-pass")
+	var got []string
+	orig := mcpProbeListTools
+	t.Cleanup(func() { mcpProbeListTools = orig })
+	mcpProbeListTools = func(_ context.Context, _ *mcpreg.Entry, _ map[string]secrets.Secret, base []string, _ time.Duration) ([]mcppolicy.ToolInfo, string, error) {
+		got = base
+		return nil, "", nil
+	}
+	runDiagnoseCmd(t, f.wd, "--probe")
+	if len(got) == 0 {
+		t.Fatal("probe not run")
+	}
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "UNRELATED_HOST_TOKEN=") {
+			t.Fatalf("host variable passed to the server: %v", got)
+		}
+	}
+}
