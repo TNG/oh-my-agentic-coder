@@ -3,7 +3,6 @@ package sandboxrun
 import (
 	"bufio"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )

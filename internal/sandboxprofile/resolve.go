@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // boolPtr is a tiny helper for NetworkPrompt.Enabled.

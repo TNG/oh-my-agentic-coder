@@ -18,13 +18,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"slices"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )

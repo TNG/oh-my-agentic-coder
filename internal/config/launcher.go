@@ -3,12 +3,13 @@ package config
 import (
 	"errors"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // LauncherConfig is the oh-my-agentic-coder.yaml file.

@@ -18,12 +18,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // SchemaVersion is the current on-disk format version.

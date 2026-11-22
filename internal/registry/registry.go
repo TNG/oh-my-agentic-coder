@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // SchemaVersion is the current on-disk format version.
