@@ -565,7 +565,13 @@ func (s *session) route(line []byte) {
 			fmt.Fprintf(s.log, "mcp gateway: dropping response with unexpected id %s\n", m.ID)
 			return
 		}
-		ch <- append([]byte(nil), line...)
+		// Never block the read loop: a server that answers one id twice
+		// would otherwise stall every later message of the session.
+		select {
+		case ch <- append([]byte(nil), line...):
+		default:
+			fmt.Fprintf(s.log, "mcp gateway: dropping duplicate response for id %s\n", m.ID)
+		}
 		return
 	}
 	select {

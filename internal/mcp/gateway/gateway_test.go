@@ -454,3 +454,27 @@ func realPath(t *testing.T, p string) string {
 	}
 	return r
 }
+
+// A server that answers one request twice must not stall the session's read
+// loop: later messages still reach their waiters.
+func TestDuplicateResponseDoesNotBlockTheReadLoop(t *testing.T) {
+	s := &session{log: io.Discard, waiters: map[string]chan []byte{}, events: make(chan []byte, 1)}
+	reply, err := s.register("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.route([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		s.route([]byte(`{"jsonrpc":"2.0","id":1,"result":{"again":true}}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("route blocked on a duplicate response")
+	}
+	if got := string(<-reply); !strings.Contains(got, `"result":{}`) {
+		t.Errorf("first response lost: %s", got)
+	}
+}
