@@ -163,7 +163,23 @@ type Harness struct {
 	// SandboxDirs (granted read+write) and inject no non-OMAC_* env leave
 	// this empty.
 	SandboxEnvAllow []string
+
+	// MCPInjection selects how omac hands registered MCP servers to this
+	// harness. MCPInjectNone means the harness gets no MCP injection.
+	MCPInjection MCPInjectionKind
 }
+
+// MCPInjectionKind selects the mechanism that injects MCP servers.
+type MCPInjectionKind int
+
+const (
+	// MCPInjectNone: omac cannot inject MCP servers into this harness.
+	MCPInjectNone MCPInjectionKind = iota
+	// MCPInjectOpenCodeEnv injects through OPENCODE_CONFIG_CONTENT.
+	MCPInjectOpenCodeEnv
+	// MCPInjectClaudeFlag injects through --mcp-config.
+	MCPInjectClaudeFlag
+)
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
 // `omac resume`. The actual listing logic lives in the session package (so
@@ -312,6 +328,7 @@ func harnessRegistry() []Harness {
 			// too broad. A user relying on env-based provider auth declares the
 			// specific key in the profile's environment.allow_vars.
 			NeedsPluginBootstrap: true,
+			MCPInjection:         MCPInjectOpenCodeEnv,
 		},
 		{
 			Name:    "claude-code",
@@ -324,6 +341,7 @@ func harnessRegistry() []Harness {
 			ServerLaunch: nil,
 			BridgeDir:    ".claude",
 			SkillsBase:   "claude",
+			MCPInjection: MCPInjectClaudeFlag,
 			// Claude Code's config home is ~/.claude, not ~/.config/claude,
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
