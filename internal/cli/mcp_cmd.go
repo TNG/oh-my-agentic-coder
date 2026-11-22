@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -227,8 +228,9 @@ func runMCPList(args []string, env *Env) int {
 					marker = "  [stale: directory missing]"
 				}
 			}
-			fmt.Fprintf(env.Stdout, "%-24s %-40s %s%s\n", e.Name, mcpScopeLabel(scope),
-				strings.Join(e.Harnesses, ","), marker)
+			total, classified, pinned := mcpToolCounts(e.Def)
+			fmt.Fprintf(env.Stdout, "%-24s %-40s %-24s %3d tools %3d classified  %s%s\n", e.Name, mcpScopeLabel(scope),
+				strings.Join(e.Harnesses, ","), total, classified, pinned, marker)
 			printed++
 		}
 	}
@@ -236,6 +238,22 @@ func runMCPList(args []string, env *Env) int {
 		fmt.Fprintln(env.Stdout, "no MCP servers registered")
 	}
 	return code
+}
+
+// mcpToolCounts returns the number of tools omac knows (the pinned ones, or
+// the classified ones when nothing is pinned), how many of them have a class,
+// and "pinned" or "unpinned".
+func mcpToolCounts(def *mcpreg.Definition) (total, classified int, pin string) {
+	classes := def.Policy().Tools
+	if def.Pin == nil {
+		return len(classes), len(classes), "unpinned"
+	}
+	for name := range def.Pin.Tools {
+		if _, ok := classes[name]; ok {
+			classified++
+		}
+	}
+	return len(def.Pin.Tools), classified, "pinned"
 }
 
 func findMCPEntry(name, scopeFlag string, env *Env) (mcpreg.Scope, *mcpreg.Entry, error) {
@@ -298,7 +316,49 @@ func runMCPShow(args []string, env *Env) int {
 		}
 		fmt.Fprintf(w, "secret:      %s (%s)\n", name, state)
 	}
+	printMCPPolicy(w, e.Def)
 	return ExitOK
+}
+
+func printMCPPolicy(w io.Writer, def *mcpreg.Definition) {
+	p := def.Policy()
+	fmt.Fprintf(w, "access:      %s\n", p.Access)
+	fmt.Fprintf(w, "approvals:   read=%s write=%s delete=%s\n", p.Approvals.Read, p.Approvals.Write, p.Approvals.Delete)
+	if p.Pin == nil {
+		fmt.Fprintln(w, "pin:         none")
+	} else {
+		hash := p.Pin.ToolsHash
+		if len(hash) > 12 {
+			hash = hash[:12]
+		}
+		fmt.Fprintf(w, "pin:         %s  pinned %s  %d tools\n", hash, p.Pin.PinnedAt.Format("2006-01-02 15:04:05Z"), len(p.Pin.Tools))
+	}
+	names := map[string]bool{}
+	for n := range p.Tools {
+		names[n] = true
+	}
+	if p.Pin != nil {
+		for n := range p.Pin.Tools {
+			names[n] = true
+		}
+	}
+	if len(names) == 0 {
+		fmt.Fprintln(w, "tools:       none")
+		return
+	}
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+	fmt.Fprintln(w, "tools:")
+	for _, n := range sorted {
+		class := string(p.Tools[n])
+		if class == "" {
+			class = "unclassified"
+		}
+		fmt.Fprintf(w, "  %-32s %s\n", stripControlChars(n), class)
+	}
 }
 
 func sortedKeys(m map[string]string) []string {
