@@ -257,7 +257,7 @@ The agent can call the tools that are classified `read`, `write` or `delete`, ar
   - Revoke with `omac approvals list` and `omac approvals revoke <id>`. The rows appear as `mcp:<server>` and `tool <name> (<class>)`.
 - **What the agent sees on a refusal.** A JSON-RPC error that names the reason: `mcp-unlisted` (no class, `off`, or a method that is not allowed), `mcp-access` (the class is above the server's `access`), `mcp-unpinned`, `mcp-drift`, `mcp-unparseable`, `approval-denied`, `approval-timeout`, `approval-unavailable` or `approval-abandoned`.
 
-There is no per-argument rule. You cannot allow "post to channel A but not channel B"; you can only decide per tool, and approve each call in the dialog.
+omac decides per tool, as it does for skill sidecars. A rule on the arguments, such as "post to channel A but not channel B", belongs in the server itself, in the same way a skill sidecar checks it in its own code. omac does not add a second policy language on top. Use the approval dialog, which shows the arguments, for anything you want to see before it happens.
 
 ### Pinning and drift
 
@@ -300,7 +300,7 @@ Before you register a server, and before you pin a changed tool list:
 
 - **Stdio servers only.** Remote servers and servers that need OAuth are not supported yet.
 - **`omac serve`** does not run or inject MCP servers.
-- **No per-argument rules**, only per-tool classes and approvals.
+- **Argument-level rules live in the server.** omac decides per tool, as it does for skill sidecars.
 - **OAuth tokens in a harness's own state directory** (for example from a login inside the harness) are not protected by omac, and the scan of harness config files does not see them.
 - **Servers provided by harness plugins** are not seen by the scan, and **claude.ai connectors** are not entries omac can see.
 - **Credentials already in readable harness config files** may already be exposed to agents that ran earlier. Rotate them.
