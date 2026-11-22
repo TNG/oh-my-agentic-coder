@@ -419,3 +419,26 @@ func TestWaitHealthFailsWhenSidecarIgnoresSecret(t *testing.T) {
 		t.Fatalf("err = %v, want enforcement failure", err)
 	}
 }
+
+func TestRunningDoneClosesWhenChildExits(t *testing.T) {
+	s := New(nil, &capturingAuditor{}, nil)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	r := &Running{Name: "done", Cmd: cmd, startedAt: time.Now()}
+	s.watchChild(r)
+
+	select {
+	case <-r.Done():
+		t.Fatal("Done closed while the child is still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_ = cmd.Process.Kill()
+	select {
+	case <-r.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done not closed after the child exited")
+	}
+}

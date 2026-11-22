@@ -11,7 +11,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
@@ -71,6 +73,40 @@ func (d *Definition) validate() error {
 		if err := checkEnvName("mode.name", d.Mode.Name); err != nil {
 			return err
 		}
+	}
+	return d.validatePolicy()
+}
+
+func (d *Definition) validatePolicy() error {
+	if d.Access != "" && !d.Access.Valid() {
+		return fmt.Errorf("access %q must be one of %s, %s, %s", d.Access,
+			mcppolicy.ReadOnly, mcppolicy.ReadWrite, mcppolicy.ReadWriteDelete)
+	}
+	tools := map[string]bool{}
+	for i, t := range d.Tools {
+		if t.Name == "" {
+			return fmt.Errorf("tools[%d]: name must not be empty", i)
+		}
+		if tools[t.Name] {
+			return fmt.Errorf("tool %q is listed twice", t.Name)
+		}
+		tools[t.Name] = true
+		if !t.Class.Valid() {
+			return fmt.Errorf("tool %q: class %q must be one of read, write, delete, off", t.Name, t.Class)
+		}
+	}
+	if a := d.Approvals; a != nil {
+		for _, m := range []struct {
+			class string
+			mode  approval.Mode
+		}{{"read", a.Read}, {"write", a.Write}, {"delete", a.Delete}} {
+			if m.mode != "" && !m.mode.Valid() {
+				return fmt.Errorf("approvals.%s %q must be %s or %s", m.class, m.mode, approval.Required, approval.None)
+			}
+		}
+	}
+	if d.Pin != nil && d.Pin.ToolsHash != mcppolicy.ListHash(d.Pin.Tools) {
+		return errors.New("pin.tools_hash does not match pin.tools")
 	}
 	return nil
 }

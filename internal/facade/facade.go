@@ -39,6 +39,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
@@ -104,6 +105,10 @@ type Route struct {
 	// per-sidecar request cap, so a client can still poll the health of a
 	// busy sidecar.
 	HealthPath string
+
+	// MCP is the policy of an MCP gateway route. Non-nil routes are gated
+	// by the MCP policy instead of Approvals.
+	MCP *mcppolicy.Policy
 
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep

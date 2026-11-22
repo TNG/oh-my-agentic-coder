@@ -20,13 +20,23 @@ const (
 
 func runMCP(args []string, env *Env) int {
 	if len(args) == 0 {
-		fmt.Fprintln(env.Stderr, "Usage: omac mcp <register|list|show|deregister|serve|bridge> ...")
+		fmt.Fprintln(env.Stderr, "Usage: omac mcp <register|add|add-json|list|show|tools|pin|diagnose|deregister|serve|bridge> ...")
 		return ExitMisuse
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "register":
 		return runMCPRegister(rest, env)
+	case "add":
+		return runMCPAdd(rest, env)
+	case "add-json":
+		return runMCPAddJSON(rest, env)
+	case "tools":
+		return runMCPTools(rest, env)
+	case "pin":
+		return runMCPPin(rest, env)
+	case "diagnose":
+		return runMCPDiagnose(rest, env)
 	case "list":
 		return runMCPList(rest, env)
 	case "show":
@@ -133,22 +143,34 @@ func runMCPRegister(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac mcp register:", err)
 		return ExitIOError
 	}
-	for _, name := range entry.Def.Secrets {
-		value, err := readMCPSecret(name)
-		if err != nil {
-			fmt.Fprintf(env.Stderr, "omac mcp register: secret %s: %v\n", name, err)
-			return ExitIOError
-		}
-		err = mcpreg.SetSecret(scope, entry.Name, name, value)
-		value.Zero()
-		if err != nil {
-			fmt.Fprintf(env.Stderr, "omac mcp register: secret %s: %v\n", name, err)
-			return ExitIOError
-		}
+	if err := storeMCPSecrets(env, scope, entry, nil); err != nil {
+		fmt.Fprintln(env.Stderr, "omac mcp register:", err)
+		return ExitIOError
 	}
 	fmt.Fprintf(env.Stdout, "registered %s (%s; harnesses: %s)\n",
 		entry.Name, mcpScopeLabel(scope), strings.Join(entry.Harnesses, ", "))
 	return ExitOK
+}
+
+// storeMCPSecrets saves the value of every secret the entry declares in the
+// keychain. A value in preset is used as given and zeroed; any other is read
+// from OMAC_SECRET_<NAME> or prompted for.
+func storeMCPSecrets(env *Env, scope mcpreg.Scope, entry *mcpreg.Entry, preset map[string]secrets.Secret) error {
+	for _, name := range entry.Def.Secrets {
+		value, ok := preset[name]
+		if !ok {
+			var err error
+			if value, err = readMCPSecret(name); err != nil {
+				return fmt.Errorf("secret %s: %w", name, err)
+			}
+		}
+		err := mcpreg.SetSecret(scope, entry.Name, name, value)
+		value.Zero()
+		if err != nil {
+			return fmt.Errorf("secret %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func readMCPSecret(name string) (secrets.Secret, error) {

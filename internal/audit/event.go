@@ -102,6 +102,11 @@ type Event struct {
 	Unlisted        bool     `json:"unlisted,omitempty"`         // the approvals block has no entry for the request
 	StrippedHeaders []string `json:"stripped_headers,omitempty"` // method-override headers removed before forwarding
 
+	// --- facade.request and facade.approval for an MCP gateway route ---
+	Tool      string `json:"tool,omitempty"`       // the MCP tool being called
+	ToolClass string `json:"tool_class,omitempty"` // read|write|delete
+	ToolArgs  string `json:"tool_args,omitempty"`  // masked, capped summary of the arguments
+
 	// --- control.mutation ---
 	Action string `json:"action,omitempty"` // activate|deactivate|reload|reload-global
 	Dir    string `json:"dir,omitempty"`

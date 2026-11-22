@@ -96,6 +96,9 @@ type Running struct {
 	waitDone chan struct{}
 }
 
+// Done returns a channel that is closed when the child process has exited.
+func (r *Running) Done() <-chan struct{} { return r.waitDone }
+
 // Supervisor coordinates all sidecars.
 type Supervisor struct {
 	baseEnvPassthrough []string

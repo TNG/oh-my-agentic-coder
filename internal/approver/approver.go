@@ -14,11 +14,12 @@ import (
 
 // Dialog labels, in display order. Deny is the preselected default.
 const (
-	LabelOnce    = "Allow once"
-	LabelSession = "Allow for this session"
-	LabelAlways  = "Allow always (this endpoint of this skill)"
-	LabelDeny    = "Deny"
-	LabelDenyAll = "Deny everything from this skill for this session"
+	LabelOnce       = "Allow once"
+	LabelSession    = "Allow for this session"
+	LabelAlways     = "Allow always (this endpoint of this skill)"
+	LabelAlwaysTool = "Allow always (this tool of this server)"
+	LabelDeny       = "Deny"
+	LabelDenyAll    = "Deny everything from this skill for this session"
 )
 
 // DefaultTimeout is how long a dialog waits for an answer. No answer is deny.

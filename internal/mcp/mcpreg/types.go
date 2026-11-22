@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 )
 
 const (
@@ -27,6 +29,45 @@ type Definition struct {
 	Server  ServerSpec `yaml:"server"            json:"server"`
 	Secrets []string   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	Mode    *ModeSpec  `yaml:"mode,omitempty"    json:"mode,omitempty"`
+
+	// Access limits the classes of tool the agent may call. Empty means
+	// read-write-delete.
+	Access mcppolicy.Access `yaml:"access,omitempty" json:"access,omitempty"`
+	// Tools classifies the server's tools. A tool not listed is refused.
+	Tools []mcppolicy.Tool `yaml:"tools,omitempty" json:"tools,omitempty"`
+	// Approvals overrides the approval mode per class. Nil means the defaults.
+	Approvals *mcppolicy.Approvals `yaml:"approvals,omitempty" json:"approvals,omitempty"`
+	// Pin records the tool list the user reviewed.
+	Pin *mcppolicy.Pin `yaml:"pin,omitempty" json:"pin,omitempty"`
+}
+
+// Policy builds the effective policy of the definition, with defaults applied.
+func (d *Definition) Policy() *mcppolicy.Policy {
+	p := &mcppolicy.Policy{
+		Server:    d.Name,
+		Access:    d.Access,
+		Tools:     make(map[string]mcppolicy.Class, len(d.Tools)),
+		Approvals: mcppolicy.DefaultApprovals(),
+		Pin:       d.Pin,
+	}
+	if p.Access == "" {
+		p.Access = mcppolicy.DefaultAccess
+	}
+	for _, t := range d.Tools {
+		p.Tools[t.Name] = t.Class
+	}
+	if a := d.Approvals; a != nil {
+		if a.Read != "" {
+			p.Approvals.Read = a.Read
+		}
+		if a.Write != "" {
+			p.Approvals.Write = a.Write
+		}
+		if a.Delete != "" {
+			p.Approvals.Delete = a.Delete
+		}
+	}
+	return p
 }
 
 // ServerSpec describes the stdio server process.

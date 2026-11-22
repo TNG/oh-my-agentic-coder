@@ -119,6 +119,8 @@ type FacadeApprovalInfo struct {
 	Scope           string
 	Unlisted        bool
 	StrippedHeaders []string
+	// Tool, ToolClass and ToolArgs are set for a call to an MCP tool.
+	Tool, ToolClass, ToolArgs string
 }
 
 // FacadeApproval builds a facade.approval event. The query string is never
