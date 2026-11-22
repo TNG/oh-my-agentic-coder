@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -75,7 +76,52 @@ func (d *Definition) validate() error {
 			return err
 		}
 	}
+	if err := d.checkNoOverlap(); err != nil {
+		return err
+	}
 	return d.validatePolicy()
+}
+
+// checkNoOverlap refuses a variable that is set from two places (a secret,
+// server.env, env_passthrough or mode), so which value the server gets never
+// depends on the order in which omac applies them.
+func (d *Definition) checkNoOverlap() error {
+	from := map[string]string{}
+	add := func(kind, name string) error {
+		if prev, ok := from[name]; ok {
+			return fmt.Errorf("%s %q is also set as %s; set each variable in one place only", kind, name, prev)
+		}
+		from[name] = kind
+		return nil
+	}
+	for _, name := range d.Secrets {
+		if err := add("secret", name); err != nil {
+			return err
+		}
+	}
+	for _, name := range sortedKeys(d.Server.Env) {
+		if err := add("env", name); err != nil {
+			return err
+		}
+	}
+	for _, name := range d.Server.EnvPassthrough {
+		if err := add("env_passthrough", name); err != nil {
+			return err
+		}
+	}
+	if d.Mode != nil {
+		return add("mode.name", d.Mode.Name)
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (d *Definition) validatePolicy() error {

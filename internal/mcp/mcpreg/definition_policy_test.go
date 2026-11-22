@@ -114,3 +114,16 @@ func TestResolveCommandRefusesAProgramPATHFindsInTheWorkdir(t *testing.T) {
 		t.Fatal("a missing program must fail")
 	}
 }
+
+func TestDefinitionRefusesAVariableSetTwice(t *testing.T) {
+	for name, body := range map[string]string{
+		"secret and env":         "name: demo\nserver:\n  command: [demo-server]\n  env: {TOKEN: x}\nsecrets: [TOKEN]\n",
+		"secret and mode":        policyBase + "secrets: [MODE]\nmode: {name: MODE, value: ro}\n",
+		"env and passthrough":    "name: demo\nserver:\n  command: [demo-server]\n  env: {HTTPS_PROXY: x}\n  env_passthrough: [HTTPS_PROXY]\n",
+		"secret and passthrough": "name: demo\nserver:\n  command: [demo-server]\n  env_passthrough: [TOKEN]\nsecrets: [TOKEN]\n",
+	} {
+		if _, err := ParseDefinition([]byte(body)); err == nil || !strings.Contains(err.Error(), "one place") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
