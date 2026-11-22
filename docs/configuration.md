@@ -42,6 +42,8 @@ mcp:
 
 **`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
 
+Registered MCP servers are not configured in this file. Their definitions (command, secrets, tool classes, `access`, `approvals` and the tool-list `pin`) live on the host under `~/.config/omac/mcp/`; see the [definition reference](./usage/mcp.md#definition-reference).
+
 **`idle_timeout_secs`** controls how long an idle connection to the facade is held open. For plain HTTP it is the keep-alive time between requests. For a WebSocket connection it is the inactivity limit: the connection closes after this many seconds with no data in either direction, and one that keeps sending messages or pings stays open. A skill can set its own WebSocket limit with `limits.idle_timeout_secs` (see [Skill authoring](./skills/authoring.md)). The setting does not end the session; the agent and sandbox keep running.
 
 ### Per-project configuration
@@ -153,7 +155,7 @@ A few things to know:
 
 ### Running an MCP server the harness launches
 
-An MCP server is configured in the harness, not in omac. Once you register an [MCP gateway](./usage/mcp.md) server, omac refuses to start while such harness entries exist, unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
+An MCP server is configured in the harness, not in omac. Inside omac, MCP configuration comes only from the omac registry (see the [MCP gateway](./usage/mcp.md)). Once you register a server, omac refuses to start while such harness entries exist, unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
 
 - **A token**, if the server authenticates with an API key: add the variable to `environment.allow_vars` (see above) and export it before `omac start`.

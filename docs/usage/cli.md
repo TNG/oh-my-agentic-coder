@@ -162,25 +162,32 @@ omac secrets import <skill> --from <file>      # set multiple secrets from a KEY
 Manages MCP servers that omac runs on the host for the agent; see [MCP servers](./mcp.md). Run these in a host terminal, not inside the sandbox.
 
 ```bash
-omac mcp register ./mcp.yaml --scope project --harness opencode,claude-code
-omac mcp list
-omac mcp show <name>
-omac mcp deregister <name>
+omac mcp add --harness claude-code --secret JIRA_TOKEN -e JIRA_URL=https://example.atlassian.net jira -- npx -y mcp-jira@1.2.3
+omac mcp add-json --harness claude-code --secret JIRA_TOKEN jira '{"command":"npx","args":["-y","mcp-jira@1.2.3"],"env":{"JIRA_TOKEN":"..."}}'
+omac mcp tools jira --classify
+omac mcp diagnose --probe
 ```
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `omac mcp register <file>` | Stores the definition and prompts for its secrets (or reads `OMAC_SECRET_<NAME>`). Register again after any change. | `--scope project\|global` (default `project`), `--harness` (required, comma-separated) |
-| `omac mcp list` | Shows registered servers. | `--all` includes stale project scopes |
-| `omac mcp show <name>` | Shows one definition, scope and hash. | — |
+| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until classified and pinned. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
+| `omac mcp add-json <name> '<json>'`, `omac mcp add-json --file <f> [names...]` | Registers from an `mcpServers` entry with `command`, `args` and `env`. Remote entries and unknown keys are refused. | `--scope`, `--harness`, `--secret NAME` (names the `env` keys that are secrets), `--replace`, `--file` |
+| `omac mcp register <file>` | Registers a definition file exactly as written, including any `tools`, `approvals` and `pin` in it. | `--scope`, `--harness` (required) |
+| `omac mcp tools <name>` | Starts the server on the host and lists its tools with a proposed class, current class and pin status. | `--scope`, `--classify`, `--set NAME=CLASS` (repeatable), `--rest CLASS` (default `off`) |
+| `omac mcp pin <name>` | Shows the drift since the pin, refuses while a live tool has no class, asks `[y/N]` and pins the live tools. | `--scope`, `--yes` |
+| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, a missing pin and harness entries omac does not manage. Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
+| `omac mcp list` | Shows registered servers with tool count, classified count and `pinned` or `unpinned`. | `--all` includes stale project scopes |
+| `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, the pin and every tool with its class. Never secret or environment values. | `--scope` |
 | `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |
+
+Classes are `read`, `write`, `delete` and `off`. All of these refuse to run inside the sandbox. See [MCP servers](./mcp.md) for the details.
 
 ### omac approvals
 
 A skill can ask you before the agent calls one of its routes (see [approvals](../skills/authoring.md#approvals-which-routes-run-without-asking)). When you answer "Allow always" in that dialog, omac stores the answer on the host. Run these from a host terminal, outside the sandbox:
 
 ```bash
-omac approvals list         # each stored answer: id, skill, route, project, date
+omac approvals list         # each stored answer: id, skill, route, project, date (MCP tools show as mcp:<server>)
 omac approvals revoke <id>  # the next request to that route asks again
 ```
 
