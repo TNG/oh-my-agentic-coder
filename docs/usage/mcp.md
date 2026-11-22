@@ -268,9 +268,9 @@ The Claude Code documentation does not say whether strict mode also skips the cl
 - A `--strict-mcp-config` you pass yourself is not repeated.
 - OpenCode and the other harnesses are not affected.
 
-### Keeping plugins or servers you have to use, for example at a customer
+### Keeping plugins or servers you have to use
 
-omac disables what Claude Code would load on its own by default. That is the right default for your own work. It is not what you want when a customer, or your organization, gives you Claude plugins or MCP servers that you have to use. To skip the disabling:
+omac disables what Claude Code would load on its own by default. That is the right default for your own work. It is not what you want when your organization or a project requires Claude plugins or MCP servers that you have to use. To skip the disabling:
 
 - **For one run:** `omac start claude --mcp-unregistered=allow`. `allow` starts silently. `warn` starts too, and lists Claude's own MCP servers first so you see what is loaded.
 - **Always, for yourself:** set it in your global config, `~/.config/omac/config.yaml` (or `$XDG_CONFIG_HOME/omac/config.yaml`):
@@ -281,7 +281,7 @@ omac disables what Claude Code would load on its own by default. That is the rig
   ```
 
 - **Not from a project.** A project's `.opencode/oh-my-agentic-coder.yaml` cannot set this, so a repository you open cannot switch the protection off. The setting is yours.
-- **Different setups for different work.** The global config applies to everything you start. If you want the protection for your own work and the opt-out only at the customer, keep the default and start the customer sessions with `--mcp-unregistered=allow`, for example through a shell alias such as `alias omac-customer='omac start claude --mcp-unregistered=allow'`.
+- **Different setups for different work.** The global config applies to everything you start. If you want the protection for your own work and the opt-out only for some projects, keep the default and start those sessions with `--mcp-unregistered=allow`, for example through a shell alias such as `alias omac-claude-open='omac start claude --mcp-unregistered=allow'`.
 
 omac passes neither the strict flag nor anything else that hides Claude's own servers in `warn` and `allow` modes. Servers you registered with `omac mcp add` are still added next to them.
 

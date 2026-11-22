@@ -42,7 +42,7 @@ mcp:
 
 **`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server (for this project or globally, for any harness) with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
 
-For Claude Code the default `refuse` also starts it in strict MCP mode, even when nothing is registered, so it does not auto-load servers from plugins or its own config. To keep those, for example plugins a customer gives you, set `mcp:` `unregistered: allow` here, or pass `--mcp-unregistered=allow` for one run: see [how to skip the disabling](./usage/mcp.md#keeping-plugins-or-servers-you-have-to-use-for-example-at-a-customer).
+For Claude Code the default `refuse` also starts it in strict MCP mode, even when nothing is registered, so it does not auto-load servers from plugins or its own config. To keep those, for example plugins your organization requires, set `mcp:` `unregistered: allow` here, or pass `--mcp-unregistered=allow` for one run: see [how to skip the disabling](./usage/mcp.md#keeping-plugins-or-servers-you-have-to-use).
 
 Registered MCP servers are not configured in this file. Their definitions (command, secrets, tool classes, `access`, `approvals` and the `reviewed` record of the tool list) live on the host under `~/.config/omac/mcp/`; see the [definition reference](./usage/mcp.md#definition-reference).
 
