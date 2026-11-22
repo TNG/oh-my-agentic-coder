@@ -32,6 +32,8 @@ type Existing struct {
 	Harness string
 	File    string
 	Name    string
+	// UserLevel is set for a file that applies to every project of the user.
+	UserLevel bool
 	// Transport is the server's transport as the config declares it, such as stdio or http.
 	Transport string
 	Command   string
