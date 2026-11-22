@@ -170,7 +170,7 @@ omac mcp deregister <name>
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `omac mcp register <file>` | Stores the definition and prompts for its secrets (or reads `OMAC_SECRET_<NAME>`). Register again after any change. | `--scope global\|project` (default `global`), `--harness` (required, comma-separated) |
+| `omac mcp register <file>` | Stores the definition and prompts for its secrets (or reads `OMAC_SECRET_<NAME>`). Register again after any change. | `--scope project\|global` (default `project`), `--harness` (required, comma-separated) |
 | `omac mcp list` | Shows registered servers. | `--all` includes stale project scopes |
 | `omac mcp show <name>` | Shows one definition, scope and hash. | — |
 | `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |

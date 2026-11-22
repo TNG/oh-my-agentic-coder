@@ -62,8 +62,8 @@ Only stdio servers are supported.
 Run these in a normal terminal on your machine, not inside the agent's sandbox. `register` and `deregister` refuse to run when they detect they are inside an omac session.
 
 ```bash
-omac mcp register ./mcp.yaml --harness opencode,claude-code             # global
-omac mcp register ./mcp.yaml --scope project --harness claude-code      # this project only
+omac mcp register ./mcp.yaml --harness opencode,claude-code             # this project only (default)
+omac mcp register ./mcp.yaml --scope global --harness claude-code       # every project
 omac mcp list
 omac mcp show demo
 omac mcp deregister demo
@@ -76,7 +76,7 @@ omac mcp deregister demo
 | `omac mcp show <name>` | Shows one definition, its scope and hash. |
 | `omac mcp deregister <name>` | Removes the registration and deletes its secrets from the keychain. |
 
-- **`--scope`**: `global` (default) applies to every project. `project` applies to the project in the current directory. If both exist under one name, the project entry wins and omac prints a notice. A project registration is tied to the directory's path, so moving or renaming the directory leaves it behind (visible with `omac mcp list --all`), and each git worktree is its own scope.
+- **`--scope`**: `project` (default) applies to the project in the current directory. `global` applies to every project. If both exist under one name, the project entry wins and omac prints a notice. A project registration is tied to the directory's path, so moving or renaming the directory leaves it behind (visible with `omac mcp list --all`), and each git worktree is its own scope.
 - **`--harness`**: required. A comma-separated list (`opencode`, `claude-code`). A server is only injected into the harnesses you list.
 - **Secrets in scripts**: instead of the prompt, export `OMAC_SECRET_<NAME>` (for example `OMAC_SECRET_DEMO_TOKEN`) before `register`.
 
