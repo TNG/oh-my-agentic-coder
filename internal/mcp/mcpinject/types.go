@@ -32,6 +32,13 @@ type Existing struct {
 	Harness string
 	File    string
 	Name    string
+	// Transport is the server's transport as the config declares it, such as stdio or http.
+	Transport string
+	Command   string
+	Args      []string
+	// EnvKeys and HeaderKeys hold names only; values are never stored.
+	EnvKeys    []string
+	HeaderKeys []string
 	// AlsoRegistered is set by the caller when an omac registry entry has the same name.
 	AlsoRegistered bool
 }

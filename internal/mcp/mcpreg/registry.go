@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
@@ -78,13 +80,8 @@ func IsSnapshotPath(dir string) bool {
 	return len(parts) >= 3 && parts[0] != ".." && parts[2] == snapshotDir
 }
 
-// Register parses the definition file, copies it into the host-only
-// snapshot and writes the record. Re-registering a name replaces its
-// snapshot and keeps its SecretsStored list.
+// Register parses the definition file and registers it like RegisterDefinition.
 func Register(s Scope, defPath string, harnesses []string) (*Entry, error) {
-	if len(harnesses) == 0 {
-		return nil, errors.New("at least one harness is required")
-	}
 	raw, err := os.ReadFile(defPath)
 	if err != nil {
 		return nil, err
@@ -93,43 +90,113 @@ func Register(s Scope, defPath string, harnesses []string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.Key != GlobalScopeKey {
-		if err := CheckCommandOutsideWorkdir(def, s.DisplayPath); err != nil {
-			return nil, err
-		}
+	return RegisterDefinition(s, def, harnesses)
+}
+
+// RegisterDefinition validates def, writes its canonical serialization into
+// the host-only snapshot named by its hash and writes the record.
+// Re-registering a name keeps its SecretsStored list and its older snapshots,
+// which a running gateway may still use.
+func RegisterDefinition(s Scope, def *Definition, harnesses []string) (*Entry, error) {
+	if len(harnesses) == 0 {
+		return nil, errors.New("at least one harness is required")
+	}
+	canonical, err := canonicalize(s, def)
+	if err != nil {
+		return nil, err
 	}
 	dir, err := serverDir(s, def.Name)
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(raw)
-	hash := hex.EncodeToString(sum[:])
-
 	rec := Record{
 		Name:         def.Name,
 		ScopeKey:     s.Key,
 		DisplayPath:  s.DisplayPath,
 		Harnesses:    slices.Clone(harnesses),
-		BundleHash:   hash,
 		RegisteredAt: time.Now().UTC(),
 	}
 	if prev, err := readRecord(dir); err == nil {
 		rec.SecretsStored = prev.SecretsStored
 	}
-	if err := os.RemoveAll(filepath.Join(dir, snapshotDir)); err != nil {
+	return install(dir, rec, canonical)
+}
+
+// Update applies fn to a copy of the registered definition, validates the
+// result and installs it as a new snapshot. Older snapshots stay, because a
+// running gateway may still start session children in them.
+func Update(s Scope, name string, fn func(*Definition) error) (*Entry, error) {
+	cur, err := Load(s, name)
+	if err != nil {
 		return nil, err
 	}
-	snap := filepath.Join(dir, snapshotDir, hash)
+	raw, err := marshalDefinition(cur.Def)
+	if err != nil {
+		return nil, err
+	}
+	next, err := ParseDefinition(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := fn(next); err != nil {
+		return nil, err
+	}
+	if next.Name != name {
+		return nil, fmt.Errorf("update must not rename %q to %q", name, next.Name)
+	}
+	canonical, err := canonicalize(s, next)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := serverDir(s, name)
+	if err != nil {
+		return nil, err
+	}
+	return install(dir, cur.Record, canonical)
+}
+
+func marshalDefinition(def *Definition) ([]byte, error) {
+	return yaml.Marshal(def)
+}
+
+// canonicalize validates def and returns its canonical serialization.
+func canonicalize(s Scope, def *Definition) ([]byte, error) {
+	raw, err := marshalDefinition(def)
+	if err != nil {
+		return nil, err
+	}
+	checked, err := ParseDefinition(raw)
+	if err != nil {
+		return nil, err
+	}
+	if s.Key != GlobalScopeKey {
+		if err := CheckCommandOutsideWorkdir(checked, s.DisplayPath); err != nil {
+			return nil, err
+		}
+	}
+	return raw, nil
+}
+
+// install writes the snapshot for canonical and then points the record at it.
+func install(dir string, rec Record, canonical []byte) (*Entry, error) {
+	def, err := ParseDefinition(canonical)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(canonical)
+	rec.BundleHash = hex.EncodeToString(sum[:])
+	snap := filepath.Join(dir, snapshotDir, rec.BundleHash)
 	if err := os.MkdirAll(snap, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(snap, snapshotFile), raw, 0o600); err != nil {
+	defPath := filepath.Join(snap, snapshotFile)
+	if err := os.WriteFile(defPath, canonical, 0o600); err != nil {
 		return nil, err
 	}
 	if err := writeRecord(dir, rec); err != nil {
 		return nil, err
 	}
-	return &Entry{Record: rec, Def: def, SnapshotDir: snap, DefPath: filepath.Join(snap, snapshotFile)}, nil
+	return &Entry{Record: rec, Def: def, SnapshotDir: snap, DefPath: defPath}, nil
 }
 
 // Load returns the registration with its definition, re-hashing the
@@ -169,30 +236,47 @@ func Load(s Scope, name string) (*Entry, error) {
 	return &Entry{Record: *rec, Def: def, SnapshotDir: snap, DefPath: defPath}, nil
 }
 
-// List loads every registration of the scope, sorted by name. A registration
-// that fails verification fails the whole call.
-func List(s Scope) ([]*Entry, error) {
+// InspectResult is the load result of one registration.
+type InspectResult struct {
+	Name  string
+	Entry *Entry
+	Err   error
+}
+
+// Inspect loads every registration of the scope, sorted by name, and reports
+// each result, so one corrupt registration does not hide the others.
+func Inspect(s Scope) []InspectResult {
 	root, err := rootDir()
 	if err != nil {
-		return nil, err
+		return []InspectResult{{Err: err}}
 	}
 	dirs, err := os.ReadDir(filepath.Join(root, s.Key))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return []InspectResult{{Err: err}}
 	}
-	var out []*Entry
+	var out []InspectResult
 	for _, d := range dirs {
 		if !d.IsDir() {
 			continue
 		}
 		e, err := Load(s, d.Name())
-		if err != nil {
-			return nil, err
+		out = append(out, InspectResult{Name: d.Name(), Entry: e, Err: err})
+	}
+	return out
+}
+
+// List loads every registration of the scope, sorted by name. A registration
+// that fails verification fails the whole call.
+func List(s Scope) ([]*Entry, error) {
+	var out []*Entry
+	for _, r := range Inspect(s) {
+		if r.Err != nil {
+			return nil, r.Err
 		}
-		out = append(out, e)
+		out = append(out, r.Entry)
 	}
 	return out, nil
 }
