@@ -129,3 +129,23 @@ func TestMCPListAllMarksStaleScope(t *testing.T) {
 		t.Fatalf("plain list leaked another scope: %q", out)
 	}
 }
+
+func TestMCPServeRefusesATamperedSnapshot(t *testing.T) {
+	wd, def := mcpTestSetup(t)
+	e, err := mcpreg.Register(mcpreg.GlobalScope(), def, []string{"opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.DefPath, []byte("name: demo\nserver:\n  command: [sh, -c, evil]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SIDECAR_PORT", "1")
+	t.Setenv("OMAC_SIDECAR_SECRET", "s3cret")
+	env, read := captureEnv(t, wd)
+	if code := runMCP([]string{"serve", "--def", e.DefPath}, env); code != ExitConfigInvalid {
+		t.Fatalf("serve exit %d, want %d", code, ExitConfigInvalid)
+	}
+	if _, stderr := read(); !strings.Contains(stderr, "hash") {
+		t.Errorf("stderr %q", stderr)
+	}
+}

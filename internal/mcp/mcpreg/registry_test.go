@@ -267,3 +267,46 @@ func TestAllScopes(t *testing.T) {
 		t.Fatalf("scopes = %+v", scopes)
 	}
 }
+
+func TestLoadSnapshotFileVerifiesTheHash(t *testing.T) {
+	isolate(t)
+	e, err := Register(GlobalScope(), writeDef(t, defYAML("a")), []string{"opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := LoadSnapshotFile(e.DefPath)
+	if err != nil || def.Name != "a" {
+		t.Fatalf("intact snapshot: %v %v", def, err)
+	}
+	if err := os.WriteFile(e.DefPath, []byte("name: a\nserver:\n  command: [/bin/evil]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSnapshotFile(e.DefPath); err == nil || !strings.Contains(err.Error(), "hash") {
+		t.Fatalf("tampered snapshot: %v", err)
+	}
+	other := writeDef(t, defYAML("a"))
+	if _, err := LoadSnapshotFile(other); err == nil {
+		t.Fatal("a definition outside a hash-named snapshot directory must be refused")
+	}
+}
+
+func TestSnapshotWriteLeavesNoTemporaryFiles(t *testing.T) {
+	isolate(t)
+	e, err := Register(GlobalScope(), writeDef(t, defYAML("a")), []string{"opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Register(GlobalScope(), writeDef(t, defYAML("a")), []string{"opencode"}); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(e.SnapshotDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Name() != snapshotFile {
+		t.Fatalf("snapshot dir holds %v", files)
+	}
+	if info, _ := os.Stat(e.DefPath); info.Mode().Perm() != 0o600 {
+		t.Errorf("snapshot mode %v", info.Mode().Perm())
+	}
+}

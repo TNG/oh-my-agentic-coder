@@ -190,7 +190,7 @@ func install(dir string, rec Record, canonical []byte) (*Entry, error) {
 		return nil, err
 	}
 	defPath := filepath.Join(snap, snapshotFile)
-	if err := os.WriteFile(defPath, canonical, 0o600); err != nil {
+	if err := writeFileAtomic(snap, defPath, canonical); err != nil {
 		return nil, err
 	}
 	if err := writeRecord(dir, rec); err != nil {
@@ -234,6 +234,25 @@ func Load(s Scope, name string) (*Entry, error) {
 		return nil, fmt.Errorf("snapshot of %q: %w", name, err)
 	}
 	return &Entry{Record: *rec, Def: def, SnapshotDir: snap, DefPath: defPath}, nil
+}
+
+// LoadSnapshotFile reads the definition of a snapshot file for the gateway.
+// It refuses a file that is not named mcp.yaml inside a directory named by
+// the sha256 of its content, so a gateway (re)start never runs a definition
+// that changed after registration or was only partly written.
+func LoadSnapshotFile(defPath string) (*Definition, error) {
+	if filepath.Base(defPath) != snapshotFile {
+		return nil, fmt.Errorf("%s is not a registry snapshot", defPath)
+	}
+	raw, err := os.ReadFile(defPath)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != filepath.Base(filepath.Dir(defPath)) {
+		return nil, fmt.Errorf("snapshot %s does not match its hash; re-register the server", defPath)
+	}
+	return ParseDefinition(raw)
 }
 
 // InspectResult is the load result of one registration.
@@ -460,17 +479,23 @@ func writeRecord(dir string, rec Record) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, recordFile+".*")
+	return writeFileAtomic(dir, filepath.Join(dir, recordFile), raw)
+}
+
+// writeFileAtomic writes data to a temporary file in dir and renames it to
+// path, so a reader sees the old content or the new one, never a part.
+func writeFileAtomic(dir, path string, data []byte) error {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(raw); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), filepath.Join(dir, recordFile))
+	return os.Rename(tmp.Name(), path)
 }

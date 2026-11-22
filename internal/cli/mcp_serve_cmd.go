@@ -46,12 +46,7 @@ func runMCPServe(args []string, env *Env) int {
 		fmt.Fprintf(env.Stderr, "omac mcp serve: %v\n", err)
 		return ExitIOError
 	}
-	raw, err := os.ReadFile(absDef)
-	if err != nil {
-		fmt.Fprintf(env.Stderr, "omac mcp serve: read definition: %v\n", err)
-		return ExitIOError
-	}
-	def, err := mcpreg.ParseDefinition(raw)
+	def, err := mcpreg.LoadSnapshotFile(absDef)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "omac mcp serve: %v\n", err)
 		return ExitConfigInvalid
