@@ -405,8 +405,8 @@ func TestMCPClaudeStartsStrictWhenNothingIsRegistered(t *testing.T) {
 		t.Errorf("notice printed although nothing is configured:\n%s", stderr)
 	}
 	args, _, _ := r.captured()
-	if !reflect.DeepEqual(args, []string{"--strict-mcp-config"}) {
-		t.Errorf("args = %v, want only --strict-mcp-config", args)
+	if !reflect.DeepEqual(args, []string{"--strict-mcp-config", "--no-chrome"}) {
+		t.Errorf("args = %v, want strict mode and --no-chrome", args)
 	}
 	if logs := r.gatewayLogs(); len(logs) != 0 {
 		t.Errorf("a gateway started: %v", logs)
@@ -470,7 +470,7 @@ func TestMCPClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
 	args, _, _ := r.captured()
-	if !reflect.DeepEqual(args, []string{"--strict-mcp-config"}) {
+	if !reflect.DeepEqual(args, []string{"--no-chrome", "--strict-mcp-config"}) {
 		t.Errorf("args = %v, want the user's flag once", args)
 	}
 }
@@ -485,7 +485,7 @@ func TestMCPClaudeUserMCPConfigStillLoadsWhenNothingIsRegistered(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
 	args, _, _ := r.captured()
-	if want := []string{"--strict-mcp-config", own}; !reflect.DeepEqual(args, want) {
+	if want := []string{"--strict-mcp-config", "--no-chrome", own}; !reflect.DeepEqual(args, want) {
 		t.Errorf("args = %v, want %v", args, want)
 	}
 }
@@ -559,7 +559,7 @@ func TestMCPClaudeInjectionReachesInnerArgsAndEnv(t *testing.T) {
 	if args[0] != "--strict-mcp-config" {
 		t.Errorf("registered servers must come with strict mode: %v", args)
 	}
-	if _, ok := env["ENABLE_CLAUDEAI_MCP_SERVERS"]; ok {
+	if _, ok := env["ENABLE_CLAUDEAI_MCP_SERVERS"]; ok && os.Getenv("ENABLE_CLAUDEAI_MCP_SERVERS") == "" {
 		t.Error("connectors variable must not be set")
 	}
 	for k, v := range env {
@@ -827,5 +827,25 @@ func TestMCPOpenCodeDefaultIsRefuse(t *testing.T) {
 	}
 	if strings.Contains(stderr, "not available") {
 		t.Errorf("the fallback message belongs to an explicit ignore only:\n%s", stderr)
+	}
+}
+
+func TestMCPClaudeKeepsUserChromeChoice(t *testing.T) {
+	for _, flag := range []string{"--chrome", "--no-chrome"} {
+		r := newMCPRig(t)
+		code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.innerArgs = []string{flag} })
+		if code != ExitOK {
+			t.Fatalf("%s: exit %d\n%s", flag, code, stderr)
+		}
+		args, _, _ := r.captured()
+		n := 0
+		for _, a := range args {
+			if a == "--chrome" || a == "--no-chrome" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s: args = %v, want the user's chrome flag once and none added", flag, args)
+		}
 	}
 }

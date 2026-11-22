@@ -295,7 +295,7 @@ func TestBuildClaudeOnlyAddsConfigFlag(t *testing.T) {
 		}
 		wantArgs := []string{"--mcp-config=" + file}
 		if mode == ModeRefuse || mode == ModeIgnore {
-			wantArgs = []string{"--strict-mcp-config", "--mcp-config=" + file}
+			wantArgs = []string{"--strict-mcp-config", "--no-chrome", "--mcp-config=" + file}
 		}
 		if inj.Env != nil || inj.AllowEnv != nil || !reflect.DeepEqual(inj.InnerArgs, wantArgs) {
 			t.Fatalf("%s: %+v", mode, inj)
@@ -312,6 +312,8 @@ func TestBuildInactiveInjectsNothing(t *testing.T) {
 
 func TestBuildClaudeStrictMode(t *testing.T) {
 	strict := []string{"--strict-mcp-config"}
+	strictNoChrome := []string{"--strict-mcp-config", "--no-chrome"}
+	noChrome := []string{"--no-chrome"}
 	tests := []struct {
 		name     string
 		kind     config.MCPInjectionKind
@@ -319,13 +321,15 @@ func TestBuildClaudeStrictMode(t *testing.T) {
 		userArgs []string
 		want     []string
 	}{
-		{"claude default, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, nil, strict},
-		{"claude refuse, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: true}, nil, strict},
-		{"claude ignore, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, nil, strict},
-		{"claude ignore, user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, strict, nil},
+		{"claude default, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, nil, strictNoChrome},
+		{"claude refuse, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: true}, nil, strictNoChrome},
+		{"claude ignore, nothing registered", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, nil, strictNoChrome},
+		{"claude ignore, user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeIgnore, Active: true}, strict, noChrome},
 		{"claude warn", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeWarn, Active: true}, nil, nil},
 		{"claude allow", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeAllow, Active: true}, nil, nil},
-		{"user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, strict, nil},
+		{"user passed the flag", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, strict, noChrome},
+		{"user passed --chrome", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, []string{"--chrome"}, strict},
+		{"user passed --no-chrome", config.MCPInjectClaudeFlag, Policy{Unregistered: ModeRefuse, Active: false}, []string{"--no-chrome"}, strict},
 		{"opencode", config.MCPInjectOpenCodeEnv, Policy{Unregistered: ModeRefuse, Active: false}, nil, nil},
 		{"harness without injection", config.MCPInjectNone, Policy{Unregistered: ModeRefuse, Active: false}, nil, nil},
 	}
@@ -348,7 +352,7 @@ func TestBuildClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"--mcp-config=" + filepath.Join(dir, "omac-mcp.json")}; !reflect.DeepEqual(inj.InnerArgs, want) {
+	if want := []string{"--no-chrome", "--mcp-config=" + filepath.Join(dir, "omac-mcp.json")}; !reflect.DeepEqual(inj.InnerArgs, want) {
 		t.Fatalf("args = %v, want %v", inj.InnerArgs, want)
 	}
 }

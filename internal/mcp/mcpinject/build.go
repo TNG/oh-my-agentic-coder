@@ -17,7 +17,11 @@ const (
 	claudeConfigFile  = "omac-mcp.json"
 )
 
-const strictMCPConfigFlag = "--strict-mcp-config"
+const (
+	strictMCPConfigFlag = "--strict-mcp-config"
+	noChromeFlag        = "--no-chrome"
+	chromeFlag          = "--chrome"
+)
 
 // Build returns the injection that adds the servers next to whatever the
 // harness already has. userArgs are the arguments the user passes to the
@@ -31,6 +35,13 @@ func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir stri
 		// and has to be checked with a real session. Only refuse and ignore modes pass it: warn and allow
 		// mean the user wants Claude's own entries.
 		inj.InnerArgs = []string{strictMCPConfigFlag}
+	}
+	if kind == config.MCPInjectClaudeFlag && (p.Unregistered == ModeRefuse || p.Unregistered == ModeIgnore) && !slices.Contains(userArgs, noChromeFlag) && !slices.Contains(userArgs, chromeFlag) {
+		// The Claude in Chrome integration is a built-in MCP server that
+		// --strict-mcp-config does not cover. It would give the agent the
+		// user's browser sessions, so MCP comes only from the omac registry:
+		// the user opts in with --chrome, which is not overridden.
+		inj.InnerArgs = append(inj.InnerArgs, noChromeFlag)
 	}
 	if !p.Active {
 		return inj, nil

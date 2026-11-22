@@ -270,6 +270,7 @@ The Claude Code documentation does not say whether strict mode also skips the cl
 - **Keep Claude's own servers:** run with `--mcp-unregistered=warn` or `allow` (or set `mcp.unregistered`). omac then passes no strict flag and leaves Claude's MCP entries as they are.
 - **Your own `--mcp-config` argument** after `--` still loads when nothing is registered, because you chose it. With a registered server or an explicit mode, omac scans it as before.
 - A `--strict-mcp-config` you pass yourself is not repeated.
+- Claude Code's built-in Claude in Chrome integration is an MCP server that strict mode does not cover, and it gives the agent your browser sessions. In these two modes omac therefore also passes `--no-chrome`. To use it anyway, pass `--chrome` yourself (a `--chrome` or `--no-chrome` you pass is not repeated), or use `--mcp-unregistered=warn` or `allow`.
 - OpenCode and the other harnesses are not affected.
 
 ### Keeping plugins or servers you have to use
