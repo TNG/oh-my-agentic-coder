@@ -9,8 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpinject"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/secrets"
 )
@@ -143,7 +145,26 @@ func runMCPRegister(args []string, env *Env) int {
 		fmt.Fprintln(env.Stderr, "omac mcp register: refused:", err)
 		return ExitMisuse
 	}
-	entry, err := mcpreg.Register(scope, defPath, harnesses)
+	// A file must not pre-approve its own tool list: the user reviews the
+	// live tools with `omac mcp tools --classify` or `omac mcp review`.
+	if def.Review != nil {
+		def.Review = nil
+		fmt.Fprintf(env.Stdout, "notice: dropped the reviewed block of %s; review the tools with: omac mcp tools %s --classify\n", stripControlChars(defPath), stripControlChars(def.Name))
+	}
+	var unprompted []string
+	for _, c := range []mcppolicy.Class{mcppolicy.Write, mcppolicy.Delete} {
+		ap := mcppolicy.DefaultApprovals()
+		if def.Approvals != nil {
+			ap = *def.Approvals
+		}
+		if ap.For(c) == approval.None {
+			unprompted = append(unprompted, string(c))
+		}
+	}
+	if len(unprompted) > 0 {
+		fmt.Fprintf(env.Stderr, "warning: %s sets approvals to none for %s tools: the agent can call them without asking you\n", stripControlChars(def.Name), strings.Join(unprompted, " and "))
+	}
+	entry, err := mcpreg.RegisterDefinition(scope, def, harnesses)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac mcp register:", err)
 		return ExitIOError

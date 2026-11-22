@@ -64,7 +64,7 @@ The JSON is one entry, or an `{"mcpServers": {...}}` object. With `--file`, name
 omac mcp register ./mcp.yaml --harness opencode,claude-code
 ```
 
-`register` stores the file exactly as written, including its classes, approvals and `reviewed` record. A file with a `reviewed` record that matches the server's tools makes them callable without `omac mcp tools --classify`, so read a definition file before you register it, above all one from a repository or written by an agent. Classes, approvals and a review record that are not in the file are gone, so to change only the command or environment of a registered server use `omac mcp add --replace` instead. The [definition reference](#definition-reference) lists the fields.
+`register` stores the file as written, with one exception: a `reviewed` block is dropped (a file must not pre-approve its own tool list) and `register` prints a notice when it does. After registering, run `omac mcp tools <name> --classify` to review the live tools. Classes and `approvals` are kept, so read a definition file before you register it, above all one from a repository or written by an agent: a file that sets `approvals` to `none` for `write` or `delete` lets the agent call those tools without asking you, and `register` prints a warning for it. Classes and approvals that are not in the file are gone, so to change only the command or environment of a registered server use `omac mcp add --replace` instead. The [definition reference](#definition-reference) lists the fields.
 
 Options shared by all three:
 

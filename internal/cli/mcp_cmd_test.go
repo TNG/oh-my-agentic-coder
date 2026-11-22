@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/approval"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 )
 
@@ -147,5 +149,50 @@ func TestMCPServeRefusesATamperedSnapshot(t *testing.T) {
 	}
 	if _, stderr := read(); !strings.Contains(stderr, "hash") {
 		t.Errorf("stderr %q", stderr)
+	}
+}
+
+func TestMCPRegisterDropsReviewedBlockAndWarnsOnNoneApprovals(t *testing.T) {
+	wd, def := mcpTestSetup(t)
+	t.Setenv("OMAC_SECRET_API_TOKEN", "tok-123")
+	hashes := map[string]string{"echo": "abc"}
+	body := "name: demo\nserver:\n  command: [npx, -y, demo]\nsecrets: [API_TOKEN]\ntools:\n  - {name: echo, class: read}\napprovals:\n  write: none\n  delete: none\nreviewed:\n  tools_hash: " + mcppolicy.ListHash(hashes) + "\n  tools: {echo: abc}\n  at: 2026-01-01T00:00:00Z\n"
+	if err := os.WriteFile(def, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env, read := captureEnv(t, wd)
+	if code := runMCP([]string{"register", def, "--harness", "opencode"}, env); code != ExitOK {
+		_, e := read()
+		t.Fatalf("register exit %d: %s", code, e)
+	}
+	out, errOut := read()
+	if !strings.Contains(out, "dropped the reviewed block") || !strings.Contains(out, "omac mcp tools demo --classify") {
+		t.Errorf("no drop notice: %q", out)
+	}
+	if !strings.Contains(errOut, "warning:") || !strings.Contains(errOut, "write and delete") {
+		t.Errorf("no approvals warning: %q", errOut)
+	}
+	e, err := mcpreg.Load(mcpreg.ScopeFor(wd), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Def.Review != nil {
+		t.Fatalf("review kept: %+v", e.Def.Review)
+	}
+	if len(e.Def.Tools) != 1 || e.Def.Approvals == nil || e.Def.Approvals.Write != approval.None {
+		t.Errorf("other fields changed: %+v", e.Def)
+	}
+}
+
+func TestMCPRegisterPlainFileHasNoNoticeOrWarning(t *testing.T) {
+	wd, def := mcpTestSetup(t)
+	t.Setenv("OMAC_SECRET_API_TOKEN", "tok-123")
+	env, read := captureEnv(t, wd)
+	if code := runMCP([]string{"register", def, "--harness", "opencode"}, env); code != ExitOK {
+		t.Fatal("register failed")
+	}
+	out, errOut := read()
+	if strings.Contains(out, "dropped") || strings.Contains(errOut, "warning") {
+		t.Errorf("unexpected output %q %q", out, errOut)
 	}
 }
