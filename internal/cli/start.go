@@ -586,6 +586,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 			secretValues = append(secretValues, sec.ExposeString())
 		}
 	}
+	mcp.loadAllSecrets(env, prefix)
+	secretValues = append(secretValues, mcp.secretValues()...)
 	// fatalTeardown is assigned its real body once sup/facade/control exist;
 	// until then a strict write failure (only possible after those are up)
 	// cannot occur, but we default it to a plain exit for safety.

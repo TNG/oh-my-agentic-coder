@@ -849,3 +849,41 @@ func TestMCPClaudeKeepsUserChromeChoice(t *testing.T) {
 		}
 	}
 }
+
+// The audit redactor is built before the gateways start, so the plan loads
+// the MCP secrets first and hands their values over; a missing secret is
+// reported once.
+func TestMCPSecretsReachTheAuditRedactorAndWarnOnce(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", true, "claude-code")
+	r.register("nosecret", false, "claude-code")
+	entries, _, err := mcpreg.Effective(r.wd, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &mcpPlan{entries: entries}
+	env, stderr := launchTestEnv(t, r.wd)
+	p.loadAllSecrets(env, "omac start")
+	if got := p.secretValues(); len(got) != 1 || got[0] != "tok-from-keychain" {
+		t.Fatalf("secret values %v", got)
+	}
+	if _, ok := p.secrets["nosecret"]; ok {
+		t.Error("an entry without its secret must be skipped")
+	}
+	if n := strings.Count(stderr(), `MCP server "nosecret" skipped`); n != 1 {
+		t.Errorf("skip warning printed %d times", n)
+	}
+	var nilPlan *mcpPlan
+	nilPlan.loadAllSecrets(env, "omac start")
+	if nilPlan.secretValues() != nil {
+		t.Error("a nil plan has no secrets")
+	}
+}
+
+func TestMCPMissingSecretWarnsOnceInALaunch(t *testing.T) {
+	r := newMCPRig(t)
+	r.register("demo", false, "claude-code")
+	if code, stderr := r.launch("claude", r.capture, nil); code != ExitOK || strings.Count(stderr, `MCP server "demo" skipped`) != 1 {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+}

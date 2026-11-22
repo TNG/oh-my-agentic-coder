@@ -39,6 +39,11 @@ type mcpPlan struct {
 	stderr  *os.File
 	auditor audit.Auditor
 
+	// secrets holds the keychain secrets of each entry, loaded by
+	// loadAllSecrets before the auditor exists so its redactor knows them.
+	// An entry whose secrets could not be loaded has no key.
+	secrets map[string]map[string]secrets.Secret
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	watchers sync.WaitGroup
@@ -271,9 +276,12 @@ func (p *mcpPlan) launchMCPGateways(ctx context.Context, env *Env, prefix string
 	p.sup = supervisor.New(lc.Facade.BaseEnvPassthrough, auditor, mcpSpawnAuthorizer)
 	p.exe, p.rtDir, p.workdir, p.prefix, p.stderr, p.auditor = exe, rtDir, env.Workdir, prefix, env.Stderr, auditor
 
+	if p.secrets == nil {
+		p.loadAllSecrets(env, prefix)
+	}
 	var routes []facade.Route
 	for _, entry := range p.entries {
-		serverSecrets, ok := p.loadSecrets(env, prefix, entry)
+		serverSecrets, ok := p.secrets[entry.Name]
 		if !ok {
 			continue
 		}
@@ -301,6 +309,34 @@ func (p *mcpPlan) spec(entry *mcpreg.Entry, serverSecrets map[string]secrets.Sec
 		Workdir:        p.workdir,
 		RequireSecret:  true,
 	}
+}
+
+// loadAllSecrets reads the secrets of every entry once, warning about and
+// skipping an entry whose secret is missing.
+func (p *mcpPlan) loadAllSecrets(env *Env, prefix string) {
+	if p == nil {
+		return
+	}
+	p.secrets = map[string]map[string]secrets.Secret{}
+	for _, entry := range p.entries {
+		if sec, ok := p.loadSecrets(env, prefix, entry); ok {
+			p.secrets[entry.Name] = sec
+		}
+	}
+}
+
+// secretValues returns the loaded secret values for the audit redactor.
+func (p *mcpPlan) secretValues() []string {
+	if p == nil {
+		return nil
+	}
+	var out []string
+	for _, sec := range p.secrets {
+		for _, v := range sec {
+			out = append(out, v.ExposeString())
+		}
+	}
+	return out
 }
 
 func (p *mcpPlan) loadSecrets(env *Env, prefix string, entry *mcpreg.Entry) (map[string]secrets.Secret, bool) {
