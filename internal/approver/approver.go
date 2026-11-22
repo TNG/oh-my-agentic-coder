@@ -2,6 +2,8 @@ package approver
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -129,8 +131,9 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 		a.cfg.Logf("omac approvals: cannot tell which project %s %s belongs to; denied", req.Method, req.Path)
 		return facade.ApprovalDecision{Source: facade.SourceUnavailable}
 	}
-	skillKey := scope.Key + "\x00" + req.Skill
-	id := VerdictID(scope.Key, req.Skill, req.Match, ruleKind(req))
+	skill, match := verdictSubject(req)
+	skillKey := scope.Key + "\x00" + skill
+	id := VerdictID(scope.Key, skill, match, ruleKind(req))
 	if d, ok := a.known(skillKey, id); ok {
 		return d
 	}
@@ -141,7 +144,7 @@ func (a *Approver) Approve(ctx context.Context, req facade.ApprovalRequest) faca
 	// session or always allow is re-read from the stored state. "Allow once"
 	// covers only the leader's request, so each waiting copy asks again, as
 	// it does when the leader's own client went away.
-	flight := strings.Join([]string{skillKey, req.Method, req.Path, req.RawQuery}, "\x00")
+	flight := flightKey(skillKey, req)
 	a.mu.Lock()
 	if p, ok := a.inflight[flight]; ok {
 		a.mu.Unlock()
@@ -188,11 +191,19 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 	if a.cfg.Chooser == nil {
 		return facade.ApprovalDecision{Source: facade.SourceUnavailable}
 	}
-	a.cfg.Chooser.Notify("omac: approval needed", fmt.Sprintf("%s wants to %s %s", req.Skill, printableASCII(req.Method), clip(printableASCII(req.Path), 160)))
+	skill, match := verdictSubject(req)
+	title, notice, labels := "omac: approve sidecar request",
+		fmt.Sprintf("%s wants to %s %s", req.Skill, printableASCII(req.Method), clip(printableASCII(req.Path), 160)),
+		[]string{LabelOnce, LabelSession, LabelAlways, LabelDeny, LabelDenyAll}
+	if req.MCP != nil {
+		title = "omac: approve MCP tool call"
+		notice = fmt.Sprintf("%s wants to call %s", oneLine(clip(req.MCP.Server, 80)), clip(printableASCII(req.MCP.Tool), 80))
+		labels = []string{LabelOnce, LabelSession, LabelAlwaysTool, LabelDeny}
+	}
+	a.cfg.Chooser.Notify("omac: approval needed", notice)
 	dctx, cancel := context.WithTimeout(ctx, a.cfg.Timeout)
 	defer cancel()
-	label, err := a.cfg.Chooser.Choose(dctx, "omac: approve sidecar request", DialogText(req),
-		[]string{LabelOnce, LabelSession, LabelAlways, LabelDeny, LabelDenyAll}, LabelDeny)
+	label, err := a.cfg.Chooser.Choose(dctx, title, DialogText(req), labels, LabelDeny)
 	if err != nil {
 		switch {
 		case ctx.Err() != nil:
@@ -212,14 +223,14 @@ func (a *Approver) ask(ctx context.Context, req facade.ApprovalRequest, skillKey
 		a.session[id] = true
 		a.mu.Unlock()
 		return facade.ApprovalDecision{Allow: true, Scope: facade.ScopeSession, Source: facade.SourcePrompt}
-	case LabelAlways:
-		v := Verdict{ID: id, Scope: scope.Key, Dir: scope.Dir, Skill: req.Skill, Match: req.Match, Approval: ruleKind(req), CreatedAt: time.Now().UTC()}
+	case LabelAlways, LabelAlwaysTool:
+		v := Verdict{ID: id, Scope: scope.Key, Dir: scope.Dir, Skill: skill, Match: match, Approval: ruleKind(req), CreatedAt: time.Now().UTC()}
 		err := errors.New("no verdict store configured")
 		if a.cfg.Store != nil {
 			err = a.cfg.Store.Add(v)
 		}
 		if err != nil {
-			a.cfg.Logf("omac approvals: could not store the always-verdict for %s %s: %v; allowing for this session", req.Skill, req.Match, err)
+			a.cfg.Logf("omac approvals: could not store the always-verdict for %s %s: %v; allowing for this session", skill, match, err)
 			a.mu.Lock()
 			a.session[id] = true
 			a.mu.Unlock()
@@ -242,10 +253,35 @@ const (
 	KindRequired = "required" // a declared entry
 	KindUnlisted = "unlisted" // an exact route the skill does not declare
 	KindCatchAll = "catchall" // an exact route under a declared ANY or ** entry
+	KindMCPTool  = "mcp-tool" // one tool of an MCP server, in one class
 )
+
+// verdictSubject is the skill and match a stored answer is keyed by. For an
+// MCP call the server stands in for the skill, under a prefix a skill name
+// cannot collide with in the same kind, and the class is part of the match so
+// a reclassified tool asks again.
+func verdictSubject(r facade.ApprovalRequest) (skill, match string) {
+	if r.MCP == nil {
+		return r.Skill, r.Match
+	}
+	return "mcp:" + r.MCP.Server, fmt.Sprintf("tool %s (%s)", r.MCP.Tool, r.MCP.Class)
+}
+
+// flightKey groups concurrent requests that one dialog may answer. An MCP
+// call is grouped by tool, class and arguments, so a denial never reaches a
+// call of another tool or with other arguments.
+func flightKey(skillKey string, r facade.ApprovalRequest) string {
+	if r.MCP != nil {
+		args := sha256.Sum256([]byte(r.MCP.Args))
+		return strings.Join([]string{skillKey, KindMCPTool, r.MCP.Tool, string(r.MCP.Class), hex.EncodeToString(args[:])}, "\x00")
+	}
+	return strings.Join([]string{skillKey, r.Method, r.Path, r.RawQuery}, "\x00")
+}
 
 func ruleKind(r facade.ApprovalRequest) string {
 	switch {
+	case r.MCP != nil:
+		return KindMCPTool
 	case r.Unlisted:
 		return KindUnlisted
 	case r.CatchAll:
@@ -262,6 +298,9 @@ func ruleKind(r facade.ApprovalRequest) string {
 // as a second "Declared:" or "Covers:".
 func DialogText(r facade.ApprovalRequest) string {
 	var b strings.Builder
+	if r.MCP != nil {
+		return mcpDialogText(r.MCP)
+	}
 	b.WriteString("The sandboxed agent wants a skill's sidecar to do this:\n\n")
 	fmt.Fprintf(&b, "    Skill:    %s\n", oneLine(clip(r.Skill, 80)))
 	fmt.Fprintf(&b, "    Request:  %s %s\n", clip(printableASCII(r.Method), 16), clip(printableASCII(r.Path), 160))
@@ -353,4 +392,18 @@ func clip(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// mcpDialogText shows the agent-chosen tool and arguments as printable ASCII
+// for the same reason as the sidecar dialog.
+func mcpDialogText(c *facade.MCPCall) string {
+	var b strings.Builder
+	b.WriteString("The sandboxed agent wants to call a tool of an MCP server:\n\n")
+	fmt.Fprintf(&b, "    Server:   %s\n", oneLine(clip(c.Server, 80)))
+	fmt.Fprintf(&b, "    Tool:     %s\n", clip(printableASCII(c.Tool), 120))
+	fmt.Fprintf(&b, "    Class:    %s\n", clip(printableASCII(string(c.Class)), 16))
+	fmt.Fprintf(&b, "    Args:     %s\n", clip(printableASCII(c.Args), 400))
+	fmt.Fprintf(&b, "    Covers:   tool %s of server %s\n\n", clip(printableASCII(c.Tool), 120), oneLine(clip(c.Server, 80)))
+	b.WriteString("Allow it?")
+	return b.String()
 }
