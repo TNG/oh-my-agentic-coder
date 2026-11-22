@@ -259,6 +259,19 @@ A skill's sidecar runs on the host with the user's rights, so what the agent may
 - **Does not ask.** A skill without the block (`omac register` says so). Frames on an allowed WebSocket; removing or replacing the skill's route closes its open WebSocket connections. Shell commands and file edits, which the sandbox grants cover as before.
 - **Not seen.** The dialog shows the method, path and query, not the body. An answer for one generic endpoint, such as a passthrough, therefore covers everything that endpoint can do.
 
+### MCP servers
+
+An MCP server the harness launches itself runs inside the sandbox, so the agent can read its token. The [MCP gateway](usage/mcp.md) avoids that: you register the server with `omac mcp register`, omac runs it on the host with its credentials from the keychain, and the harness gets only a bridge command.
+
+- **Stays on the host.** The real credentials, the definition and its snapshot (in `~/.config/omac`, which the sandbox cannot access) and the server process. Registration happens only in a host terminal, never from project files, and a changed definition must be registered again.
+- **The agent can still see** the bridge command, a session-only token for omac's proxy, the tool results and the server's tool descriptions, which are untrusted text.
+- **No per-tool control yet.** The agent can call every tool of a registered server, also by sending requests straight to the proxy. Only register servers and credentials you would let the agent use fully, and use the narrowest-scope token. Per-tool approvals, audit with tool names and tool pinning are not available yet.
+- **Review the server.** Pin its version, read what its tools can do (especially tools that run commands, fetch URLs or read files), and expect it to run with your user's rights.
+- **Residual risks.** OAuth tokens a harness keeps in its own state directory are not protected and the credential scan cannot see them. Credentials already left in readable harness config files may be exposed already: rotate them. That is why `mcp.literal_credentials` refuses by default. Third-party server code is a supply-chain risk.
+- **Unregistered entries.** Once a server is registered, `mcp.unregistered` (default `refuse`) handles the harness's other MCP entries. It is read from your user-global launcher config only, so a project cannot switch it off.
+
+See [MCP servers](usage/mcp.md#security-principles-and-what-to-consider) for the full list.
+
 ## How isolation works
 
 omac ships no kernel module or custom isolation layer. It uses security

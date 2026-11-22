@@ -34,6 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
+| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn`, `ignore` or `refuse`. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config). |
 
 For all flags: `omac start --help`.
 
@@ -155,6 +156,24 @@ omac secrets import <skill> --from <file>      # set multiple secrets from a KEY
 ```
 
 `omac secrets import` is the recommended way to pre-seed secrets in CI before running `omac register --no-secrets`.
+
+### omac mcp
+
+Manages MCP servers that omac runs on the host for the agent; see [MCP servers](./mcp.md). Run these in a host terminal, not inside the sandbox.
+
+```bash
+omac mcp register ./mcp.yaml --scope project --harness opencode,claude-code
+omac mcp list
+omac mcp show <name>
+omac mcp deregister <name>
+```
+
+| Command | What it does | Key flags |
+|---|---|---|
+| `omac mcp register <file>` | Stores the definition and prompts for its secrets (or reads `OMAC_SECRET_<NAME>`). Register again after any change. | `--scope global\|project` (default `global`), `--harness` (required, comma-separated) |
+| `omac mcp list` | Shows registered servers. | `--all` includes stale project scopes |
+| `omac mcp show <name>` | Shows one definition, scope and hash. | — |
+| `omac mcp deregister <name>` | Removes the server and its secrets. | `--scope` |
 
 ### omac approvals
 
