@@ -111,3 +111,23 @@ func scanProblems(ex []Existing, f []Finding) (problems []string, hinted bool) {
 	}
 	return problems, hinted
 }
+
+// UnloadedNames lists, without repeats, the server names a scan found and the
+// files it could not read or parse, which may hide servers. Values never appear.
+func UnloadedNames(ex []Existing, f []Finding) []string {
+	var names []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	for _, e := range ex {
+		add(e.Name)
+	}
+	for _, finding := range f {
+		add(finding.File)
+	}
+	return names
+}

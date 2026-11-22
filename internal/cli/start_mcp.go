@@ -83,7 +83,11 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		return nil, ExitConfigInvalid
 	}
 	if !policy.Active {
-		return nil, ExitOK
+		if harness.MCPInjection != config.MCPInjectClaudeFlag || policy.Unregistered != mcpinject.ModeRefuse {
+			return nil, ExitOK
+		}
+		noticeStrictMCP(env, harness, prefix)
+		return &mcpPlan{policy: policy, harness: harness.Name, stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
 	}
 
 	home, _ := os.UserHomeDir()
@@ -108,6 +112,27 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		return nil, ExitConfigInvalid
 	}
 	return &mcpPlan{policy: policy, entries: entries, harness: harness.Name, stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
+}
+
+// noticeStrictMCP tells the user which MCP servers from the harness's own
+// configuration strict mode keeps from loading. The user's own --mcp-config
+// arguments are not scanned because they still load. A failed scan prints nothing.
+func noticeStrictMCP(env *Env, harness config.Harness, prefix string) {
+	home, _ := os.UserHomeDir()
+	existing, findings, err := mcpinject.Scan(harness.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
+	if err != nil {
+		return
+	}
+	names := mcpinject.UnloadedNames(existing, findings)
+	if len(names) == 0 {
+		return
+	}
+	const maxNamed = 10
+	list := strings.Join(names, ", ")
+	if len(names) > maxNamed {
+		list = fmt.Sprintf("%s and %d more", strings.Join(names[:maxNamed], ", "), len(names)-maxNamed)
+	}
+	fmt.Fprintf(env.Stderr, "%s: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration will not load inside omac: %s. Register them with \"omac mcp add\" or run with --mcp-unregistered=allow to keep them.\n", prefix, list)
 }
 
 // prepareUnsupportedHarnessMCP applies the unregistered-entry policy to a
@@ -229,7 +254,7 @@ func (p *mcpPlan) shutdown() {
 
 // buildInjection computes what the harness needs to start the bridges. It
 // runs after the facade is up because the entries carry its address and token.
-func (p *mcpPlan) buildInjection(harness config.Harness, socketPath string, tcpPort int, facadeToken, sandboxTmp string) error {
+func (p *mcpPlan) buildInjection(harness config.Harness, userArgs []string, socketPath string, tcpPort int, facadeToken, sandboxTmp string) error {
 	if p == nil {
 		return nil
 	}
@@ -245,7 +270,7 @@ func (p *mcpPlan) buildInjection(harness config.Harness, socketPath string, tcpP
 			},
 		})
 	}
-	injection, err := mcpinject.Build(harness.MCPInjection, servers, p.policy, sandboxTmp)
+	injection, err := mcpinject.Build(harness.MCPInjection, servers, p.policy, sandboxTmp, userArgs)
 	if err != nil {
 		return fmt.Errorf("MCP injection: %w", err)
 	}

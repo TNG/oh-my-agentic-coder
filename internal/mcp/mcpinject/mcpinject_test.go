@@ -211,7 +211,7 @@ var testServers = []Server{{
 func TestBuildOpenCodeOnlyAddsServers(t *testing.T) {
 	const golden = `{"mcp":{"gh":{"command":["/bin/omac","mcp","bridge","gh"],"enabled":true,"environment":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"},"type":"local"}}}`
 	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeRefuse} {
-		inj, err := Build(config.MCPInjectOpenCodeEnv, testServers, Policy{mode, true}, t.TempDir())
+		inj, err := Build(config.MCPInjectOpenCodeEnv, testServers, Policy{mode, true}, t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +228,7 @@ func TestBuildClaudeOnlyAddsConfigFlag(t *testing.T) {
 	const golden = `{"mcpServers":{"gh":{"args":["mcp","bridge","gh"],"command":"/bin/omac","env":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"}}}}`
 	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeRefuse} {
 		dir := t.TempDir()
-		inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{mode, true}, dir)
+		inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{mode, true}, dir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,15 +240,60 @@ func TestBuildClaudeOnlyAddsConfigFlag(t *testing.T) {
 		if info, _ := os.Stat(file); info.Mode().Perm() != 0o600 {
 			t.Fatalf("mode = %v", info.Mode().Perm())
 		}
-		if inj.Env != nil || inj.AllowEnv != nil || !reflect.DeepEqual(inj.InnerArgs, []string{"--mcp-config=" + file}) {
+		wantArgs := []string{"--mcp-config=" + file}
+		if mode == ModeRefuse {
+			wantArgs = []string{"--strict-mcp-config", "--mcp-config=" + file}
+		}
+		if inj.Env != nil || inj.AllowEnv != nil || !reflect.DeepEqual(inj.InnerArgs, wantArgs) {
 			t.Fatalf("%s: %+v", mode, inj)
 		}
 	}
 }
 
 func TestBuildInactiveInjectsNothing(t *testing.T) {
-	inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{}, t.TempDir())
+	inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{}, t.TempDir(), nil)
 	if err != nil || !reflect.DeepEqual(inj, Injection{}) {
 		t.Fatalf("inj = %+v, err = %v", inj, err)
+	}
+}
+
+func TestBuildClaudeStrictMode(t *testing.T) {
+	strict := []string{"--strict-mcp-config"}
+	tests := []struct {
+		name     string
+		kind     config.MCPInjectionKind
+		policy   Policy
+		userArgs []string
+		want     []string
+	}{
+		{"claude default, nothing registered", config.MCPInjectClaudeFlag, Policy{ModeRefuse, false}, nil, strict},
+		{"claude refuse, nothing registered", config.MCPInjectClaudeFlag, Policy{ModeRefuse, true}, nil, strict},
+		{"claude warn", config.MCPInjectClaudeFlag, Policy{ModeWarn, true}, nil, nil},
+		{"claude allow", config.MCPInjectClaudeFlag, Policy{ModeAllow, true}, nil, nil},
+		{"user passed the flag", config.MCPInjectClaudeFlag, Policy{ModeRefuse, false}, strict, nil},
+		{"opencode", config.MCPInjectOpenCodeEnv, Policy{ModeRefuse, false}, nil, nil},
+		{"harness without injection", config.MCPInjectNone, Policy{ModeRefuse, false}, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inj, err := Build(tt.kind, nil, tt.policy, t.TempDir(), tt.userArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(inj.InnerArgs, tt.want) || inj.Env != nil || inj.AllowEnv != nil {
+				t.Fatalf("inj = %+v, want args %v", inj, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
+	dir := t.TempDir()
+	inj, err := Build(config.MCPInjectClaudeFlag, testServers, Policy{ModeRefuse, true}, dir, []string{"--strict-mcp-config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--mcp-config=" + filepath.Join(dir, "omac-mcp.json")}; !reflect.DeepEqual(inj.InnerArgs, want) {
+		t.Fatalf("args = %v, want %v", inj.InnerArgs, want)
 	}
 }

@@ -34,7 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
-| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn` or `refuse`. With a harness that cannot receive MCP servers (codex, copilot, pi, codewhale), `warn` starts it without the registered servers. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config) and [Other harnesses](./mcp.md#other-harnesses). |
+| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn` or `refuse`. With a harness that cannot receive MCP servers (codex, copilot, pi, codewhale), `warn` starts it without the registered servers. With Claude Code, the default `refuse` also starts it with `--strict-mcp-config`; `warn` and `allow` do not. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config) and [Other harnesses](./mcp.md#other-harnesses). |
 
 For all flags: `omac start --help`.
 

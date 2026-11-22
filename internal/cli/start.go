@@ -761,7 +761,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	defer f.Close()
 	tcpPort := f.TCPPort()
 	mcp.watch(ctx, f)
-	if err := mcp.buildInjection(harness, socketPath, tcpPort, f.FacadeToken, sandboxTmp); err != nil {
+	if err := mcp.buildInjection(harness, innerArgs, socketPath, tcpPort, f.FacadeToken, sandboxTmp); err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitIOError
 	}

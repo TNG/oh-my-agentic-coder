@@ -160,7 +160,7 @@ Only stdio servers are supported.
 For each registered server that matches the harness, omac starts the server on the host before the harness and injects an entry that starts the bridge. It never edits your own config files.
 
 - **OpenCode**: omac passes the entry in the `OPENCODE_CONFIG_CONTENT` environment variable, which takes precedence over project config.
-- **Claude Code**: omac writes a config file to the session's temporary directory and passes it with `--mcp-config`.
+- **Claude Code**: omac writes a config file to the session's temporary directory and passes it with `--mcp-config`. With the default `refuse` mode it also passes `--strict-mcp-config`, see [Claude Code runs in strict MCP mode](#claude-code-runs-in-strict-mcp-mode).
 
 omac adds these variables to the sandbox only when it injects, so a value you export yourself does not reach the agent.
 
@@ -255,7 +255,18 @@ mcp:
 - **Project-local files cannot set this.** A project's `.opencode/oh-my-agentic-coder.yaml` is ignored for `mcp:`, so opening a repository cannot switch the check off.
 - **Where it is read from.** `~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml` when that variable is set. The registry uses the same directory.
 - **One run:** `omac start --mcp-unregistered=<allow|warn|refuse>` overrides the setting for that run. This is the way past a refusal caused by a checked-in `.mcp.json`.
-- `mcp.unregistered` applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not look at your MCP config.
+- The check of harness entries applies only once a server is registered or you set the value or flag explicitly. With nothing registered and nothing set, omac does not refuse because of your MCP config. Claude Code still starts in strict MCP mode, see below.
+
+### Claude Code runs in strict MCP mode
+
+In the default `refuse` mode omac starts Claude Code with `--strict-mcp-config`, also when nothing is registered. Claude Code then loads only the MCP servers passed with `--mcp-config`: the registered servers omac injects. It no longer loads servers from `.mcp.json`, `~/.claude.json`, settings files or plugins, so a plugin bundle's servers do not start inside omac. When the strict flag is the only change and the scan finds entries, omac prints one line naming them (names only, at most 10) so you know they will not load.
+
+The Claude Code documentation does not say whether strict mode also skips the claude.ai connectors (servers from your Claude account). Check it with a real session before you rely on it; omac does not claim it.
+
+- **Keep Claude's own servers:** run with `--mcp-unregistered=warn` or `allow` (or set `mcp.unregistered`). omac then passes neither flag and leaves Claude's MCP entries as they are.
+- **Your own `--mcp-config` argument** after `--` still loads when nothing is registered, because you chose it. With a registered server or an explicit mode, omac scans it as before.
+- A `--strict-mcp-config` you pass yourself is not repeated.
+- OpenCode and the other harnesses are not affected.
 
 ## Other harnesses
 

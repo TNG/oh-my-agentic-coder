@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -368,11 +369,11 @@ func TestMCPUnparseableConfigRefuses(t *testing.T) {
 	}
 }
 
-func TestMCPInactiveWithNothingRegisteredChangesNothing(t *testing.T) {
+func TestMCPInactiveWithNothingRegisteredChangesNothingForOpenCode(t *testing.T) {
 	r := newMCPRig(t)
-	r.writeFile(".mcp.json", `{"mcpServers":{"other":{"command":"x"}}}`)
+	r.writeFile("opencode.json", `{"mcp":{"other":{"type":"local","command":["x"]}}}`)
 
-	code, stderr := r.launch("claude", r.capture, nil)
+	code, stderr := r.launch("opencode", r.capture, nil)
 	if code != ExitOK {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
@@ -390,6 +391,128 @@ func TestMCPInactiveWithNothingRegisteredChangesNothing(t *testing.T) {
 	}
 	if logs := r.gatewayLogs(); len(logs) != 0 {
 		t.Errorf("a gateway started: %v", logs)
+	}
+}
+
+func TestMCPClaudeStartsStrictWhenNothingIsRegistered(t *testing.T) {
+	r := newMCPRig(t)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if strings.Contains(stderr, "strict MCP mode") {
+		t.Errorf("notice printed although nothing is configured:\n%s", stderr)
+	}
+	args, _, _ := r.captured()
+	if !reflect.DeepEqual(args, []string{"--strict-mcp-config"}) {
+		t.Errorf("args = %v, want only --strict-mcp-config", args)
+	}
+	if logs := r.gatewayLogs(); len(logs) != 0 {
+		t.Errorf("a gateway started: %v", logs)
+	}
+}
+
+func TestMCPClaudeStrictModeNoticeNamesEntriesNotValues(t *testing.T) {
+	r := newMCPRig(t)
+	r.writeFile(".mcp.json", `{"mcpServers":{"other":{"command":"x","args":["--token","s3cret-arg"],"env":{"K":"s3cret-env"}}}}`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	const want = `omac start: Claude Code runs in strict MCP mode, so these MCP servers from its own configuration will not load inside omac: other. Register them with "omac mcp add" or run with --mcp-unregistered=allow to keep them.`
+	if strings.Count(stderr, want) != 1 {
+		t.Errorf("want the notice once:\n%s", stderr)
+	}
+	for _, secret := range []string{"s3cret-arg", "s3cret-env", `"x"`} {
+		if strings.Contains(stderr, secret) {
+			t.Errorf("notice leaks %s:\n%s", secret, stderr)
+		}
+	}
+}
+
+func TestMCPClaudeStrictModeNoticeLimitsNames(t *testing.T) {
+	r := newMCPRig(t)
+	var entries []string
+	for i := 0; i < 12; i++ {
+		entries = append(entries, fmt.Sprintf(`"srv%02d":{"command":"x"}`, i))
+	}
+	r.writeFile(".mcp.json", `{"mcpServers":{`+strings.Join(entries, ",")+`}}`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "srv09 and 2 more.") || strings.Contains(stderr, "srv10") {
+		t.Errorf("names not limited to 10:\n%s", stderr)
+	}
+}
+
+func TestMCPClaudeStrictModeNoticeReportsUnparseableConfig(t *testing.T) {
+	r := newMCPRig(t)
+	r.writeFile(".mcp.json", `{not json`)
+
+	code, stderr := r.launch("claude", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "strict MCP mode") || !strings.Contains(stderr, ".mcp.json") {
+		t.Errorf("no notice for the unparseable file:\n%s", stderr)
+	}
+}
+
+func TestMCPClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
+	r := newMCPRig(t)
+
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.innerArgs = []string{"--strict-mcp-config"} })
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	args, _, _ := r.captured()
+	if !reflect.DeepEqual(args, []string{"--strict-mcp-config"}) {
+		t.Errorf("args = %v, want the user's flag once", args)
+	}
+}
+
+func TestMCPClaudeUserMCPConfigStillLoadsWhenNothingIsRegistered(t *testing.T) {
+	r := newMCPRig(t)
+	r.writeFile("own.json", `{"mcpServers":{}}`)
+	own := "--mcp-config=" + filepath.Join(r.wd, "own.json")
+
+	code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.innerArgs = []string{own} })
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	args, _, _ := r.captured()
+	if want := []string{"--strict-mcp-config", own}; !reflect.DeepEqual(args, want) {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+func TestMCPClaudeWarnAndAllowPassNoMCPFlags(t *testing.T) {
+	for _, mode := range []string{"warn", "allow"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newMCPRig(t)
+			code, stderr := r.launch("claude", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
+			if code != ExitOK {
+				t.Fatalf("exit %d\n%s", code, stderr)
+			}
+			if args, _, _ := r.captured(); len(args) != 0 {
+				t.Errorf("args = %v, want none", args)
+			}
+		})
+	}
+}
+
+func TestMCPNonInjectableHarnessGetsNoStrictFlag(t *testing.T) {
+	r := newMCPRig(t)
+	code, stderr := r.launch("codex", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if args, _, _ := r.captured(); containsString(args, "--strict-mcp-config") {
+		t.Errorf("args = %v", args)
 	}
 }
 
@@ -433,8 +556,8 @@ func TestMCPClaudeInjectionReachesInnerArgsAndEnv(t *testing.T) {
 	if mcpIdx < 0 || userIdx < 0 || mcpIdx > userIdx {
 		t.Errorf("--mcp-config must precede user args: %v", args)
 	}
-	if containsString(args, "--strict-mcp-config") {
-		t.Errorf("existing entries must stay active: %v", args)
+	if args[0] != "--strict-mcp-config" {
+		t.Errorf("registered servers must come with strict mode: %v", args)
 	}
 	if _, ok := env["ENABLE_CLAUDEAI_MCP_SERVERS"]; ok {
 		t.Error("connectors variable must not be set")
