@@ -68,15 +68,45 @@ func (r *redactor) redactArgv(argv []string) []string {
 	return out
 }
 
+// truncationMarker ends a value the MCP argument summary shortened.
+const truncationMarker = "..."
+
 // redactText replaces every occurrence of a known secret value of at least
-// minToolArgsSecretLen bytes inside s.
+// minToolArgsSecretLen bytes inside s. It also replaces the start of a secret
+// that the summary cut off (at least minToolArgsSecretLen bytes followed by
+// the truncation marker), because the summary keeps only the first 40
+// characters of each value.
 func (r *redactor) redactText(s string) string {
 	for v := range r.secretValues {
 		if len(v) >= minToolArgsSecretLen {
 			s = strings.ReplaceAll(s, v, redactedMarker)
+			s = redactTruncatedPrefix(s, v)
 		}
 	}
 	return s
+}
+
+func redactTruncatedPrefix(s, secret string) string {
+	head := secret[:minToolArgsSecretLen]
+	var b strings.Builder
+	for {
+		i := strings.Index(s, head)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		n := minToolArgsSecretLen
+		for i+n < len(s) && n < len(secret) && s[i+n] == secret[n] {
+			n++
+		}
+		b.WriteString(s[:i])
+		if strings.HasPrefix(s[i+n:], truncationMarker) {
+			b.WriteString(redactedMarker)
+		} else {
+			b.WriteString(s[i : i+n])
+		}
+		s = s[i+n:]
+	}
 }
 
 // redactNamespace hashes a per-directory namespace token so a secret

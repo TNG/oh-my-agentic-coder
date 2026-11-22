@@ -345,3 +345,16 @@ func TestRedactorReplacesSecretValuesInsideToolArgs(t *testing.T) {
 		t.Errorf("a value under 8 bytes must be left alone: %q", ev.ToolArgs)
 	}
 }
+
+func TestRedactorReplacesATruncatedSecretInToolArgs(t *testing.T) {
+	secret := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMzQ1Njc4OTAifQ.signature-part"
+	r := newRedactor([]string{secret})
+	// The argument summary keeps the first 40 characters of a value.
+	ev := r.apply(Event{ToolArgs: `q="` + secret[:40] + `...", note="` + secret[:12] + ` is not cut"`})
+	if strings.Contains(ev.ToolArgs, secret[:40]) {
+		t.Errorf("truncated secret kept: %q", ev.ToolArgs)
+	}
+	if !strings.Contains(ev.ToolArgs, secret[:12]+" is not cut") {
+		t.Errorf("a prefix that is not a truncated value must stay: %q", ev.ToolArgs)
+	}
+}
