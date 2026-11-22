@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
@@ -35,6 +36,9 @@ const (
 // Options configures a gateway for one stdio MCP server.
 type Options struct {
 	Def *mcpreg.Definition
+	// Policy is enforced on every message and compared with each session's
+	// live tool list. It is required and is not modified.
+	Policy *mcppolicy.Policy
 	// Dir is the working directory of every child process.
 	Dir    string
 	Secret string
@@ -75,6 +79,9 @@ func Handler(o Options) (http.Handler, func(), error) {
 func newGateway(o Options) (*gateway, error) {
 	if o.Def == nil || len(o.Def.Server.Command) == 0 {
 		return nil, errors.New("gateway: definition without a server command")
+	}
+	if o.Policy == nil {
+		return nil, errors.New("gateway: no tool policy")
 	}
 	if o.MaxSessions <= 0 {
 		o.MaxSessions = defaultMaxSessions
@@ -187,7 +194,7 @@ func (g *gateway) lookup(w http.ResponseWriter, r *http.Request) *session {
 	s := g.sessions[id]
 	g.mu.Unlock()
 	if s == nil {
-		http.Error(w, "unknown session", http.StatusNotFound)
+		refuseHTTP(w, http.StatusNotFound, mcppolicy.ReasonUnknownSession, "unknown session")
 		return nil
 	}
 	return s
@@ -235,7 +242,7 @@ func (g *gateway) status(w http.ResponseWriter, _ *http.Request) {
 	n := len(g.sessions)
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","sessions":%d}`, n)
+	fmt.Fprintf(w, `{"status":"ok","sessions":%d,"pin":%q}`, n, g.pinState())
 }
 
 func (g *gateway) delete(w http.ResponseWriter, r *http.Request) {
@@ -267,13 +274,15 @@ func (g *gateway) post(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body must be a single JSON-RPC message", http.StatusBadRequest)
 		return
 	}
-	if bytes.ContainsAny(body, "\r\n") {
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, body); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-		body = compact.Bytes()
+	call, canonical, err := mcppolicy.ParseRequest(body)
+	if err != nil {
+		refuseHTTP(w, http.StatusBadRequest, mcppolicy.ReasonUnparseable, "refused: "+err.Error())
+		return
+	}
+	body = canonical
+	if msg.hasID() && isInternalID(msg.ID) {
+		http.Error(w, "request id is reserved", http.StatusBadRequest)
+		return
 	}
 
 	var s *session
@@ -291,6 +300,15 @@ func (g *gateway) post(w http.ResponseWriter, r *http.Request) {
 	}
 	s.begin()
 	defer s.end()
+
+	if ref := g.enforce(r.Context(), s, call); ref != nil {
+		if msg.Method == "" || !msg.hasID() {
+			refuseHTTP(w, http.StatusForbidden, ref.reason, ref.message())
+			return
+		}
+		writeReply(w, r, policyErrorReply(msg.ID, *ref))
+		return
+	}
 
 	if msg.Method == "" || !msg.hasID() {
 		if err := s.send(body); err != nil {
@@ -313,28 +331,32 @@ func (g *gateway) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rewrite := func(resp []byte) []byte { return resp }
+	if msg.Method == "tools/list" {
+		rewrite = func(resp []byte) []byte { return g.filterToolsList(msg.ID, resp) }
+	}
 	if acceptsEventStream(r) {
-		g.answerSSE(w, r, s, msg.ID, reply)
+		g.answerSSE(w, r, s, msg.ID, reply, rewrite)
 		return
 	}
 	select {
 	case resp := <-reply:
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(resp)
+		w.Write(rewrite(resp))
 	case <-s.done:
 		writeJSONRPCExit(w, msg.ID)
 	case <-r.Context().Done():
 	}
 }
 
-func (g *gateway) answerSSE(w http.ResponseWriter, r *http.Request, s *session, id json.RawMessage, reply <-chan []byte) {
+func (g *gateway) answerSSE(w http.ResponseWriter, r *http.Request, s *session, id json.RawMessage, reply <-chan []byte, rewrite func([]byte) []byte) {
 	sse := startSSE(w)
 	tick := time.NewTicker(g.keepalive)
 	defer tick.Stop()
 	for {
 		select {
 		case resp := <-reply:
-			sse.event(resp)
+			sse.event(rewrite(resp))
 			return
 		case <-s.done:
 			sse.event(exitResponse(id))
@@ -391,6 +413,17 @@ func acceptsEventStream(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// writeReply answers the request with one JSON-RPC message, as an event when
+// the client accepts a stream.
+func writeReply(w http.ResponseWriter, r *http.Request, msg []byte) {
+	if acceptsEventStream(r) {
+		startSSE(w).event(msg)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(msg)
 }
 
 func exitResponse(id json.RawMessage) []byte {
@@ -459,6 +492,13 @@ type session struct {
 	stream     bool
 	lastActive time.Time
 	closeOnce  sync.Once
+
+	// checkMu serializes pin checks; pin, pinValid and toolsGen are guarded
+	// by mu. toolsGen counts the server's tools/list_changed notifications.
+	checkMu  sync.Mutex
+	pin      pinCheck
+	pinValid bool
+	toolsGen int
 }
 
 func startSession(id string, o Options, env []string, onExit func(*session)) (*session, error) {
@@ -513,6 +553,9 @@ func (s *session) readLoop(stdout io.Reader) {
 }
 
 func (s *session) route(line []byte) {
+	if isToolsListChanged(line) {
+		s.toolsChanged()
+	}
 	var m message
 	if json.Unmarshal(line, &m) == nil && m.Method == "" && m.hasID() {
 		s.mu.Lock()

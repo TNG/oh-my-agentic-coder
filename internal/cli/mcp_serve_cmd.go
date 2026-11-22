@@ -63,6 +63,7 @@ func runMCPServe(args []string, env *Env) int {
 
 	handler, shutdown, err := gateway.Handler(gateway.Options{
 		Def:      def,
+		Policy:   def.Policy(),
 		Dir:      filepath.Dir(absDef),
 		Secret:   secret,
 		ChildEnv: os.Environ(),

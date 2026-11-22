@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
@@ -47,14 +49,91 @@ func fakeServer() {
 		case "initialize":
 			reply(map[string]any{"protocolVersion": "2025-06-18"})
 		case "tools/list":
-			reply(map[string]any{"tools": []any{}})
+			var p struct {
+				Cursor string `json:"cursor"`
+			}
+			var req struct {
+				Params json.RawMessage `json:"params"`
+			}
+			json.Unmarshal(in.Bytes(), &req)
+			json.Unmarshal(req.Params, &p)
+			reply(fakeToolsPage(p.Cursor))
+		case "tools/call":
+			var req struct {
+				Params struct {
+					Name string `json:"name"`
+				} `json:"params"`
+			}
+			json.Unmarshal(in.Bytes(), &req)
+			switch req.Params.Name {
+			case "debug":
+				wd, _ := os.Getwd()
+				reply(map[string]any{"pid": os.Getpid(), "cwd": wd, "env": os.Environ()})
+			case "relist":
+				out.Encode(map[string]any{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+				reply(map[string]any{"content": []any{}})
+			default:
+				reply(map[string]any{"content": []any{map[string]any{"type": "text", "text": "called " + req.Params.Name}}})
+			}
 		case "notifications/initialized":
 			out.Encode(map[string]any{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
-		case "debug/info":
-			wd, _ := os.Getwd()
-			reply(map[string]any{"pid": os.Getpid(), "cwd": wd, "env": os.Environ()})
 		}
 	}
+}
+
+// fakeToolsPage serves the tools listed in the JSON file GATEWAY_FAKE_TOOLS,
+// re-read on every call, GATEWAY_FAKE_PAGE tools per page (cursor = index).
+func fakeToolsPage(cursor string) map[string]any {
+	var tools []json.RawMessage
+	if b, err := os.ReadFile(os.Getenv("GATEWAY_FAKE_TOOLS")); err == nil {
+		json.Unmarshal(b, &tools)
+	}
+	start, _ := strconv.Atoi(cursor)
+	size, _ := strconv.Atoi(os.Getenv("GATEWAY_FAKE_PAGE"))
+	if size <= 0 {
+		size = len(tools) + 1
+	}
+	end := min(start+size, len(tools))
+	res := map[string]any{"tools": tools[min(start, end):end]}
+	if end < len(tools) {
+		res["nextCursor"] = strconv.Itoa(end)
+	}
+	return res
+}
+
+type fakeTool struct{ Name, Description string }
+
+func writeTools(t *testing.T, path string, tools ...fakeTool) {
+	t.Helper()
+	var raws []map[string]any
+	for _, ft := range tools {
+		raws = append(raws, map[string]any{"name": ft.Name, "description": ft.Description, "inputSchema": map[string]any{"type": "object"}})
+	}
+	b, _ := json.Marshal(raws)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hashOf(t *testing.T, ft fakeTool) string {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]any{"name": ft.Name, "description": ft.Description, "inputSchema": map[string]any{"type": "object"}})
+	h, err := mcppolicy.ToolHash(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+var baseTools = []fakeTool{{"echo", "echoes"}, {"wipe", "deletes"}, {"hidden", "off"}, {"debug", "dbg"}, {"relist", "relists"}}
+
+func pinOf(t *testing.T, tools ...fakeTool) *mcppolicy.Pin {
+	t.Helper()
+	per := map[string]string{}
+	for _, ft := range tools {
+		per[ft.Name] = hashOf(t, ft)
+	}
+	return &mcppolicy.Pin{ToolsHash: mcppolicy.ListHash(per), Tools: per, PinnedAt: time.Now()}
 }
 
 func testOptions(t *testing.T) Options {
@@ -63,8 +142,22 @@ func testOptions(t *testing.T) Options {
 	if err != nil {
 		t.Fatal(err)
 	}
+	toolsFile := filepath.Join(t.TempDir(), "tools.json")
+	writeTools(t, toolsFile, baseTools...)
 	o := Options{
-		Def:    &mcpreg.Definition{Name: "fake", Server: mcpreg.ServerSpec{Command: []string{exe}, Env: map[string]string{"GATEWAY_FAKE_SERVER": "1"}}},
+		Def: &mcpreg.Definition{Name: "fake", Server: mcpreg.ServerSpec{Command: []string{exe}, Env: map[string]string{
+			"GATEWAY_FAKE_SERVER": "1", "GATEWAY_FAKE_TOOLS": toolsFile,
+		}}},
+		Policy: &mcppolicy.Policy{
+			Server: "fake",
+			Access: mcppolicy.ReadWriteDelete,
+			Tools: map[string]mcppolicy.Class{
+				"echo": mcppolicy.Read, "wipe": mcppolicy.Delete, "hidden": mcppolicy.Off,
+				"debug": mcppolicy.Read, "relist": mcppolicy.Read,
+			},
+			Approvals: mcppolicy.DefaultApprovals(),
+			Pin:       pinOf(t, baseTools...),
+		},
 		Dir:    t.TempDir(),
 		Secret: secret,
 		ChildEnv: []string{
@@ -161,12 +254,13 @@ func debugInfo(t *testing.T, srv *httptest.Server, sid string) (info struct {
 	Env []string `json:"env"`
 }) {
 	t.Helper()
-	resp := do(t, "POST", srv.URL+"/mcp", `{"jsonrpc":"2.0","id":99,"method":"debug/info"}`, withSession(sid))
+	resp := do(t, "POST", srv.URL+"/mcp", `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"debug"}}`, withSession(sid))
 	var msg struct {
 		Result json.RawMessage `json:"result"`
 	}
-	if err := json.Unmarshal([]byte(readEvent(t, bufio.NewReader(resp.Body))), &msg); err != nil {
-		t.Fatal(err)
+	ev := readEvent(t, bufio.NewReader(resp.Body))
+	if err := json.Unmarshal([]byte(ev), &msg); err != nil || msg.Result == nil {
+		t.Fatalf("debug reply %s: %v", ev, err)
 	}
 	if err := json.Unmarshal(msg.Result, &info); err != nil {
 		t.Fatal(err)

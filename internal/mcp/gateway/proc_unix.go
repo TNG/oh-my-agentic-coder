@@ -8,7 +8,9 @@ import (
 )
 
 func setProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	attr := &syscall.SysProcAttr{Setpgid: true}
+	dieWithParent(attr)
+	cmd.SysProcAttr = attr
 }
 
 func killProcess(cmd *exec.Cmd) {
