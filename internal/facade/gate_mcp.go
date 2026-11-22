@@ -115,7 +115,14 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		return
 	}
 	retryKey := mcpAllowanceKeyFor(route, call, canonical)
-	if d.NeedsApproval && isTool && f.mcpAllowances.has(retryKey) {
+	// allowedUntil is the expiry of the allowance this request uses: the one
+	// it took from the cache, or zero for a fresh approver answer.
+	var allowedUntil time.Time
+	remember := false
+	if d.NeedsApproval && isTool {
+		allowedUntil, remember = f.mcpAllowances.take(retryKey)
+	}
+	if remember {
 		rec.Result, rec.Source = "allow", string(SourceRetry)
 		f.auditApproval(rec)
 	} else if d.NeedsApproval {
@@ -127,9 +134,7 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 		}
 		rec.Result, rec.Source, rec.Scope = "allow", string(verdict.decision.Source), string(verdict.decision.Scope)
 		f.auditApproval(rec)
-		if isTool {
-			f.mcpAllowances.remember(retryKey)
-		}
+		allowedUntil, remember = time.Time{}, isTool
 	} else if isTool {
 		rec.Result, rec.Source = "allow", string(SourceDeclared)
 		f.auditApproval(rec)
@@ -141,10 +146,16 @@ func (f *Facade) gateMCPPost(w http.ResponseWriter, r *http.Request, route *Rout
 	r.TransferEncoding = nil
 	r.Header.Set("Content-Length", strconv.Itoa(len(canonical)))
 	forwarded := &statusCaptureWriter{ResponseWriter: w, status: http.StatusOK}
-	f.proxyHTTP(forwarded, r, route, mcpRest, started)
-	if isTool && forwarded.status/100 == 2 {
-		f.mcpAllowances.forget(retryKey)
+	if remember {
+		// Give the allowance back before the client sees the failure, so
+		// the bridge's immediate retry finds it.
+		forwarded.onStatus = func(status int) {
+			if status/100 != 2 {
+				f.mcpAllowances.restore(retryKey, allowedUntil)
+			}
+		}
 	}
+	f.proxyHTTP(forwarded, r, route, mcpRest, started)
 }
 
 type mcpVerdict struct {

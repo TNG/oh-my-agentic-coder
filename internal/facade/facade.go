@@ -1482,9 +1482,21 @@ type statusCaptureWriter struct {
 	status    int
 	bytes     int64
 	headerSet bool
+	// onStatus, when set, sees the final (non-1xx) status once, before it
+	// is written.
+	onStatus func(status int)
+	notified bool
+}
+
+func (w *statusCaptureWriter) notify(code int) {
+	if w.onStatus != nil && !w.notified && code >= 200 {
+		w.notified = true
+		w.onStatus(code)
+	}
 }
 
 func (w *statusCaptureWriter) WriteHeader(code int) {
+	w.notify(code)
 	w.status = code
 	w.headerSet = true
 	w.ResponseWriter.WriteHeader(code)
@@ -1492,6 +1504,7 @@ func (w *statusCaptureWriter) WriteHeader(code int) {
 
 func (w *statusCaptureWriter) Write(b []byte) (int, error) {
 	if !w.headerSet {
+		w.notify(http.StatusOK)
 		w.headerSet = true
 	}
 	n, err := w.ResponseWriter.Write(b)

@@ -392,13 +392,15 @@ func TestMCPAllowanceCache_StaysBounded(t *testing.T) {
 			first = k
 		}
 		last = k
-		c.remember(k)
+		c.restore(k, time.Time{})
 		if len(c.until) > mcpAllowanceMaxEntries {
 			t.Fatalf("size %d", len(c.until))
 		}
 	}
-	if c.has(first) || !c.has(last) {
-		t.Errorf("oldest kept %v, newest kept %v", c.has(first), c.has(last))
+	_, firstKept := c.until[first]
+	_, lastKept := c.until[last]
+	if firstKept || !lastKept {
+		t.Errorf("oldest kept %v, newest kept %v", firstKept, lastKept)
 	}
 }
 
@@ -412,7 +414,76 @@ func TestMCPGate_ConcurrentRetriesOnlyEverUseApproverAnswers(t *testing.T) {
 		go func() { defer wg.Done(); mcpPost(f, "/srv/mcp", body) }()
 	}
 	wg.Wait()
-	if len(up.seen()) != 8 || len(ap.calls) < 1 || len(ap.calls) > 8 {
-		t.Errorf("approver %d upstream %d", len(ap.calls), len(up.seen()))
+	if len(up.seen()) != 8 || len(ap.calls) != 8 {
+		t.Errorf("every forwarded call needs its own answer: approver %d upstream %d", len(ap.calls), len(up.seen()))
 	}
+}
+
+// One answer must never let more than one attempt of a call through: after a
+// failed attempt, concurrent copies of the call (on new sessions) share one
+// allowance, and the others ask.
+func TestMCPGate_OneAllowanceAdmitsOneConcurrentRetry(t *testing.T) {
+	ap := allowOnce()
+	f, rec, up := mcpFacade(t, ap, nil)
+	up.failFirst = 1
+	body := callBody("7", "put", `{}`)
+	if w := mcpPost(f, "/srv/mcp", body); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first attempt: %d", w.Code)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); mcpPost(f, "/srv/mcp", body, "Mcp-Session-Id", strconv.Itoa(i)) }()
+	}
+	wg.Wait()
+	retries := 0
+	for _, ev := range rec.approvals() {
+		if ev.Source == string(SourceRetry) {
+			retries++
+		}
+	}
+	if retries != 1 || len(ap.calls) != 8 || len(up.seen()) != 9 {
+		t.Errorf("retries %d approver %d upstream %d; want 1, 8, 9", retries, len(ap.calls), len(up.seen()))
+	}
+}
+
+// The allowance is back in place before the client sees the failure, so the
+// bridge's immediate retry does not race it.
+func TestMCPGate_AllowanceIsRestoredBeforeTheFailureIsWritten(t *testing.T) {
+	ap := allowOnce()
+	f, _, up := mcpFacade(t, ap, nil)
+	up.failFirst = 1
+	body := callBody("7", "put", `{}`)
+	call, canonical := mustParse(t, body)
+	key := mcpAllowanceKeyFor(f.routes[routeKey("", "srv")], call, canonical)
+	probe := &statusProbe{ResponseRecorder: httptest.NewRecorder(), check: func() bool {
+		f.mcpAllowances.mu.Lock()
+		defer f.mcpAllowances.mu.Unlock()
+		_, ok := f.mcpAllowances.until[key]
+		return ok
+	}}
+	f.handle(probe, httptest.NewRequest("POST", "/srv/mcp", strings.NewReader(body)))
+	if probe.Code != http.StatusServiceUnavailable || !probe.sawAllowance {
+		t.Errorf("status %d, allowance present at write %v", probe.Code, probe.sawAllowance)
+	}
+}
+
+type statusProbe struct {
+	*httptest.ResponseRecorder
+	check        func() bool
+	sawAllowance bool
+}
+
+func (p *statusProbe) WriteHeader(code int) {
+	p.sawAllowance = p.check()
+	p.ResponseRecorder.WriteHeader(code)
+}
+
+func mustParse(t *testing.T, body string) (mcppolicy.Call, []byte) {
+	t.Helper()
+	c, canonical, err := mcppolicy.ParseRequest([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, canonical
 }
