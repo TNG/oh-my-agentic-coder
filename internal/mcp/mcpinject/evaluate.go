@@ -10,6 +10,8 @@ const refusalExplanation = `An MCP entry in the harness config runs inside the s
 Register the server with "omac mcp register" so its credentials stay on the host, remove the entry, or run once with --mcp-unregistered=allow.
 If an entry already holds a token, rotate it.`
 
+const managedNotice = "\n    (administrator-managed file: you cannot remove it; start with --mcp-unregistered=allow to accept it)"
+
 const argumentsNotice = `Check the copied arguments for tokens before you run the "omac mcp add" commands above.`
 
 // Evaluate applies the policy to what Scan found. Every harness entry is
@@ -26,12 +28,23 @@ func Evaluate(p Policy, ex []Existing, f []Finding) (warnings []string, refusal 
 		if e.AlsoRegistered {
 			problem = fmt.Sprintf("%q in %s (also registered with omac; the harness entry still runs inside the sandbox)", e.Name, e.File)
 		}
+		if e.Managed {
+			problem += managedNotice
+		}
 		hint := AddCommand(e)
 		hinted = hinted || strings.HasPrefix(hint, "omac ")
 		problems = append(problems, problem+"\n    "+hint)
 	}
 	for _, finding := range f {
-		problems = append(problems, fmt.Sprintf("cannot parse MCP config %s (%s)", finding.File, finding.Detail))
+		verb := "read"
+		if finding.Kind == FindingParseError {
+			verb = "parse"
+		}
+		problem := fmt.Sprintf("cannot %s MCP config %s (%s)", verb, finding.File, finding.Detail)
+		if finding.Managed {
+			problem += managedNotice
+		}
+		problems = append(problems, problem)
 	}
 
 	if hinted {

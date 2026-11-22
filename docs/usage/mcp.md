@@ -181,6 +181,30 @@ An MCP entry in the harness's own config (for example `.mcp.json`, `opencode.jso
 
 One harness config cannot serve a server with credentials both inside and outside omac. To use a server in both places, keep the harness entry out of the files omac scans and register the server with omac, or run omac once with `--mcp-unregistered=allow`. Under `allow` or `warn`, if a harness entry has the same name as a registered server, the harness uses the entry omac injects.
 
+### Where omac looks
+
+The scan reads server names, transport, command, arguments and the names (never the values) of environment variables and headers. A file that exists but cannot be read or parsed also stops the start, because it may hide servers. A missing file is ignored. "Walks up" means the current directory and every parent directory up to the filesystem root.
+
+| Harness | Place | Status |
+| --- | --- | --- |
+| OpenCode | `opencode.json` / `opencode.jsonc` in the user config directory (`$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`), in `$OPENCODE_CONFIG_DIR`, and in the current directory and every parent (walks up), also inside each `.opencode/` directory | scanned |
+| OpenCode | file named by `$OPENCODE_CONFIG`; inline JSON in `$OPENCODE_CONFIG_CONTENT` | scanned when set on the host |
+| OpenCode | administrator files `/Library/Application Support/opencode/` and `/etc/opencode/` | scanned, reported as administrator-managed |
+| OpenCode | both config shapes: `mcp.<name>` (v1) and `mcp.servers.<name>` (v2); an entry with `enabled: false` is still reported, because it can be enabled later | scanned |
+| OpenCode | remote `.well-known/opencode` config, macOS MDM managed preferences, Windows `%ProgramData%\opencode`, MCP servers that a plugin registers in code | not scanned (not a file omac can read at start) |
+| Claude Code | `~/.claude.json`, user scope and the entry of the current project only (other projects are never reported), also `$CLAUDE_CONFIG_DIR/.claude.json` | scanned |
+| Claude Code | `.mcp.json` in the current directory and every parent (walks up) | scanned |
+| Claude Code | `settings.json` in `~/.claude` and `$CLAUDE_CONFIG_DIR`, and `.claude/settings.json`, `.claude/settings.local.json` of the project (`mcpServers` key) | scanned |
+| Claude Code | `--mcp-config` files or inline JSON that you pass after the omac flags | scanned |
+| Claude Code | `mcpServers` in the frontmatter of agent files in `.claude/agents/` (current directory and parents), `~/.claude/agents/`, `$CLAUDE_CONFIG_DIR/agents/` and `.claude/agents/` of `--add-dir` directories; `--agents` JSON | scanned |
+| Claude Code | a plugin directory passed with `--plugin-dir`: its `.mcp.json` and `mcpServers` in `.claude-plugin/plugin.json` (inline or a `.json` file) | scanned (not for `.zip` files, `.mcpb` bundles or URLs) |
+| Claude Code | `managed-mcp.json` and `managedMcpServers` in `managed-settings.json` under `/Library/Application Support/ClaudeCode/` and `/etc/claude-code/` | scanned, reported as administrator-managed; the settings file name is unverified because the pages we read name only the directory |
+| Claude Code | installed plugins (`~/.claude/plugins`) | not scanned: the documentation does not describe a stable file layout for installed and enabled plugins |
+| Claude Code | claude.ai connectors | not scanned (fetched from your account over the network); turn them off with `ENABLE_CLAUDEAI_MCP_SERVERS=false` or the setting `disableClaudeAiConnectors` |
+| Claude Code | server-managed settings, MDM and registry policy, Windows paths | not scanned (not a file omac can read at start) |
+
+Environment variables and `--mcp-config` files are scanned whenever they are set on the host, even if the harness would ignore them (for example with `--strict-mcp-config`). To get past such a finding, unset the variable, drop the flag or use `--mcp-unregistered=allow`. An entry from an administrator-managed file cannot be removed by you, so `--mcp-unregistered=allow` is the way past it.
+
 The refusal and the warning print, under each stdio entry, an equivalent command, for example:
 
 ```text
@@ -307,7 +331,7 @@ Before you register a server, and before you review a changed tool list:
 - **`omac serve`** does not run or inject MCP servers.
 - **Argument-level rules live in the server.** omac decides per tool, as it does for skill sidecars.
 - **OAuth tokens in a harness's own state directory** (for example from a login inside the harness) are not protected by omac, and the scan of harness config files does not see them.
-- **Servers provided by harness plugins** are not seen by the scan, and **claude.ai connectors** are not entries omac can see.
+- **Servers provided by installed harness plugins**, **claude.ai connectors**, remote organization config and servers an OpenCode plugin registers in code are not seen by the scan. See [Where omac looks](#where-omac-looks).
 - **Credentials already in readable harness config files** may already be exposed to agents that ran earlier. Rotate them.
 - **Third-party server code and its dependencies** run with your credential. A compromised package is a compromised credential.
 

@@ -34,6 +34,8 @@ type Existing struct {
 	Name    string
 	// UserLevel is set for a file that applies to every project of the user.
 	UserLevel bool
+	// Managed is set for a file an administrator deploys; the user cannot remove its entries.
+	Managed bool
 	// Transport is the server's transport as the config declares it, such as stdio or http.
 	Transport string
 	Command   string
@@ -45,11 +47,19 @@ type Existing struct {
 	AlsoRegistered bool
 }
 
+// Finding kinds. Either may hide servers omac cannot see.
+const (
+	FindingParseError = "parse-error"
+	FindingUnreadable = "unreadable"
+)
+
 // Finding is a harness config file omac could not read or parse.
 type Finding struct {
 	File   string
 	Kind   string
 	Detail string
+	// Managed is set for a file an administrator deploys.
+	Managed bool
 }
 
 // Server is a registered server as the harness is told to start it.

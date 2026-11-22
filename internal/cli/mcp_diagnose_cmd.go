@@ -215,7 +215,7 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 		if h.MCPInjection == config.MCPInjectNone {
 			continue
 		}
-		existing, findings, err := mcpinject.Scan(h.MCPInjection, env.Workdir, home)
+		existing, findings, err := mcpinject.Scan(h.MCPInjection, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
 		if err != nil {
 			fmt.Fprintf(env.Stderr, "omac mcp diagnose: MCP config scan: %v\n", err)
 			return problems, ExitIOError
@@ -227,8 +227,8 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 			if ex.AlsoRegistered {
 				also = " (a server of this name is registered, but this entry still runs inside the sandbox)"
 			}
-			fmt.Fprintf(env.Stdout, "  - %s: %q in %s is not managed by omac%s\n", ex.Harness,
-				stripControlChars(ex.Name), stripControlChars(ex.File), also)
+			fmt.Fprintf(env.Stdout, "  - %s: %q in %s is not managed by omac%s%s\n", ex.Harness,
+				stripControlChars(ex.Name), stripControlChars(ex.File), also, managedSuffix(ex.Managed))
 			if hint := mcpinject.AddCommand(ex); hint != "" {
 				fmt.Fprintf(env.Stdout, "    register it: %s\n", stripControlChars(hint))
 			}
@@ -236,9 +236,16 @@ func diagnoseUnregistered(env *Env, registered map[string]bool) (int, int) {
 		}
 		for _, f := range findings {
 			section()
-			fmt.Fprintf(env.Stdout, "  - %s could not be read (%s): %s\n", stripControlChars(f.File), f.Kind, stripControlChars(f.Detail))
+			fmt.Fprintf(env.Stdout, "  - %s could not be read (%s): %s%s\n", stripControlChars(f.File), f.Kind, stripControlChars(f.Detail), managedSuffix(f.Managed))
 			problems++
 		}
 	}
 	return problems, ExitOK
+}
+
+func managedSuffix(managed bool) string {
+	if managed {
+		return " (administrator-managed file; omac start refuses it unless --mcp-unregistered=allow)"
+	}
+	return ""
 }

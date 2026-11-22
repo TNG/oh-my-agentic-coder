@@ -82,7 +82,7 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 	}
 
 	home, _ := os.UserHomeDir()
-	existing, findings, err := mcpinject.Scan(harness.MCPInjection, env.Workdir, home)
+	existing, findings, err := mcpinject.Scan(harness.MCPInjection, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv, InnerArgs: opts.innerArgs})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
 		return nil, ExitIOError

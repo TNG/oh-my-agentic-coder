@@ -50,7 +50,7 @@ func TestScanFillsEntryDetailsWithoutValues(t *testing.T) {
   "rem": {"type": "remote", "url": "https://h", "headers": {"X-Key": "`+headerValue+`"}}
 }}`)
 
-	ex, _, err := Scan(config.MCPInjectClaudeFlag, workdir, home)
+	ex, _, err := Scan(config.MCPInjectClaudeFlag, hostFor(workdir, home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestScanFillsEntryDetailsWithoutValues(t *testing.T) {
 		t.Fatalf("user = %+v", u)
 	}
 
-	ex, _, err = Scan(config.MCPInjectOpenCodeEnv, workdir, home)
+	ex, _, err = Scan(config.MCPInjectOpenCodeEnv, hostFor(workdir, home))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestEvaluateRefusalHintsHaveNoValues(t *testing.T) {
 			"Check the copied arguments for tokens",
 		}},
 	} {
-		ex, _, err := Scan(tt.kind, workdir, home)
+		ex, _, err := Scan(tt.kind, hostFor(workdir, home))
 		if err != nil {
 			t.Fatal(err)
 		}
