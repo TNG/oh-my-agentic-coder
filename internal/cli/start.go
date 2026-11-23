@@ -700,20 +700,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	mounts := make([]string, 0, len(running))
 	for i, r := range running {
 		mount := approved[i].Mount
-		var maxBody int64
-		if lim := approved[i].Meta.Sidecar.Limits; lim != nil {
-			maxBody = lim.MaxBodyBytes
-		}
-		routes = append(routes, facade.Route{
-			Mount:        mount,
-			UpstreamPort: r.Port,
-			MaxBodyBytes: maxBody,
-			IdleTimeout:  routeIdleTimeout(approved[i].Meta),
-			Skill:        r.Name,
-			SkillDir:     approved[i].AbsDir,
-			Approvals:    approvalSets[i],
-			HealthPath:   healthPaths[i],
-		})
+		routes = append(routes, startRoute(mount, r.Port, r.Name, approved[i].AbsDir, approved[i].Meta, approvalSets[i], healthPaths[i]))
 		mounts = append(mounts, mount)
 	}
 	// Mount unapproved skills as broken routes so a probe gets an
@@ -1555,4 +1542,21 @@ func createRuntimeDir(workdir string) (string, error) {
 		return "", err
 	}
 	return newRuntimeDir(base, "omac-", []string{"logs", "pids"})
+}
+
+func startRoute(mount string, port int, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
+	var maxBody int64
+	if meta != nil && meta.Sidecar != nil && meta.Sidecar.Limits != nil {
+		maxBody = meta.Sidecar.Limits.MaxBodyBytes
+	}
+	return facade.Route{
+		Mount:        mount,
+		UpstreamPort: port,
+		MaxBodyBytes: maxBody,
+		IdleTimeout:  routeIdleTimeout(meta),
+		Skill:        name,
+		SkillDir:     skillDir,
+		Approvals:    approvals,
+		HealthPath:   healthPath,
+	}
 }
