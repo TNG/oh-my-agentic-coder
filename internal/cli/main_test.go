@@ -22,7 +22,9 @@ import (
 //
 // It also clears every harness config-home override (CLAUDE_CONFIG_DIR and
 // friends): tests fake $HOME, but an ambient override names an absolute
-// path and would survive the fake.
+// path and would survive the fake. XDG_CONFIG_HOME is cleared for the same
+// reason: omac's config directory honors it, and CI runners export it, so a
+// fake $HOME alone would not isolate the staged profiles and config files.
 func TestMain(m *testing.M) {
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
@@ -33,4 +35,5 @@ func clearHarnessHomeEnvs() {
 	for _, name := range config.HomeEnvNames() {
 		os.Unsetenv(name)
 	}
+	os.Unsetenv("XDG_CONFIG_HOME")
 }
