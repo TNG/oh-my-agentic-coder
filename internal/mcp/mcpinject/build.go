@@ -15,6 +15,10 @@ const (
 	// OpenCodeConfigEnv carries the inline OpenCode config.
 	OpenCodeConfigEnv = "OPENCODE_CONFIG_CONTENT"
 	claudeConfigFile  = "omac-mcp.json"
+	// CodeWhaleConfigEnv names the MCP config file CodeWhale reads instead of
+	// ~/.codewhale/mcp.json.
+	CodeWhaleConfigEnv  = "CODEWHALE_MCP_CONFIG"
+	codeWhaleConfigFile = "omac-mcp-codewhale.json"
 )
 
 const (
@@ -67,6 +71,8 @@ func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir stri
 		}
 		inj.InnerArgs = append(inj.InnerArgs, configArg)
 		return inj, nil
+	case config.MCPInjectCodeWhaleEnv:
+		return buildCodeWhale(sorted, tmpDir)
 	}
 	return Injection{}, fmt.Errorf("MCP injection kind %d is not supported", kind)
 }
@@ -92,26 +98,63 @@ func buildOpenCode(servers []Server) (Injection, error) {
 }
 
 func buildClaude(servers []Server, tmpDir string) (string, error) {
-	entries := map[string]any{}
-	for _, s := range servers {
-		entries[s.Name] = map[string]any{
+	file, err := writeServersFile(servers, tmpDir, claudeConfigFile, "mcpServers", func(s Server) map[string]any {
+		return map[string]any{
 			"command": s.Argv[0],
 			"args":    s.Argv[1:],
 			"env":     nonNilEnv(s.Env),
 		}
-	}
-	content, err := json.Marshal(map[string]any{"mcpServers": entries})
+	})
 	if err != nil {
 		return "", err
 	}
-	file := filepath.Join(tmpDir, claudeConfigFile)
+	return "--mcp-config=" + file, nil
+}
+
+// buildCodeWhale points CodeWhale at a file that holds only the registered
+// servers. CODEWHALE_MCP_CONFIG replaces the path of the global mcp.json, so the
+// user's own global file is not read for this run. That the override replaces
+// the file and does not add to it, that it wins over mcp_config_path in
+// config.toml, and that CodeWhale's project file (.codewhale/mcp.json, which
+// the user approves separately) and plugin bundles stay active, all come from
+// the public documentation and are unverified. The injection therefore does not
+// let the "ignore" mode of mcp.unregistered apply to CodeWhale.
+func buildCodeWhale(servers []Server, tmpDir string) (Injection, error) {
+	file, err := writeServersFile(servers, tmpDir, codeWhaleConfigFile, "mcpServers", func(s Server) map[string]any {
+		return map[string]any{
+			"command": s.Argv[0],
+			"args":    s.Argv[1:],
+			"env":     nonNilEnv(s.Env),
+		}
+	})
+	if err != nil {
+		return Injection{}, err
+	}
+	return Injection{
+		Env:      map[string]string{CodeWhaleConfigEnv: file},
+		AllowEnv: []string{CodeWhaleConfigEnv},
+	}, nil
+}
+
+// writeServersFile writes {key: {name: entry}} to tmpDir/name with mode 0600
+// and returns the path.
+func writeServersFile(servers []Server, tmpDir, name, key string, entry func(Server) map[string]any) (string, error) {
+	entries := map[string]any{}
+	for _, s := range servers {
+		entries[s.Name] = entry(s)
+	}
+	content, err := json.Marshal(map[string]any{key: entries})
+	if err != nil {
+		return "", err
+	}
+	file := filepath.Join(tmpDir, name)
 	if err := os.WriteFile(file, content, 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", file, err)
 	}
 	if err := os.Chmod(file, 0o600); err != nil {
 		return "", fmt.Errorf("chmod %s: %w", file, err)
 	}
-	return "--mcp-config=" + file, nil
+	return file, nil
 }
 
 func nonNilEnv(env map[string]string) map[string]string {

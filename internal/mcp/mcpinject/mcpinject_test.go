@@ -356,3 +356,33 @@ func TestBuildClaudeDoesNotDuplicateUserStrictFlag(t *testing.T) {
 		t.Fatalf("args = %v, want %v", inj.InnerArgs, want)
 	}
 }
+
+func TestBuildCodeWhalePointsAtAFileWithOnlyTheRegisteredServers(t *testing.T) {
+	const golden = `{"mcpServers":{"gh":{"args":["mcp","bridge","gh"],"command":"/bin/omac","env":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"}}}}`
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
+		dir := t.TempDir()
+		inj, err := Build(config.MCPInjectCodeWhaleEnv, testServers, Policy{Unregistered: mode, Active: true}, dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(dir, "omac-mcp-codewhale.json")
+		raw, err := os.ReadFile(file)
+		if err != nil || string(raw) != golden {
+			t.Fatalf("%s: file %s err %v", mode, raw, err)
+		}
+		if info, _ := os.Stat(file); info.Mode().Perm() != 0o600 {
+			t.Fatalf("mode = %v", info.Mode().Perm())
+		}
+		if !reflect.DeepEqual(inj.Env, map[string]string{"CODEWHALE_MCP_CONFIG": file}) ||
+			!reflect.DeepEqual(inj.AllowEnv, []string{"CODEWHALE_MCP_CONFIG"}) || inj.InnerArgs != nil {
+			t.Fatalf("%s: %+v", mode, inj)
+		}
+	}
+}
+
+func TestBuildCodeWhaleInactiveInjectsNothing(t *testing.T) {
+	inj, err := Build(config.MCPInjectCodeWhaleEnv, testServers, Policy{}, t.TempDir(), nil)
+	if err != nil || !reflect.DeepEqual(inj, Injection{}) {
+		t.Fatalf("inj = %+v, err = %v", inj, err)
+	}
+}

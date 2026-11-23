@@ -221,6 +221,8 @@ const (
 	MCPInjectOpenCodeEnv
 	// MCPInjectClaudeFlag injects through --mcp-config.
 	MCPInjectClaudeFlag
+	// MCPInjectCodeWhaleEnv injects through a file that CODEWHALE_MCP_CONFIG names.
+	MCPInjectCodeWhaleEnv
 )
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -554,9 +556,10 @@ func harnessRegistry() []Harness {
 			NeedsPluginBootstrap: false,
 		},
 		{
-			Name:    "codewhale",
-			MCPScan: MCPScanCodeWhale,
-			Aliases: []string{"cw"},
+			Name:         "codewhale",
+			MCPScan:      MCPScanCodeWhale,
+			MCPInjection: MCPInjectCodeWhaleEnv,
+			Aliases:      []string{"cw"},
 			// CodeWhale CLI executable is `codewhale` (Rust; npm package
 			// "codewhale"). Headless runs use `codewhale exec "<prompt>"`.
 			InnerCmd: []string{"codewhale"},
