@@ -40,7 +40,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `health.interval_ms` | no | `500` | Milliseconds between health polls. |
 | `install_scripts` | no | — | Map of OS key → relative script path (e.g. `{linux: install/install.linux.sh, macos: install/install.macos.sh}`). omac prints these paths at `omac register` time for you to run yourself; it never executes them. |
 | `limits.max_body_bytes` | no | — | Maximum request/response body the proxy will forward, in bytes. |
-| `limits.idle_timeout_secs` | no | — | Seconds with no data in either direction before the proxy closes a WebSocket (upgraded) connection to this skill. If unset, `facade.idle_timeout_secs` applies (default 300). Plain HTTP keep-alive always uses `facade.idle_timeout_secs`. |
+| `limits.idle_timeout_secs` | no | — | WebSocket (upgraded) connections only: seconds with no data in either direction before the proxy closes the connection. Plain HTTP keep-alive is not affected and always uses `facade.idle_timeout_secs`. If unset or 0, `facade.idle_timeout_secs` applies (default 300); a negative value is rejected. Removing or replacing the skill's route closes its open WebSocket connections. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
 | `approvals` | no | — | Which routes run without asking the user. Without the block nothing asks; with it, every route asks unless listed with `approval: none`. See [Approvals](#approvals-which-routes-run-without-asking). |
