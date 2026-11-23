@@ -35,6 +35,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 )
@@ -94,6 +95,12 @@ type Route struct {
 	// answers with the snapshot's SKILL.md never reaches the sidecar, so it
 	// does not ask.
 	Approvals *approval.Set
+
+	// HealthPath is the sidecar's health endpoint; empty means
+	// config.DefaultHealthPath. A GET to it through the facade skips the
+	// per-sidecar request cap, so a client can still poll the health of a
+	// busy sidecar.
+	HealthPath string
 
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep
@@ -181,8 +188,15 @@ type Facade struct {
 	// the intended end-state (tracked in issue #88).
 	FacadeToken string
 
-	mu          sync.RWMutex
-	routes      map[string]*Route
+	mu     sync.RWMutex
+	routes map[string]*Route
+	// transport is shared by all proxied requests, so upstream connections
+	// are reused across requests.
+	transport *http.Transport
+	slotsMu   sync.Mutex
+	slots     map[int]sidecarSlots // by sidecar port, created on first use
+	limits    upstreamLimits
+
 	server      *http.Server
 	unixLn      net.Listener
 	tcpLn       net.Listener
@@ -218,6 +232,8 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 		AccessLogPath: accessLog,
 		Version:       version,
 		routes:        m,
+		transport:     newUpstreamTransport(),
+		limits:        defaultUpstreamLimits,
 	}
 }
 
@@ -261,6 +277,22 @@ func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
 	delete(f.routes, routeKey(namespace, mount))
 	f.mu.Unlock()
+}
+
+// slotsFor returns the request slots of a sidecar port. Routes that share
+// a port (a namespaced route and its flat alias) share the slots.
+func (f *Facade) slotsFor(port int) sidecarSlots {
+	f.slotsMu.Lock()
+	defer f.slotsMu.Unlock()
+	if s, ok := f.slots[port]; ok {
+		return s
+	}
+	if f.slots == nil {
+		f.slots = make(map[int]sidecarSlots)
+	}
+	s := newSidecarSlots()
+	f.slots[port] = s
+	return s
 }
 
 // HasRoute reports whether a route exists for namespace/mount.
@@ -387,6 +419,9 @@ func (f *Facade) Close() error {
 		if err := f.server.Shutdown(shutCtx); err != nil {
 			firstErr = err
 		}
+	}
+	if f.transport != nil {
+		f.transport.CloseIdleConnections()
 	}
 	if f.unixLn != nil {
 		_ = f.unixLn.Close()
@@ -930,6 +965,20 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
 
+	// The slot bounds how many requests wait on the sidecar at once. It is
+	// released when the response has been copied, or as soon as an SSE
+	// response starts so that open streams do not use up the slots.
+	release := func() {}
+	var slotWait time.Duration
+	if !isHealthCheck(r, route, rest) {
+		var ok bool
+		release, slotWait, ok = f.acquireSlot(w, r, route, rest, started)
+		if !ok {
+			return
+		}
+		defer release()
+	}
+
 	// Enforce max body bytes for inbound request body (best-effort; SSE has no
 	// body). Use limitedBody rather than http.MaxBytesReader: MaxBytesReader
 	// stores the ResponseWriter and calls requestTooLarge() on it from whatever
@@ -961,6 +1010,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		ModifyResponse: func(resp *http.Response) error {
 			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
 				resp.Header.Set("X-Accel-Buffering", "no")
+				release()
 			}
 			return nil
 		},
@@ -980,18 +1030,45 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			w.Header().Set("X-Omac-Reason", reason)
 			http.Error(w, "omac: "+reason, code)
 		},
-		// Short connect timeout; liberal overall IO.
-		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-			DisableCompression:    true,
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
+		Transport: f.transport,
 	}
 
 	// Wrap ResponseWriter so we capture the upstream status for logging.
 	wr := &statusCaptureWriter{ResponseWriter: w, status: http.StatusOK}
 	rp.ServeHTTP(wr, r)
-	f.logAccess(r, route, rest, wr.status, wr.bytes, time.Since(started))
+	f.logAccessWaited(r, route, rest, wr.status, wr.bytes, time.Since(started), slotWait)
+}
+
+// acquireSlot takes a request slot of the route's sidecar and reports how
+// long the request waited for it. ok is false when no slot freed up in
+// time, which is answered with 503 sidecar-busy, or when the client left
+// while waiting.
+func (f *Facade) acquireSlot(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) (release func(), waited time.Duration, ok bool) {
+	waitStart := time.Now()
+	release, err := f.slotsFor(route.UpstreamPort).acquire(r.Context(), f.limits.queueWait)
+	waited = time.Since(waitStart)
+	if err == nil {
+		return release, waited, true
+	}
+	status := statusClientClosedRequest
+	if errors.Is(err, errSidecarBusy) {
+		status = http.StatusServiceUnavailable
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("X-Omac-Reason", "sidecar-busy")
+		http.Error(w, fmt.Sprintf("omac: sidecar-busy: %d requests to this skill are already in progress; retry later", maxConnsPerSidecar), status)
+	}
+	f.logAccessWaited(r, route, rest, status, 0, time.Since(started), waited)
+	return nil, waited, false
+}
+
+// isHealthCheck reports whether r is a GET of the route's health endpoint.
+// rest is the cleaned path after the mount, without a leading slash.
+func isHealthCheck(r *http.Request, route *Route, rest string) bool {
+	healthPath := route.HealthPath
+	if healthPath == "" {
+		healthPath = config.DefaultHealthPath
+	}
+	return r.Method == http.MethodGet && rest == strings.TrimPrefix(healthPath, "/")
 }
 
 // hopByHopHeaders lists headers that must not be forwarded across a proxy
@@ -1131,6 +1208,13 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 }
 
 func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status int, bytes int64, dur time.Duration) {
+	f.logAccessWaited(r, route, rest, status, bytes, dur, 0)
+}
+
+// logAccessWaited is logAccess for a request that waited slotWait for a
+// sidecar slot. A wait above limits.slowWait is added to the access-log
+// entry as slot_wait_ms.
+func (f *Facade) logAccessWaited(r *http.Request, route *Route, rest string, status int, bytes int64, dur, slotWait time.Duration) {
 	// Audit sink: one facade.request event per request, with the namespace
 	// hashed by the auditor (a secret dir-token must never be written).
 	if f.auditor != nil {
@@ -1149,6 +1233,9 @@ func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status in
 		"upstream_status": status,
 		"bytes_out":       bytes,
 		"duration_ms":     dur.Milliseconds(),
+	}
+	if slotWait > f.limits.slowWait {
+		entry["slot_wait_ms"] = slotWait.Milliseconds()
 	}
 	b, _ := json.Marshal(entry)
 	f.accLog.Println(string(b))

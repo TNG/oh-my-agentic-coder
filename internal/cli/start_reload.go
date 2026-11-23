@@ -536,6 +536,7 @@ func (r *startReloader) reload() []string {
 			Skill:        e.Name,
 			Owner:        e.Name,
 			Approvals:    routeApprovals(snapM),
+			HealthPath:   health.Defaults().Path,
 			State:        facade.RouteReady,
 		})
 		r.markMounted(e.Name, mount)
