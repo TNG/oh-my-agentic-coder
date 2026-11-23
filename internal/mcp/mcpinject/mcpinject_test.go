@@ -486,3 +486,25 @@ func TestBuildCodexInactiveInjectsNothing(t *testing.T) {
 		t.Fatalf("inj = %+v, err = %v", inj, err)
 	}
 }
+
+func TestBuildRefusesEnvValuesThatTheHarnessExpands(t *testing.T) {
+	policy := Policy{Unregistered: ModeRefuse, Active: true}
+	tests := []struct {
+		kind  config.MCPInjectionKind
+		value string
+		bad   bool
+	}{
+		{config.MCPInjectCopilotFlag, "a$b", true},
+		{config.MCPInjectCopilotFlag, "${X}", true},
+		{config.MCPInjectCopilotFlag, "plain", false},
+		{config.MCPInjectCodeWhaleEnv, "${X}", true},
+		{config.MCPInjectCodeWhaleEnv, "a$b", false},
+	}
+	for _, tt := range tests {
+		servers := []Server{{Name: "gh", Argv: []string{"x"}, Env: map[string]string{"OMAC_BASE": tt.value}}}
+		_, err := Build(tt.kind, servers, policy, t.TempDir(), nil)
+		if (err != nil) != tt.bad {
+			t.Errorf("kind %d value %q: err = %v, want error %v", tt.kind, tt.value, err, tt.bad)
+		}
+	}
+}

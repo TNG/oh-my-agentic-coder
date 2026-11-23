@@ -132,6 +132,9 @@ func buildClaude(servers []Server, tmpDir string) (string, error) {
 // the public documentation and are unverified. The injection therefore does not
 // let the "ignore" mode of mcp.unregistered apply to CodeWhale.
 func buildCodeWhale(servers []Server, tmpDir string) (Injection, error) {
+	if err := refuseExpandedValues("CodeWhale", servers, "${"); err != nil {
+		return Injection{}, err
+	}
 	file, err := writeServersFile(servers, tmpDir, codeWhaleConfigFile, "mcpServers", func(s Server) map[string]any {
 		return map[string]any{
 			"command": s.Argv[0],
@@ -160,6 +163,9 @@ func buildCopilot(servers []Server, tmpDir string, userArgs []string) ([]string,
 			return nil, fmt.Errorf("cannot add registered MCP servers: %s is also passed after the omac flags; remove it or register the servers it defines", additionalMCPConfigFlag)
 		}
 	}
+	if err := refuseExpandedValues("Copilot CLI", servers, "$"); err != nil {
+		return nil, err
+	}
 	file, err := writeServersFile(servers, tmpDir, copilotConfigFile, "mcpServers", func(s Server) map[string]any {
 		return map[string]any{
 			"type":    "local",
@@ -173,6 +179,21 @@ func buildCopilot(servers []Server, tmpDir string, userArgs []string) ([]string,
 		return nil, err
 	}
 	return []string{additionalMCPConfigFlag, "@" + file}, nil
+}
+
+// refuseExpandedValues refuses a server whose env value holds marker, the text
+// the harness expands in env values (CodeWhale: ${NAME}; Copilot CLI: $VAR,
+// ${VAR} and ${VAR:-default}). Neither documents an escape, so the value would
+// reach the server changed.
+func refuseExpandedValues(harness string, servers []Server, marker string) error {
+	for _, s := range servers {
+		for k, v := range s.Env {
+			if strings.Contains(v, marker) {
+				return fmt.Errorf("MCP server %q: %s expands %q in env values and has no escape, so the value of %s cannot be passed unchanged", s.Name, harness, marker, k)
+			}
+		}
+	}
+	return nil
 }
 
 var codexBareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
