@@ -157,17 +157,6 @@ func (r *mcpRig) writeFile(rel, content string) {
 	}
 }
 
-func (r *mcpRig) writeLauncherConfig(content string) {
-	r.t.Helper()
-	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "omac", "config.yaml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		r.t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		r.t.Fatal(err)
-	}
-}
-
 // register registers a fake MCP server; withSecret stores its FAKE_TOKEN.
 func (r *mcpRig) register(name string, withSecret bool, harnesses ...string) {
 	r.t.Helper()
@@ -792,7 +781,7 @@ func TestMCPIgnoreReportsUserMCPConfigAsLoaded(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "warning: unregistered MCP server \"mine\"") || strings.Contains(stderr, "notice:") {
+	if !strings.Contains(stderr, "warning: unregistered MCP server \"mine\"") || strings.Contains(stderr, "notice: unregistered MCP server") {
 		t.Errorf("an entry the user passes must be reported as loaded, not ignored:\n%s", stderr)
 	}
 }
