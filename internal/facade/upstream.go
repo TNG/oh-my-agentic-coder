@@ -14,12 +14,6 @@ const (
 	// enforced by a semaphore rather than Transport.MaxConnsPerHost, which
 	// waits without a deadline.
 	maxConnsPerSidecar = 32
-	// upstreamQueueWait is how long a request waits for a free slot before
-	// the facade answers 503 sidecar-busy.
-	upstreamQueueWait = 5 * time.Second
-	// slowSlotWait is how long a request may wait for a slot before the
-	// facade logs it.
-	slowSlotWait = time.Second
 	// maxIdleConnsPerSidecar bounds the keep-alive connections the facade
 	// parks per sidecar between requests.
 	maxIdleConnsPerSidecar = 8
@@ -27,6 +21,22 @@ const (
 	// request has used for this long.
 	upstreamIdleTimeout = 30 * time.Second
 )
+
+// statusClientClosedRequest is logged for a request whose client left
+// while it waited for a slot. No response is written in that case.
+const statusClientClosedRequest = 499
+
+// upstreamLimits are the waits of the per-sidecar request queue.
+type upstreamLimits struct {
+	// queueWait is how long a request waits for a free slot before the
+	// facade answers 503 sidecar-busy.
+	queueWait time.Duration
+	// slowWait is the slot wait above which the access-log entry of the
+	// request carries slot_wait_ms.
+	slowWait time.Duration
+}
+
+var defaultUpstreamLimits = upstreamLimits{queueWait: 5 * time.Second, slowWait: time.Second}
 
 // errSidecarBusy is returned by acquire when no slot frees up in time.
 var errSidecarBusy = errors.New("sidecar busy")

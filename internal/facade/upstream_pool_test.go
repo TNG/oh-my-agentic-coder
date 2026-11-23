@@ -292,7 +292,7 @@ func TestCapLimitsConcurrentRequestsPerSidecar(t *testing.T) {
 func TestQueueDeadlineReturns503(t *testing.T) {
 	b := newBusySidecar(t)
 	f, base := poolFacade(t, echoRoute(b.port))
-	f.queueWait = 100 * time.Millisecond
+	f.limits.queueWait = 100 * time.Millisecond
 	codes := b.fill(t, base, maxConnsPerSidecar)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -346,7 +346,7 @@ func slotWaitLines(log string) []map[string]any {
 	var out []map[string]any
 	for _, line := range strings.Split(log, "\n") {
 		var e map[string]any
-		if json.Unmarshal([]byte(line), &e) == nil && e["event"] == "slot_wait" {
+		if json.Unmarshal([]byte(line), &e) == nil && e["slot_wait_ms"] != nil {
 			out = append(out, e)
 		}
 	}
@@ -358,8 +358,8 @@ func TestSlowSlotWaitIsLogged(t *testing.T) {
 	f, base := poolFacade(t, echoRoute(b.port))
 	var accLog syncBuffer
 	f.accLog = log.New(&accLog, "", 0)
-	f.slowWait = 50 * time.Millisecond
-	f.queueWait = 5 * time.Second
+	f.limits.slowWait = 50 * time.Millisecond
+	f.limits.queueWait = 5 * time.Second
 	codes := b.fill(t, base, maxConnsPerSidecar)
 
 	served := make(chan int, 1)
@@ -373,8 +373,8 @@ func TestSlowSlotWaitIsLogged(t *testing.T) {
 		<-codes
 	}
 	lines := slotWaitLines(accLog.String())
-	if len(lines) != 1 || lines[0]["outcome"] != "served" || lines[0]["mount"] != "echo" || lines[0]["wait_ms"].(float64) < 50 {
-		t.Fatalf("want one served slot_wait line for mount echo with wait_ms >= 50, got %v", lines)
+	if len(lines) != 1 || lines[0]["upstream_status"] != float64(200) || lines[0]["path"] != "/work" || lines[0]["slot_wait_ms"].(float64) < 50 {
+		t.Fatalf("want one entry for the served /work request with slot_wait_ms >= 50, got %v", lines)
 	}
 }
 
@@ -383,17 +383,38 @@ func TestSlowSlotWaitLoggedOn503(t *testing.T) {
 	f, base := poolFacade(t, echoRoute(b.port))
 	var accLog syncBuffer
 	f.accLog = log.New(&accLog, "", 0)
-	f.slowWait = 50 * time.Millisecond
-	f.queueWait = 150 * time.Millisecond
+	f.limits.slowWait = 50 * time.Millisecond
+	f.limits.queueWait = 150 * time.Millisecond
 	b.fill(t, base, maxConnsPerSidecar)
 
 	if code := getStatus(t, http.DefaultClient, base+"/echo/work"); code != http.StatusServiceUnavailable {
 		t.Fatalf("status %d, want 503", code)
 	}
-	lines := slotWaitLines(accLog.String())
-	if len(lines) != 1 || lines[0]["outcome"] != "503" || lines[0]["wait_ms"].(float64) < 150 {
-		t.Fatalf("want one 503 slot_wait line with wait_ms >= 150, got %v", lines)
+	if n := strings.Count(accLog.String(), `"path":"/work"`); n != 1 {
+		t.Errorf("%d access-log lines for the rejected request, want 1", n)
 	}
+	lines := slotWaitLines(accLog.String())
+	if len(lines) != 1 || lines[0]["upstream_status"] != float64(503) || lines[0]["slot_wait_ms"].(float64) < 150 {
+		t.Fatalf("want one 503 entry with slot_wait_ms >= 150, got %v", lines)
+	}
+}
+
+func TestClientLeavingTheQueueIsLogged(t *testing.T) {
+	b := newBusySidecar(t)
+	f, base := poolFacade(t, echoRoute(b.port))
+	var accLog syncBuffer
+	f.accLog = log.New(&accLog, "", 0)
+	f.limits.slowWait = 50 * time.Millisecond
+	b.fill(t, base, maxConnsPerSidecar)
+
+	client := &http.Client{Timeout: 150 * time.Millisecond}
+	if _, err := client.Get(base + "/echo/work"); err == nil {
+		t.Fatal("request finished although every slot was taken")
+	}
+	eventually(t, "access-log entry of the abandoned request", func() bool {
+		lines := slotWaitLines(accLog.String())
+		return len(lines) == 1 && lines[0]["upstream_status"] == float64(statusClientClosedRequest) && lines[0]["path"] == "/work"
+	})
 }
 
 func TestFastSlotAcquireIsNotLogged(t *testing.T) {
@@ -403,14 +424,14 @@ func TestFastSlotAcquireIsNotLogged(t *testing.T) {
 	f.accLog = log.New(&accLog, "", 0)
 	getStatus(t, http.DefaultClient, base+"/echo/x")
 	if lines := slotWaitLines(accLog.String()); len(lines) != 0 {
-		t.Fatalf("unexpected slot_wait lines: %v", lines)
+		t.Fatalf("unexpected slot_wait_ms entries: %v", lines)
 	}
 }
 
 func TestSSEStreamReleasesSlot(t *testing.T) {
 	up := newCountingUpstream(t, sseHandler(nil))
 	f, base := poolFacade(t, echoRoute(up.port))
-	f.queueWait = 100 * time.Millisecond
+	f.limits.queueWait = 100 * time.Millisecond
 
 	for i := 0; i < maxConnsPerSidecar; i++ {
 		resp, err := http.Get(base + "/echo/sse")
@@ -495,7 +516,7 @@ func TestSSEStreamOutlivesPoolIdleTimeout(t *testing.T) {
 func TestUpgradeNotBlockedByFullPool(t *testing.T) {
 	b := newBusySidecar(t)
 	f, base := poolFacade(t, echoRoute(b.port))
-	f.queueWait = 100 * time.Millisecond
+	f.limits.queueWait = 100 * time.Millisecond
 	b.fill(t, base, maxConnsPerSidecar)
 
 	c, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
@@ -543,7 +564,7 @@ func TestHealthCheckBypassesFullPool(t *testing.T) {
 	route := echoRoute(b.port)
 	route.HealthPath = "/status"
 	f, base := poolFacade(t, route)
-	f.queueWait = 100 * time.Millisecond
+	f.limits.queueWait = 100 * time.Millisecond
 	b.fill(t, base, maxConnsPerSidecar)
 
 	client := &http.Client{Timeout: time.Second}
