@@ -140,7 +140,7 @@ func TestEvaluateRefusalHintsHaveNoValues(t *testing.T) {
 // none may reach the terminal with an escape sequence or a bidi override.
 func TestTerminalOutputNeverCarriesDisplayControls(t *testing.T) {
 	const esc = "x\x1b]52;c;ZXZpbA==\x07"
-	const bidi = "safe‮exe.sh"
+	const bidi = "safe\u202eexe.sh"
 	ex := []Existing{
 		{Harness: "claude-code", Name: esc, Transport: "stdio", Command: "npx", File: "/w/.claude/agents/" + bidi},
 		{Harness: "claude-code", Name: "ok", Transport: "stdio", Command: "npx", Args: []string{bidi}, File: "/w/.mcp.json"},
