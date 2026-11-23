@@ -35,6 +35,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
 )
@@ -95,9 +96,10 @@ type Route struct {
 	// does not ask.
 	Approvals *approval.Set
 
-	// HealthPath is the sidecar's health endpoint (for example "/status").
-	// A GET to it skips the per-sidecar request cap, so a sidecar that is
-	// busy is not reported as down. Empty means no route is exempt.
+	// HealthPath is the sidecar's health endpoint; empty means
+	// config.DefaultHealthPath. A GET to it through the facade skips the
+	// per-sidecar request cap, so a client can still poll the health of a
+	// busy sidecar.
 	HealthPath string
 
 	// State selects forward vs. stub behavior. The zero value ("") is
@@ -1062,8 +1064,11 @@ func (f *Facade) acquireSlot(w http.ResponseWriter, r *http.Request, route *Rout
 // isHealthCheck reports whether r is a GET of the route's health endpoint.
 // rest is the cleaned path after the mount, without a leading slash.
 func isHealthCheck(r *http.Request, route *Route, rest string) bool {
-	return r.Method == http.MethodGet && route.HealthPath != "" &&
-		rest == strings.TrimPrefix(route.HealthPath, "/")
+	healthPath := route.HealthPath
+	if healthPath == "" {
+		healthPath = config.DefaultHealthPath
+	}
+	return r.Method == http.MethodGet && rest == strings.TrimPrefix(healthPath, "/")
 }
 
 // hopByHopHeaders lists headers that must not be forwarded across a proxy

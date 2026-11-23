@@ -355,6 +355,9 @@ type HealthSpec struct {
 	IntervalMS     int    `yaml:"interval_ms,omitempty"`
 }
 
+// DefaultHealthPath is the sidecar health endpoint when a manifest names none.
+const DefaultHealthPath = "/status"
+
 // Defaults fills zero values with the documented defaults and returns a copy.
 func (h *HealthSpec) Defaults() HealthSpec {
 	out := HealthSpec{}
@@ -362,7 +365,7 @@ func (h *HealthSpec) Defaults() HealthSpec {
 		out = *h
 	}
 	if out.Path == "" {
-		out.Path = "/status"
+		out.Path = DefaultHealthPath
 	}
 	if out.InitialDelayMS == 0 {
 		out.InitialDelayMS = 200

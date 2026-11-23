@@ -561,9 +561,7 @@ func TestClientDisconnectClosesUpstreamStream(t *testing.T) {
 
 func TestHealthCheckBypassesFullPool(t *testing.T) {
 	b := newBusySidecar(t)
-	route := echoRoute(b.port)
-	route.HealthPath = "/status"
-	f, base := poolFacade(t, route)
+	f, base := poolFacade(t, echoRoute(b.port))
 	f.limits.queueWait = 100 * time.Millisecond
 	b.fill(t, base, maxConnsPerSidecar)
 
@@ -585,8 +583,11 @@ func TestIsHealthCheck(t *testing.T) {
 		{"POST to the health path", http.MethodPost, "/status", "status", false},
 		{"path below the health path", http.MethodGet, "/status", "status/x", false},
 		{"other path", http.MethodGet, "/status", "other", false},
-		{"route without a health path", http.MethodGet, "", "status", false},
+		{"custom health path", http.MethodGet, "/healthz", "healthz", true},
+		{"default path on a route with a custom one", http.MethodGet, "/healthz", "status", false},
+		{"route without a health path uses the default", http.MethodGet, "", "status", true},
 		{"route without a health path, mount root", http.MethodGet, "", "", false},
+		{"route without a health path, POST", http.MethodPost, "", "status", false},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(c.method, "/echo/"+c.rest, nil)
