@@ -173,3 +173,51 @@ func TestMCPCopilotUserAdditionalConfigIsNotCombined(t *testing.T) {
 		t.Error("the inner command ran")
 	}
 }
+
+func TestMCPCodexReceivesTheRegisteredServer(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	r := newMCPRig(t)
+	r.register("demo", true, "codex")
+
+	code, stderr := r.launch("codex", r.capture, nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	args := r.rawArgs()
+	if len(args) < 2 || args[0] != "-c" || !strings.HasPrefix(args[1], "mcp_servers.demo={command = ") {
+		t.Fatalf("args = %q", args)
+	}
+	if !strings.Contains(args[1], `env_vars = ["OMAC_BASE", "OMAC_FACADE_TOKEN", "OMAC_SOCKET"]`) {
+		t.Errorf("env_vars missing: %s", args[1])
+	}
+	_, env, _ := r.captured()
+	if env["OMAC_FACADE_TOKEN"] == "" || strings.Contains(strings.Join(args, " "), env["OMAC_FACADE_TOKEN"]) {
+		t.Errorf("the facade token is missing from the environment or present in the arguments")
+	}
+	if strings.Contains(strings.Join(args, " "), "tok-from-keychain") {
+		t.Error("a registered secret is on the command line")
+	}
+	if logs := r.gatewayLogs(); len(logs) == 0 {
+		t.Error("no gateway started")
+	}
+}
+
+func TestMCPCodexDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	for _, mode := range []string{"", "ignore"} {
+		r := newMCPRig(t)
+		r.register("demo", true, "codex")
+		r.writeFile(".codex/config.toml", "[mcp_servers.native]\ncommand = \"x\"\n")
+
+		code, stderr := r.launch("codex", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
+		if code != ExitConfigInvalid || !strings.Contains(stderr, `unregistered MCP server "native"`) {
+			t.Fatalf("mode %q: exit %d\n%s", mode, code, stderr)
+		}
+		if mode == "ignore" && !strings.Contains(stderr, "ignore is not available for codex") {
+			t.Errorf("no fallback message:\n%s", stderr)
+		}
+		if _, _, ran := r.captured(); ran {
+			t.Error("the inner command ran")
+		}
+	}
+}

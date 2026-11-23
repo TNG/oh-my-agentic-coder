@@ -493,8 +493,8 @@ func TestPluginProvidedIsReported(t *testing.T) {
 }
 
 func TestEvaluateUnsupported(t *testing.T) {
-	entries := []Existing{{Harness: "codex", File: "/p/config.toml", Name: "native", Command: "npx"}}
-	message := "omac cannot provide MCP servers to codex yet (supported: " + strings.Join(config.MCPCapableHarnessNames(), ", ") + "). Registered servers that will not be available: a, b."
+	entries := []Existing{{Harness: "pi", File: "/p/config.toml", Name: "native", Command: "npx"}}
+	message := "omac cannot provide MCP servers to pi yet (supported: " + strings.Join(config.MCPCapableHarnessNames(), ", ") + "). Registered servers that will not be available: a, b."
 	tests := []struct {
 		name        string
 		policy      Policy
@@ -527,7 +527,7 @@ func TestEvaluateUnsupported(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warnings, refusal := EvaluateUnsupported(tt.policy, "codex", tt.registered, tt.entries, nil)
+			warnings, refusal := EvaluateUnsupported(tt.policy, "pi", tt.registered, tt.entries, nil)
 			if len(tt.wantWarn) == 0 && len(warnings) != 0 {
 				t.Errorf("warnings = %v", warnings)
 			}
@@ -560,7 +560,7 @@ func TestEvaluateUnsupported(t *testing.T) {
 }
 
 func TestAddCommandIsEmptyForHarnessesWithoutMCPSupport(t *testing.T) {
-	if got := AddCommand(Existing{Harness: "codex", Name: "x", Command: "npx"}); got != "" {
+	if got := AddCommand(Existing{Harness: "pi", Name: "x", Command: "npx"}); got != "" {
 		t.Errorf("AddCommand = %q", got)
 	}
 }

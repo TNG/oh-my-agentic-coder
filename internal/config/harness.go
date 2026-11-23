@@ -225,6 +225,8 @@ const (
 	MCPInjectCodeWhaleEnv
 	// MCPInjectCopilotFlag injects through --additional-mcp-config.
 	MCPInjectCopilotFlag
+	// MCPInjectCodexFlag injects through -c mcp_servers.<name>=... overrides.
+	MCPInjectCodexFlag
 )
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -423,9 +425,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "codex",
-			MCPScan: MCPScanCodex,
-			Aliases: []string{"cx"},
+			Name:         "codex",
+			MCPScan:      MCPScanCodex,
+			MCPInjection: MCPInjectCodexFlag,
+			Aliases:      []string{"cx"},
 			// OpenAI Codex CLI executable is `codex`.
 			InnerCmd: []string{"codex"},
 			// codex app-server is experimental; under `omac serve` it runs as-is.

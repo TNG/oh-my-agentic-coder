@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -75,6 +76,8 @@ func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir stri
 		return inj, nil
 	case config.MCPInjectCodeWhaleEnv:
 		return buildCodeWhale(sorted, tmpDir)
+	case config.MCPInjectCodexFlag:
+		return buildCodex(sorted)
 	case config.MCPInjectCopilotFlag:
 		args, err := buildCopilot(sorted, tmpDir, userArgs)
 		if err != nil {
@@ -170,6 +173,78 @@ func buildCopilot(servers []Server, tmpDir string, userArgs []string) ([]string,
 		return nil, err
 	}
 	return []string{additionalMCPConfigFlag, "@" + file}, nil
+}
+
+var codexBareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// buildCodex passes each server as a -c mcp_servers.<name>={...} override, so
+// omac never edits config.toml. Codex does not hand its own environment to MCP
+// servers, so the bridge variables are named in env_vars and set in the
+// harness environment; no value appears on the command line. The -c dotted-key
+// override, an inline table as its value and the env_vars list come from the
+// public documentation and are unverified against a running Codex. A name that
+// is not a bare TOML key is refused, because quoted keys in -c are unverified.
+func buildCodex(servers []Server) (Injection, error) {
+	env := map[string]string{}
+	var args []string
+	for _, s := range servers {
+		if !codexBareKey.MatchString(s.Name) {
+			return Injection{}, fmt.Errorf("MCP server %q: Codex accepts only letters, digits, - and _ in a server name", s.Name)
+		}
+		names := make([]string, 0, len(s.Env))
+		for k, v := range s.Env {
+			if old, ok := env[k]; ok && old != v {
+				return Injection{}, fmt.Errorf("MCP servers pass different values for %s, which Codex cannot take from one environment", k)
+			}
+			env[k] = v
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		table := "{command = " + tomlString(s.Argv[0]) + ", args = " + tomlStringList(s.Argv[1:])
+		if len(names) > 0 {
+			table += ", env_vars = " + tomlStringList(names)
+		}
+		table += "}"
+		args = append(args, "-c", "mcp_servers."+s.Name+"="+table)
+	}
+	allow := make([]string, 0, len(env))
+	for k := range env {
+		allow = append(allow, k)
+	}
+	sort.Strings(allow)
+	return Injection{Env: env, AllowEnv: allow, InnerArgs: args}, nil
+}
+
+func tomlStringList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, item := range items {
+		quoted[i] = tomlString(item)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// tomlString writes s as a TOML basic string.
+func tomlString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // writeServersFile writes {key: {name: entry}} to tmpDir/name with mode 0600

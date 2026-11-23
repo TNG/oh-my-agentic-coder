@@ -423,3 +423,66 @@ func TestBuildCopilotInactiveInjectsNothing(t *testing.T) {
 		t.Fatalf("inj = %+v, err = %v", inj, err)
 	}
 }
+
+func TestBuildCodexPassesOverridesWithoutValues(t *testing.T) {
+	const golden = `mcp_servers.gh={command = "/bin/omac", args = ["mcp", "bridge", "gh"], env_vars = ["OMAC_BASE", "OMAC_FACADE_TOKEN", "OMAC_SOCKET"]}`
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
+		inj, err := Build(config.MCPInjectCodexFlag, testServers, Policy{Unregistered: mode, Active: true}, t.TempDir(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"-c", golden}; !reflect.DeepEqual(inj.InnerArgs, want) {
+			t.Fatalf("%s: args = %q\nwant %q", mode, inj.InnerArgs, want)
+		}
+		if inj.Env["OMAC_FACADE_TOKEN"] != "t" || len(inj.Env) != 3 ||
+			!reflect.DeepEqual(inj.AllowEnv, []string{"OMAC_BASE", "OMAC_FACADE_TOKEN", "OMAC_SOCKET"}) {
+			t.Fatalf("%s: %+v", mode, inj)
+		}
+		for _, a := range inj.InnerArgs {
+			if strings.Contains(a, "http://h") || a == "t" {
+				t.Fatalf("a value is on the command line: %q", a)
+			}
+		}
+	}
+}
+
+func TestBuildCodexOverrideParsesAsTOML(t *testing.T) {
+	servers := []Server{{
+		Name: "a-b_1",
+		Argv: []string{`/bin/o"mac`, "back\\slash", "tab\there", "line\nbreak", "ünï"},
+		Env:  map[string]string{"OMAC_BASE": "x"},
+	}}
+	inj, err := Build(config.MCPInjectCodexFlag, servers, Policy{Unregistered: ModeRefuse, Active: true}, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := parseCodexServers([]byte(strings.Replace(inj.InnerArgs[1], "mcp_servers.", "mcp_servers.", 1)))
+	if err != nil {
+		t.Fatalf("not valid TOML: %v\n%s", err, inj.InnerArgs[1])
+	}
+	if len(existing) != 1 || existing[0].Name != "a-b_1" || existing[0].Command != `/bin/o"mac` ||
+		!reflect.DeepEqual(existing[0].Args, []string{"back\\slash", "tab\there", "line\nbreak", "ünï"}) {
+		t.Fatalf("round trip: %+v", existing)
+	}
+}
+
+func TestBuildCodexRefusesWhatItCannotExpress(t *testing.T) {
+	policy := Policy{Unregistered: ModeRefuse, Active: true}
+	if _, err := Build(config.MCPInjectCodexFlag, []Server{{Name: "a.b", Argv: []string{"x"}}}, policy, t.TempDir(), nil); err == nil {
+		t.Error("a dotted name was accepted")
+	}
+	clash := []Server{
+		{Name: "a", Argv: []string{"x"}, Env: map[string]string{"OMAC_BASE": "1"}},
+		{Name: "b", Argv: []string{"x"}, Env: map[string]string{"OMAC_BASE": "2"}},
+	}
+	if _, err := Build(config.MCPInjectCodexFlag, clash, policy, t.TempDir(), nil); err == nil {
+		t.Error("differing values for one variable were accepted")
+	}
+}
+
+func TestBuildCodexInactiveInjectsNothing(t *testing.T) {
+	inj, err := Build(config.MCPInjectCodexFlag, testServers, Policy{}, t.TempDir(), nil)
+	if err != nil || !reflect.DeepEqual(inj, Injection{}) {
+		t.Fatalf("inj = %+v, err = %v", inj, err)
+	}
+}
