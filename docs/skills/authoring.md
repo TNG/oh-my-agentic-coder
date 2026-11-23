@@ -354,7 +354,7 @@ If a call returns HTTP `503` with the header `X-Omac-Reason: sidecar-down`, your
 cat $TMPDIR/omac-*/logs/<skill>.log
 ```
 
-If a call returns HTTP `503` with `X-Omac-Reason: sidecar-busy` and a `Retry-After: 1` header, your sidecar already has 32 requests in flight and none finished within 5 seconds. omac forwards at most 32 requests at a time to one sidecar and queues the rest; a long-lived `text/event-stream` response stops counting against the 32 as soon as its headers arrive. Every other response counts until it is complete, so long polls, chunked streams and large downloads each hold one of the 32 for their whole duration. Retry after the pause, or make slow routes return sooner.
+**Too many requests at once.** omac forwards at most 32 requests at a time to one sidecar and queues the rest. The limit is fixed and applies to each sidecar separately. If a call returns HTTP `503` with `X-Omac-Reason: sidecar-busy` and `Retry-After: 1`, your sidecar already had 32 requests in flight and this request waited 5 seconds without getting a turn. Retry after the pause, or make slow routes return sooner. A `text/event-stream` response stops counting as soon as its headers arrive. Every other response counts until it is complete, so long polls, chunked streams and large downloads each hold one of the 32 for their whole duration. `GET` requests to your `health.path` and WebSocket connections do not count.
 
 Because omac runs the skill from the copy made at register time (see above), re-run `omac register` after editing the skill so your changes take effect.
 
