@@ -25,7 +25,7 @@ sandbox:
   profiles: { }                     # custom runtime definitions (deprecated); leave empty unless you need a non-standard sandbox command
 facade:
   idle_timeout_secs: 300            # close idle connections after N seconds (HTTP keep-alive, and WebSocket connections with no traffic); does not end the session
-  max_body_bytes: 10485760          # 10 MB request body cap (inclusive: exactly this size passes, one byte more gets 413); a skill can override it for its own mount with limits.max_body_bytes
+  max_body_bytes: 10485760          # 10 MiB request body cap; a skill can set its own with limits.max_body_bytes
   base_env_passthrough: [PATH, HOME, USER, LANG, LC_ALL, LC_CTYPE, TMPDIR]
 audit:
   enabled: true                     # security audit trail (default on)
