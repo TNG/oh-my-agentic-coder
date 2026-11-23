@@ -575,3 +575,89 @@ func TestHealthCheckBypassesFullPool(t *testing.T) {
 		t.Errorf("other route on a full pool: status %d, want 503", code)
 	}
 }
+
+func TestIsHealthCheck(t *testing.T) {
+	cases := []struct {
+		name, method, healthPath, rest string
+		want                           bool
+	}{
+		{"GET of the health path", http.MethodGet, "/status", "status", true},
+		{"POST to the health path", http.MethodPost, "/status", "status", false},
+		{"path below the health path", http.MethodGet, "/status", "status/x", false},
+		{"other path", http.MethodGet, "/status", "other", false},
+		{"route without a health path", http.MethodGet, "", "status", false},
+		{"route without a health path, mount root", http.MethodGet, "", "", false},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, "/echo/"+c.rest, nil)
+		if got := isHealthCheck(r, &Route{HealthPath: c.healthPath}, c.rest); got != c.want {
+			t.Errorf("%s: isHealthCheck = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestClosedSSEStreamFreesOnlyItsOwnSlot(t *testing.T) {
+	unblock := make(chan struct{})
+	blocked := make(chan struct{})
+	streamEnded := make(chan struct{})
+	sse := sseHandler(func(context.Context) { close(streamEnded) })
+	up := newCountingUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/block" {
+			close(blocked)
+			<-unblock
+			return
+		}
+		sse.ServeHTTP(w, r)
+	}))
+	f, base := poolFacade(t, echoRoute(up.port))
+	slots := f.slotsFor(up.port)
+	t.Cleanup(func() { close(unblock) }) // runs before the facade server's Close, which waits for /block
+
+	go func() {
+		if resp, err := http.Get(base + "/echo/block"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-blocked
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/echo/sse", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if _, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-streamEnded:
+	case <-time.After(time.Second):
+		t.Fatal("the stream did not end after the client left")
+	}
+	time.Sleep(100 * time.Millisecond) // let the facade's handler return
+	if n := len(slots); n != 1 {
+		t.Errorf("%d slots taken after the stream closed, want 1 for the request still in flight", n)
+	}
+}
+
+func TestClientLeavingTheQueueKeepsSlotCount(t *testing.T) {
+	b := newBusySidecar(t)
+	f, base := poolFacade(t, echoRoute(b.port))
+	codes := b.fill(t, base, maxConnsPerSidecar)
+
+	impatient := &http.Client{Timeout: 100 * time.Millisecond}
+	if _, err := impatient.Get(base + "/echo/work"); err == nil {
+		t.Fatal("request finished although every slot was taken")
+	}
+	b.unblock()
+	for i := 0; i < maxConnsPerSidecar; i++ {
+		<-codes
+	}
+	slots := f.slotsFor(b.port)
+	eventually(t, "all slots to be free", func() bool { return len(slots) == 0 })
+	if code := getStatus(t, http.DefaultClient, base+"/echo/work"); code != 200 {
+		t.Errorf("request after the queue emptied: status %d, want 200", code)
+	}
+}
