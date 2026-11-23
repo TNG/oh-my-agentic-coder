@@ -15,7 +15,7 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
 | An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac does not load the harness's own MCP entries by default (Claude Code) or refuses to start with them (other harnesses), so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
-If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are not loaded (Claude Code) or refused (other harnesses), because inside omac MCP configuration comes only from the registry. Only OpenCode and Claude Code can receive registered servers; see [Other harnesses](#other-harnesses).
+If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are not loaded (Claude Code) or refused (other harnesses), because inside omac MCP configuration comes only from the registry. OpenCode, Claude Code, Codex, Copilot CLI and CodeWhale can receive registered servers; pi cannot yet. See [Other harnesses](#other-harnesses).
 
 ## How it works
 
@@ -23,7 +23,7 @@ If you register no MCP server, nothing changes. omac does not touch the harness'
  host (outside the sandbox)                      sandbox
  ┌───────────────────────────────┐              ┌────────────────────────┐
  │ MCP server process            │              │ harness (OpenCode,     │
- │   env: your secrets           │              │   Claude Code)         │
+ │   env: your secrets           │              │   Claude Code, ...)    │
  │        ▲ stdin/stdout         │              │        │ starts        │
  │ omac gateway                  │◄─ omac proxy ┤ "omac mcp bridge <name>"│
  └───────────────────────────────┘   (facade)   └────────────────────────┘
@@ -161,6 +161,11 @@ For each registered server that matches the harness, omac starts the server on t
 
 - **OpenCode**: omac passes the entry in the `OPENCODE_CONFIG_CONTENT` environment variable, which takes precedence over project config.
 - **Claude Code**: omac writes a config file to the session's temporary directory and passes it with `--mcp-config`. With the default `ignore` mode (and with `refuse`) it also passes `--strict-mcp-config`, see [Claude Code runs in strict MCP mode](#claude-code-runs-in-strict-mcp-mode).
+- **Codex**: omac passes one `-c mcp_servers.<name>={command = ..., args = [...], env_vars = [...]}` override per server and sets the bridge variables in the harness environment, so no value is on the command line. Server names may use only letters, digits, `-` and `_`.
+- **Copilot CLI**: omac writes a config file to the session's temporary directory and passes it with `--additional-mcp-config @<file>`. If you pass `--additional-mcp-config` yourself, omac refuses to start with registered servers instead of combining them.
+- **CodeWhale**: omac writes a config file to the session's temporary directory and names it in `CODEWHALE_MCP_CONFIG`, which CodeWhale reads in place of `~/.codewhale/mcp.json`.
+
+None of the Codex, Copilot CLI and CodeWhale injections has been run against the real harness. The mechanisms and entry fields come from each harness's public documentation; omac's tests only check what it passes. See [Other harnesses](#other-harnesses) for what is unverified.
 
 omac adds these variables to the sandbox only when it injects, so a value you export yourself does not reach the agent.
 
@@ -300,31 +305,41 @@ For a server that needs a credential, the better way is to register it, so its s
 
 ## Other harnesses
 
-omac supports six harnesses, but only OpenCode and Claude Code can receive registered servers. For Codex, Copilot CLI, pi and CodeWhale omac cannot hand a registered server to the harness yet, so `omac mcp add`, `add-json` and `register` reject them:
+omac supports six harnesses. OpenCode and Claude Code are described above. Codex, Copilot CLI and CodeWhale can receive registered servers too (see [What omac does at launch](#what-omac-does-at-launch)), but none of them can be told not to load its own MCP config, so for these three `ignore` is not available: it falls back to `refuse` with `ignore is not available for <harness>, which cannot suppress its own MCP config; using refuse`, and `refuse` is the default. Only Claude Code supports `ignore`. omac never edits the harness's own config files.
+
+| Harness | How the registered servers arrive | Why `ignore` is not available |
+|---|---|---|
+| Codex | `-c mcp_servers.<name>=...` overrides plus the bridge variables in the environment | no documented way to switch off `config.toml`, project or plugin servers; whether `-c mcp_servers={}` clears them is unverified |
+| Copilot CLI | `--additional-mcp-config @<file>` | the disable switches name servers one by one; user, project, plugin and built-in servers stay |
+| CodeWhale | `CODEWHALE_MCP_CONFIG` names a file with only the registered servers | the project file `.codewhale/mcp.json` (after your approval in CodeWhale), plugin bundles and the legacy fallback are not covered |
+
+Registered servers are scanned against the harness's own entries under the same policy, at the places in the [table above](#where-omac-looks). With CodeWhale, the global `mcp.json` is listed and refused although `CODEWHALE_MCP_CONFIG` means CodeWhale does not read it for this run: omac does not rely on that. An entry found there is an unregistered entry, listed with an `omac mcp add` line like those of OpenCode and Claude Code.
+
+pi cannot receive registered servers yet. It reads MCP servers only from `mcp.json` files in its config directory and in the project's `.pi/`, and from extension code. Writing there would edit your files, and relocating pi's config directory would hide its login and sessions, so omac injects nothing. `omac mcp add`, `add-json` and `register` reject pi:
 
 ```text
-omac mcp register: omac cannot provide MCP servers to codex yet (supported: opencode, claude-code)
+omac mcp register: omac cannot provide MCP servers to pi yet (supported: opencode, claude-code, codex, copilot, codewhale)
 ```
 
-What happens when you start such a harness depends on your registrations. Registrations of any harness and scope that apply to this directory count, because none of them would be available:
+What happens when you start pi depends on your registrations. Registrations of any harness and scope that apply to this directory count, because none of them would be available:
 
 - **Nothing registered and `mcp.unregistered` not set:** nothing changes.
-- **A server is registered, or `mcp.unregistered` is set:** omac applies `mcp.unregistered` before anything starts. With `refuse` (the default for these harnesses) it stops with the message below. `ignore` is not available for them and falls back to `refuse`, with a line saying so. With `warn` it prints the same as a warning and starts the harness without MCP servers. With `allow` it starts silently. omac never injects anything into these harnesses.
+- **A server is registered, or `mcp.unregistered` is set:** omac applies `mcp.unregistered` before anything starts. With `refuse` (the default for pi) it stops with the message below. `ignore` is not available for pi and falls back to `refuse`, with a line saying so. With `warn` it prints the same as a warning and starts pi without MCP servers. With `allow` it starts silently. omac never injects anything into pi.
 
 ```text
 omac start: MCP policy refuses this start:
-  omac cannot provide MCP servers to codex yet (supported: opencode, claude-code). Registered servers that will not be available: jira.
+  omac cannot provide MCP servers to pi yet (supported: opencode, claude-code, codex, copilot, codewhale). Registered servers that will not be available: jira.
 Use a supported harness, or run once with --mcp-unregistered=warn (start without the registered servers) or --mcp-unregistered=allow.
 ```
 
-The harness's own MCP config is scanned under the same policy, at the places in the [table above](#where-omac-looks). An entry found there is an unregistered entry, listed like those of OpenCode and Claude Code but without an `omac mcp add` line, because `add` would reject the harness. `omac mcp diagnose` lists these entries too and flags a registered server whose harness list names a harness that cannot receive MCP.
+pi's own config is scanned under the same policy, but an entry found there gets no `omac mcp add` line, because `add` would reject pi. `omac mcp diagnose` lists these entries too and flags a registered server whose harness list names a harness that cannot receive MCP.
 
 Not covered:
 
 - Command-line config overrides other than the ones the table names, such as Copilot CLI's `--plugin-dir` and the disable switches.
 - Cloud, account and organization sources: Codex cloud-managed config, Copilot's built-in and policy-derived servers, CodeWhale plugin bundles.
 - Servers an extension or plugin registers in code (pi extensions) or that sit in bundles omac cannot read from the host.
-- Unverified: whether Codex profile files can hold `mcp_servers`, which key pi uses in `mcp.json`, and whether CodeWhale's `mcp.json` follows `$CODEWHALE_HOME`. The locations come from each harness's public documentation, not from running the harness.
+- Unverified, and not checked against the real harnesses (none was run): that Codex accepts the `-c` inline table with `env_vars` and passes those variables to the server; that Copilot CLI accepts `--additional-mcp-config @file` with the entry fields `type`, `command`, `args`, `env` and `tools`, and a second flag next to it; that CodeWhale's `CODEWHALE_MCP_CONFIG` replaces, and does not add to, the global file and wins over `mcp_config_path` in `config.toml`; whether Codex profile files can hold `mcp_servers`; which key pi uses in `mcp.json`; whether CodeWhale's `mcp.json` follows `$CODEWHALE_HOME`. The locations come from each harness's public documentation, not from running the harness.
 
 ## Diagnosing problems
 
