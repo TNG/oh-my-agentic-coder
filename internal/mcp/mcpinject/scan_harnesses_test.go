@@ -494,7 +494,7 @@ func TestPluginProvidedIsReported(t *testing.T) {
 
 func TestEvaluateUnsupported(t *testing.T) {
 	entries := []Existing{{Harness: "codex", File: "/p/config.toml", Name: "native", Command: "npx"}}
-	message := "omac cannot provide MCP servers to codex yet (supported: opencode, claude-code). Registered servers that will not be available: a, b."
+	message := "omac cannot provide MCP servers to codex yet (supported: " + strings.Join(config.MCPCapableHarnessNames(), ", ") + "). Registered servers that will not be available: a, b."
 	tests := []struct {
 		name        string
 		policy      Policy

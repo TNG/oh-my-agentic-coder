@@ -39,10 +39,9 @@ func TestMCPUnsupportedHarnessRefusesRegisteredServers(t *testing.T) {
 		harness  string
 		register func(r *mcpRig)
 	}{
-		{"project scope codex", "codex", func(r *mcpRig) { r.register("demo", false, "opencode") }},
-		{"global scope copilot", "copilot", func(r *mcpRig) { r.registerGlobal("demo", "claude-code") }},
-		{"registered for another harness, pi", "pi", func(r *mcpRig) { r.register("demo", false, "opencode", "claude-code") }},
-		{"codewhale", "codewhale", func(r *mcpRig) { r.register("demo", false, "opencode") }},
+		{"project scope", "pi", func(r *mcpRig) { r.register("demo", false, "opencode") }},
+		{"global scope", "pi", func(r *mcpRig) { r.registerGlobal("demo", "claude-code") }},
+		{"registered for another harness", "pi", func(r *mcpRig) { r.register("demo", false, "opencode", "claude-code") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,7 +54,7 @@ func TestMCPUnsupportedHarnessRefusesRegisteredServers(t *testing.T) {
 			}
 			for _, want := range []string{
 				"omac start: MCP policy refuses this start",
-				"omac cannot provide MCP servers to " + tt.harness + " yet (supported: opencode, claude-code). Registered servers that will not be available: demo.",
+				"omac cannot provide MCP servers to " + tt.harness + " yet (supported: " + supportedMCPHarnesses() + "). Registered servers that will not be available: demo.",
 				"Use a supported harness, or run once with --mcp-unregistered=warn",
 				"--mcp-unregistered=allow",
 			} {
@@ -83,11 +82,11 @@ func TestMCPUnsupportedHarnessWarnAndAllowStartWithoutMCP(t *testing.T) {
 			r := unsupportedRig(t)
 			r.register("demo", false, "opencode")
 
-			code, stderr := r.launch("codex", r.capture, func(o *launchOpts) { o.mcpUnregistered = tt.mode })
+			code, stderr := r.launch("pi", r.capture, func(o *launchOpts) { o.mcpUnregistered = tt.mode })
 			if code != ExitOK {
 				t.Fatalf("exit %d\n%s", code, stderr)
 			}
-			warned := strings.Contains(stderr, "warning: "+"omac cannot provide MCP servers to codex yet (supported: opencode, claude-code). Registered servers that will not be available: demo.")
+			warned := strings.Contains(stderr, "warning: "+"omac cannot provide MCP servers to pi yet (supported: "+supportedMCPHarnesses()+"). Registered servers that will not be available: demo.")
 			if warned != tt.wantWarning {
 				t.Errorf("warning present = %v, want %v:\n%s", warned, tt.wantWarning, stderr)
 			}
@@ -115,9 +114,9 @@ func TestMCPUnsupportedHarnessWarnAndAllowStartWithoutMCP(t *testing.T) {
 
 func TestMCPUnsupportedHarnessWithNothingRegisteredChangesNothing(t *testing.T) {
 	r := unsupportedRig(t)
-	r.writeFile(".codex/config.toml", "[mcp_servers.native]\ncommand = \"x\"\n")
+	r.writeFile(".pi/mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
 
-	code, stderr := r.launch("codex", r.capture, nil)
+	code, stderr := r.launch("pi", r.capture, nil)
 	if code != ExitOK || strings.Contains(stderr, "MCP") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
@@ -150,9 +149,9 @@ func TestMCPUnsupportedHarnessExplicitModeScansNativeConfigWithoutRegistrations(
 func TestMCPUnsupportedHarnessNativeEntriesAreRefusedWithRegistrations(t *testing.T) {
 	r := unsupportedRig(t)
 	r.register("demo", false, "opencode")
-	r.writeFile(".mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
+	r.writeFile(".pi/mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
 
-	code, stderr := r.launch("copilot", r.capture, nil)
+	code, stderr := r.launch("pi", r.capture, nil)
 	if code != ExitConfigInvalid {
 		t.Fatalf("exit %d\n%s", code, stderr)
 	}
@@ -169,7 +168,7 @@ func TestMCPUnsupportedHarnessNativeEntriesAreRefusedWithRegistrations(t *testin
 func TestMCPUnsupportedHarnessSharesThePathOfContinueAndResume(t *testing.T) {
 	r := unsupportedRig(t)
 	r.register("demo", false, "opencode")
-	harness, _ := config.LookupHarness("codex")
+	harness, _ := config.LookupHarness("pi")
 	for _, label := range []string{"continue", "resume"} {
 		env, stderr := launchTestEnv(t, r.wd)
 		plan, code := prepareMCP(env, harness, config.LauncherConfig{}, launchOpts{label: label})
@@ -182,8 +181,8 @@ func TestMCPUnsupportedHarnessSharesThePathOfContinueAndResume(t *testing.T) {
 func TestMCPRegistrationRejectsHarnessWithoutMCPSupport(t *testing.T) {
 	wd, def := mcpTestSetup(t)
 	t.Setenv("OMAC_SECRET_API_TOKEN", "tok")
-	want := "omac cannot provide MCP servers to %s yet (supported: opencode, claude-code)"
-	for _, harness := range []string{"codex", "copilot", "pi", "codewhale", "cx", "opencode,codex"} {
+	want := "omac cannot provide MCP servers to %s yet (supported: " + supportedMCPHarnesses() + ")"
+	for _, harness := range []string{"pi", "opencode,pi"} {
 		t.Run(harness, func(t *testing.T) {
 			resolved, _ := config.LookupHarness(strings.TrimPrefix(harness, "opencode,"))
 			for _, args := range [][]string{
@@ -216,16 +215,16 @@ func TestMCPDiagnoseScansHarnessesWithoutInjectionAndFlagsUnsupportedRegistratio
 	for _, name := range []string{"CODEX_HOME", "COPILOT_HOME", "PI_CODING_AGENT_DIR", "CODEWHALE_HOME", "CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"} {
 		t.Setenv(name, "")
 	}
-	if err := os.MkdirAll(f.wd+"/.codex", 0o755); err != nil {
+	if err := os.MkdirAll(f.wd+"/.pi", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(f.wd+"/.codex/config.toml", []byte("[mcp_servers.native]\ncommand = \"npx\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(f.wd+"/.pi/mcp.json", []byte(`{"mcpServers":{"native":{"command":"npx"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(f.wd+"/.mcp.json", []byte(`{"mcpServers":{"viaclaude":{"command":"x"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mcpreg.RegisterDefinition(f.scope, reviewedDef("old", "sh", nil), []string{"opencode", "codex"}); err != nil {
+	if _, err := mcpreg.RegisterDefinition(f.scope, reviewedDef("old", "sh", nil), []string{"opencode", "pi"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -234,16 +233,19 @@ func TestMCPDiagnoseScansHarnessesWithoutInjectionAndFlagsUnsupportedRegistratio
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	for _, want := range []string{
-		`codex: "native" in ` + f.wd + "/.codex/config.toml is not managed by omac",
-		"omac cannot provide registered MCP servers to codex",
+		`pi: "native" in ` + f.wd + "/.pi/mcp.json is not managed by omac",
+		"omac cannot provide registered MCP servers to pi",
 		`claude-code: "viaclaude"`,
-		"omac cannot provide MCP servers to codex yet (supported: opencode, claude-code); this server will not be available there",
+		"omac cannot provide MCP servers to pi yet (supported: " + supportedMCPHarnesses() + "); this server will not be available there",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("diagnose lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "register it: omac mcp add --scope project --harness codex") {
+	if strings.Contains(out, "register it: omac mcp add --scope project --harness pi") {
 		t.Errorf("diagnose offers a rejected command:\n%s", out)
 	}
 }
+
+// supportedMCPHarnesses is the list the unsupported-harness message names.
+func supportedMCPHarnesses() string { return strings.Join(config.MCPCapableHarnessNames(), ", ") }
