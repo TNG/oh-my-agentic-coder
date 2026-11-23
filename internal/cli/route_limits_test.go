@@ -75,10 +75,22 @@ func TestRouteMaxBodyBytesUnsetMeansFacadeDefault(t *testing.T) {
 		"no sidecar":  {},
 		"no limits":   {Sidecar: &config.SidecarMeta{}},
 		"zero limits": {Sidecar: &config.SidecarMeta{Limits: &config.LimitsSpec{}}},
+		"negative":    {Sidecar: &config.SidecarMeta{Limits: &config.LimitsSpec{MaxBodyBytes: -1}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := routeMaxBodyBytes(m); got != 0 {
 				t.Errorf("routeMaxBodyBytes = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestRoutesDoNotRemoveBodyLimitForNegativeValue(t *testing.T) {
+	meta := &config.Meta{Name: "limited", Sidecar: &config.SidecarMeta{Limits: &config.LimitsSpec{MaxBodyBytes: -1}}}
+	for _, b := range routeBuilders {
+		t.Run(b.name, func(t *testing.T) {
+			if got := b.build(meta, 1).MaxBodyBytes; got != 0 {
+				t.Errorf("Route.MaxBodyBytes = %d, want 0 (facade-wide limit)", got)
 			}
 		})
 	}

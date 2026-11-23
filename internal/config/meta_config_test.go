@@ -246,6 +246,29 @@ func TestSidecarLimits_IdleTimeoutSecs(t *testing.T) {
 	}
 }
 
+func TestSidecarLimits_MaxBodyBytes(t *testing.T) {
+	cases := []struct {
+		n       int64
+		wantErr string
+	}{
+		{0, ""},
+		{64 << 10, ""},
+		{1 << 40, ""},
+		{-1, "sidecar.limits.max_body_bytes -1 must not be negative"},
+	}
+	for _, c := range cases {
+		m := validMeta()
+		m.Sidecar.Limits = &LimitsSpec{MaxBodyBytes: c.n}
+		err := m.Validate()
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("max_body_bytes %d: unexpected error: %v", c.n, err)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("max_body_bytes %d: error %v, want one containing %q", c.n, err, c.wantErr)
+		}
+	}
+}
+
 func TestLoadMetaRejectsNegativeIdleTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), MetaFileName)
 	yaml := "name: limited\nsidecar:\n  command: [\"true\"]\n  limits:\n    idle_timeout_secs: -1\n"
