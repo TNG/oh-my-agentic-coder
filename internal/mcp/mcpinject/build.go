@@ -134,12 +134,12 @@ func buildClaude(servers []Server, tmpDir string) (string, error) {
 
 // buildCodeWhale points CodeWhale at a file that holds only the registered
 // servers. CODEWHALE_MCP_CONFIG replaces the path of the global mcp.json, so the
-// user's own global file is not read for this run. That the override replaces
-// the file and does not add to it, that it wins over mcp_config_path in
-// config.toml, and that CodeWhale's project file (.codewhale/mcp.json, which
-// the user approves separately) and plugin bundles stay active, all come from
-// the public documentation and are unverified. The injection therefore does not
-// let the "ignore" mode of mcp.unregistered apply to CodeWhale.
+// user's own global file is not read for this run. From CodeWhale's source: the
+// variable overrides mcp_config_path in config.toml and replaces the global
+// file, while the project file (.codewhale/mcp.json, which the user approves
+// separately) and plugin bundles stay active, so the "ignore" mode of
+// mcp.unregistered does not apply to CodeWhale. The key mcpServers is the alias
+// of servers. This was read in the source, not run.
 func buildCodeWhale(servers []Server, tmpDir string) (Injection, error) {
 	if err := refuseExpandedValues("CodeWhale", servers, "${"); err != nil {
 		return Injection{}, err
@@ -162,10 +162,10 @@ func buildCodeWhale(servers []Server, tmpDir string) (Injection, error) {
 
 // buildCopilot passes the servers in a session-only config file with
 // --additional-mcp-config @file, so omac never touches ~/.copilot/mcp-config.json.
-// The flag and its "@file" form come from the public documentation and are
-// unverified against a running Copilot CLI, as are the entry fields: "type"
-// local, "command", "args", "env" and "tools" ["*"]. Whether Copilot accepts
-// the flag twice is unknown, so a flag the user passes too is an error.
+// The flag, its "@file" form and the entry fields ("type" local, "command",
+// "args", "env", "tools" ["*"]) are in GitHub's documentation, and the changelog
+// says the flag may be repeated; this was read, not run. Whether repeated flags
+// merge by server name is not stated, so a flag the user passes too is an error.
 func buildCopilot(servers []Server, tmpDir string, userArgs []string) ([]string, error) {
 	for _, a := range userArgs {
 		if a == additionalMCPConfigFlag || strings.HasPrefix(a, additionalMCPConfigFlag+"=") {
@@ -210,10 +210,11 @@ var codexBareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // buildCodex passes each server as a -c mcp_servers.<name>={...} override, so
 // omac never edits config.toml. Codex does not hand its own environment to MCP
 // servers, so the bridge variables are named in env_vars and set in the
-// harness environment; no value appears on the command line. The -c dotted-key
-// override, an inline table as its value and the env_vars list come from the
-// public documentation and are unverified against a running Codex. A name that
-// is not a bare TOML key is refused, because quoted keys in -c are unverified.
+// harness environment; no value appears on the command line. From Codex's
+// source: the value of -c is parsed as TOML (an inline table is valid), the
+// override is deep-merged over config.toml, and env_vars lists the names Codex
+// copies from its own environment to the server. This was read, not run. A name
+// that is not a bare TOML key is refused, because the key is split at every dot.
 func buildCodex(servers []Server) (Injection, error) {
 	env := map[string]string{}
 	var args []string
