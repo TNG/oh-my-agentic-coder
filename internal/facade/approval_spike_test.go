@@ -6,6 +6,7 @@ package facade
 
 import (
 	"bufio"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"net/http"
@@ -20,7 +21,7 @@ func spikeFacade(t *testing.T, upstream http.Handler) (*Facade, *httptest.Server
 	up := httptest.NewServer(upstream)
 	t.Cleanup(up.Close)
 	port := up.Listener.Addr().(*net.TCPAddr).Port
-	f := New("", "", []Route{{Mount: "echo", UpstreamPort: port, Skill: "echo-rest"}},
+	f := New("", "", []Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: port}, Skill: "echo-rest"}},
 		1<<20, 30*time.Second, "", "test")
 	return f, up
 }

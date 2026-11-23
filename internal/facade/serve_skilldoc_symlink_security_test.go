@@ -8,6 +8,7 @@ package facade
 // caller-controlled.
 
 import (
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,11 +33,11 @@ func TestSecurityServeModeSymlinkedSkillDocRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// UpstreamPort 1 is intentionally dead: if serveSkillDoc correctly
+	// Upstream port 1 is intentionally dead: if serveSkillDoc correctly
 	// rejects the symlink, the request falls through to the proxy which
 	// fails with a 5xx — proving the doc was not served.
 	f := New("", "", []Route{
-		{Mount: "echo", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: 1, SkillDir: skillDir},
+		{Mount: "echo", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: 1}, SkillDir: skillDir},
 	}, 1<<20, 0, "", "test")
 
 	rec := httptest.NewRecorder()

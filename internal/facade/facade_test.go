@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"net/http"
@@ -106,7 +107,7 @@ func TestFacadePlainHTTPAndSSE(t *testing.T) {
 	// Unix socket paths have a length limit (~104 on darwin); keep it short.
 	socket := filepath.Join(dir, "b.sock")
 	f := New(socket, "",
-		[]Route{{Mount: "demo", UpstreamPort: port}},
+		[]Route{{Mount: "demo", Upstream: sidecarauth.Upstream{Port: port}}},
 		1024*1024,
 		30*time.Second,
 		"", "test")
@@ -246,7 +247,7 @@ func TestFacadeEchoLikeRest(t *testing.T) {
 	socket := filepath.Join(dir, "b.sock")
 
 	f := New(socket, "",
-		[]Route{{Mount: "echo", UpstreamPort: port, Skill: "echo-rest"}},
+		[]Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: port}, Skill: "echo-rest"}},
 		1<<20, 30*time.Second, "", "test")
 	if err := f.Start(context.Background()); err != nil {
 		t.Fatalf("facade start: %v", err)
@@ -434,10 +435,10 @@ func TestWriteStatusHidesPerDirTokens(t *testing.T) {
 	// per-directory token-namespaced skills. The status index must expose
 	// only the flat + global ones, never the secret dir tokens.
 	f := New("", "", []Route{
-		{Mount: "echo", Namespace: "", State: RouteReady, UpstreamPort: 1},
-		{Mount: "skill-marketplace", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: 2},
-		{Mount: "tng-email", Namespace: "d31b174d117e4bb9739f8a96f3b0b66d", State: RouteReady, UpstreamPort: 3},
-		{Mount: "apple-calendar", Namespace: "34e8502d4fbd9ae9fd054d3f89e34b61", State: RouteReady, UpstreamPort: 4},
+		{Mount: "echo", Namespace: "", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 1}},
+		{Mount: "skill-marketplace", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: 2}},
+		{Mount: "mail-skill", Namespace: "d31b174d117e4bb9739f8a96f3b0b66d", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 3}},
+		{Mount: "apple-calendar", Namespace: "34e8502d4fbd9ae9fd054d3f89e34b61", State: RouteReady, Upstream: sidecarauth.Upstream{Port: 4}},
 	}, 1<<20, 0, "", "test")
 
 	rec := httptest.NewRecorder()
@@ -475,11 +476,11 @@ func TestSkillDocDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// UpstreamPort points nowhere; a request that reaches the proxy would
+	// Upstream points nowhere; a request that reaches the proxy would
 	// fail with a 5xx, which lets us prove the doc path short-circuits
 	// before any upstream dial.
 	f := New("", "", []Route{
-		{Mount: "echo", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: 1, SkillDir: skillDir},
+		{Mount: "echo", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: 1}, SkillDir: skillDir},
 	}, 1<<20, 0, "", "test")
 
 	// The mount root, both with and without a trailing slash, serves the doc.
@@ -545,8 +546,8 @@ func TestSkillDocDiscoveryFallthrough(t *testing.T) {
 	socket := filepath.Join(dir, "b.sock")
 	f := New(socket, "", []Route{
 		// withdoc: has SKILL.md. nodoc: no SKILL.md (empty SkillDir).
-		{Mount: "withdoc", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: port, SkillDir: skillDir},
-		{Mount: "nodoc", Namespace: GlobalNamespace, State: RouteReady, UpstreamPort: port},
+		{Mount: "withdoc", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: port}, SkillDir: skillDir},
+		{Mount: "nodoc", Namespace: GlobalNamespace, State: RouteReady, Upstream: sidecarauth.Upstream{Port: port}},
 	}, 1<<20, 2*time.Second, "", "test")
 	if err := f.Start(context.Background()); err != nil {
 		t.Fatalf("facade start: %v", err)

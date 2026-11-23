@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
@@ -55,9 +56,10 @@ func newLearnRecorder(g *Grants, intentBase string) *learnRecorder {
 	r.excluded = append(r.excluded,
 		os.TempDir(), "/tmp", "/private/tmp", "/private/var/folders", "/var/folders")
 	if home != "" {
-		r.excluded = append(r.excluded,
-			filepath.Join(home, ".local", "state", "omac"),
-			filepath.Join(home, ".config", "omac"))
+		r.excluded = append(r.excluded, filepath.Join(home, ".local", "state", "omac"))
+	}
+	if dir := globaldir.Dir(); dir != "" {
+		r.excluded = append(r.excluded, dir)
 	}
 	return r
 }

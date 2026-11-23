@@ -34,6 +34,7 @@ omac start claude       # specific harness
 | `--cache-scope <scope>` | workdir | Which cache to use for the agent's package downloads (npm, pip, cargo, etc.). `global` shares one cache across all your projects, `config` shares it across projects using the same config file, `workdir` gives each project its own isolated cache. See [Cache](../advanced/cache.md). |
 | `--open-port <port>` | — | Allow the sandboxed process to bind and connect on this local TCP port (repeatable) for this session only. Useful for a local dev server or an MCP server the harness talks to. To make it permanent, use `network.open_port` in the grants file — see [Opening a port](../configuration.md#opening-a-port). |
 | `--no-audit` | false | Disable the security audit trail for this session. |
+| `--mcp-unregistered <mode>` | config value | Override `mcp.unregistered` for this run: `allow`, `warn`, `ignore` or `refuse`. `ignore` does not load the harness's own entries, lists them as a notice and starts; only Claude Code supports it, with `--strict-mcp-config`, and every other harness falls back to `refuse` with a message. The default is `ignore` for Claude Code and `refuse` otherwise. With Claude Code, `ignore` and `refuse` also start it with `--strict-mcp-config`; `warn` and `allow` do not. See [MCP servers](./mcp.md#existing-mcp-entries-in-the-harness-config) and [Other harnesses](./mcp.md#other-harnesses). |
 
 For all flags: `omac start --help`.
 
@@ -121,7 +122,7 @@ Note: the OS keychain must be running even in CI. On Linux this requires gnome-k
 
 ### omac deregister
 
-Removes a skill's registration. Source files are kept on disk. After deregistering, `omac start` will refuse to run until you re-register the skill or delete its directory.
+Removes a skill's registration and the stored approvals ("Allow always" answers) of that skill, so a different skill registered later under the same name does not inherit them: those of this project, or with `--global` those of every project. The command prints how many it removed; failing to remove them is only a warning. Source files are kept on disk. After deregistering, `omac start` will refuse to run until you re-register the skill or delete its directory.
 
 ```bash
 omac deregister <skill>
@@ -156,14 +157,41 @@ omac secrets import <skill> --from <file>      # set multiple secrets from a KEY
 
 `omac secrets import` is the recommended way to pre-seed secrets in CI before running `omac register --no-secrets`.
 
+### omac mcp
+
+Manages MCP servers that omac runs on the host for the agent; see [MCP servers](./mcp.md). Run these in a host terminal, not inside the sandbox.
+
+```bash
+omac mcp add --harness claude-code --secret JIRA_TOKEN -e JIRA_URL=https://example.atlassian.net jira -- npx -y mcp-jira@1.2.3
+omac mcp add-json --harness claude-code --secret JIRA_TOKEN jira '{"command":"npx","args":["-y","mcp-jira@1.2.3"],"env":{"JIRA_TOKEN":"..."}}'
+omac mcp tools jira --classify
+omac mcp diagnose --probe
+```
+
+| Command | What it does | Key flags |
+|---|---|---|
+| `omac mcp add <name> -- <command> [args...]` | Registers a stdio server. Secrets come from a hidden prompt or `OMAC_SECRET_<NAME>` and live only in the keychain. No tool is callable until its tools are reviewed. | `--scope project\|global` (default `project`), `--harness a,b` (required for a new server; `opencode`, `claude-code`, `codex`, `copilot`, `pi`, `codewhale`), `-e KEY=value` (repeatable, not for credentials), `--secret NAME` (repeatable), `--replace` |
+| `omac mcp add-json <name> '<json>'`, `omac mcp add-json --file <f> [names...]` | Registers from an `mcpServers` entry with `command`, `args` and `env`. Remote entries and unknown keys are refused. | `--scope`, `--harness` (same list as `add`), `--secret NAME` (names the `env` keys that are secrets), `--replace`, `--file` |
+| `omac mcp register <file>` | Registers a definition file as written, but drops a `reviewed` block (the tools must be reviewed with `omac mcp tools --classify`) and warns when `approvals` is `none` for `write` or `delete`. | `--scope`, `--harness` (required; same list as `add`) |
+| `omac mcp tools <name>` | Starts the server on the host and lists its tools with a proposed class, current class and review status, then each tool's description and input parameters (untrusted server text, sanitized, cut at 500 characters). | `--scope`, `--classify`, `--set NAME=CLASS` (repeatable), `--rest CLASS` (default `off`) |
+| `omac mcp review <name>` | Shows which tools were added, removed or changed since the last review, with each tool's description and parameters (old and new for a changed tool), refuses while a live tool has no class, asks `[y/N]` and records the current tools as reviewed. | `--scope`, `--yes` |
+| `omac mcp diagnose` | Reports load failures, missing secrets, commands not found, unclassified tools, tools not reviewed yet, registrations for a harness that cannot receive MCP, and harness entries omac does not manage (for every harness with a known config location). Exit 0 clean, 1 problem found, 2 misuse. | `--scope`, `--all`, `--probe` (starts the servers, host only) |
+| `omac mcp list` | Shows registered servers with tool count, classified count and `reviewed` or `not reviewed`. | `--all` includes stale project scopes |
+| `omac mcp show <name>` | Shows one definition: scope, hash, command, access, approvals, when the tools were last reviewed and every tool with its class. Never secret or environment values. | `--scope` |
+| `omac mcp deregister <name>` | Removes the server, its secrets and its stored approvals (this project's, or with `--scope global` all projects'), and prints how many approvals it removed. | `--scope` |
+
+Classes are `read`, `write`, `delete` and `off`. All of these refuse to run inside the sandbox. See [MCP servers](./mcp.md) for the details.
+
 ### omac approvals
 
 A skill can ask you before the agent calls one of its routes (see [approvals](../skills/authoring.md#approvals-which-routes-run-without-asking)). When you answer "Allow always" in that dialog, omac stores the answer on the host. Run these from a host terminal, outside the sandbox:
 
 ```bash
-omac approvals list         # each stored answer: id, skill, route, project, date
+omac approvals list         # each stored answer: id, skill, route, project, date (MCP tools show as mcp:<server>)
 omac approvals revoke <id>  # the next request to that route asks again
 ```
+
+`omac deregister` and `omac mcp deregister` remove the stored answers of the skill or server they remove.
 
 Only "Allow always" answers are stored. Answers "for this session" end when `omac start` or `omac serve` stops.
 

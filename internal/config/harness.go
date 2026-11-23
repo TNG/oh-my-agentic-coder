@@ -163,7 +163,74 @@ type Harness struct {
 	// SandboxDirs (granted read+write) and inject no non-OMAC_* env leave
 	// this empty.
 	SandboxEnvAllow []string
+
+	// MCPInjection selects how omac hands registered MCP servers to this
+	// harness. MCPInjectNone means the harness gets no MCP injection.
+	MCPInjection MCPInjectionKind
+
+	// MCPScan selects how omac reads the MCP servers this harness already
+	// knows. It is set for every harness, including those without MCPInjection.
+	MCPScan MCPScanKind
 }
+
+// MCPScanKind selects the config layout omac scans for existing MCP servers.
+type MCPScanKind int
+
+const (
+	// MCPScanNone: omac does not know where this harness keeps MCP servers.
+	MCPScanNone MCPScanKind = iota
+	MCPScanOpenCode
+	MCPScanClaude
+	MCPScanCodex
+	MCPScanCopilot
+	MCPScanPi
+	MCPScanCodeWhale
+)
+
+// CanReceiveMCP reports whether omac can hand registered MCP servers to the harness.
+func (h Harness) CanReceiveMCP() bool {
+	return h.MCPInjection != MCPInjectNone
+}
+
+// MCPCapableHarnessNames returns the canonical names of the harnesses that can
+// receive registered MCP servers, in registry order.
+func MCPCapableHarnessNames() []string {
+	var names []string
+	for _, h := range harnessRegistry() {
+		if h.CanReceiveMCP() {
+			names = append(names, h.Name)
+		}
+	}
+	return names
+}
+
+// CanIgnoreMCP reports whether the harness can be told not to load its own MCP
+// config, which the ignore mode of mcp.unregistered needs. Only Claude Code can,
+// with --strict-mcp-config.
+func (h Harness) CanIgnoreMCP() bool {
+	return h.MCPInjection == MCPInjectClaudeFlag
+}
+
+// MCPInjectionKind selects the mechanism that injects MCP servers.
+type MCPInjectionKind int
+
+const (
+	// MCPInjectNone: omac cannot inject MCP servers into this harness.
+	MCPInjectNone MCPInjectionKind = iota
+	// MCPInjectOpenCodeEnv injects through OPENCODE_CONFIG_CONTENT.
+	MCPInjectOpenCodeEnv
+	// MCPInjectClaudeFlag injects through --mcp-config.
+	MCPInjectClaudeFlag
+	// MCPInjectCodeWhaleEnv injects through a file that CODEWHALE_MCP_CONFIG names.
+	MCPInjectCodeWhaleEnv
+	// MCPInjectCopilotFlag injects through --additional-mcp-config.
+	MCPInjectCopilotFlag
+	// MCPInjectCodexFlag injects through -c mcp_servers.<name>=... overrides.
+	MCPInjectCodexFlag
+	// MCPInjectPiExtension injects through a generated extension that -e loads
+	// and that calls pi.registerMcpServer.
+	MCPInjectPiExtension
+)
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
 // `omac resume`. The actual listing logic lives in the session package (so
@@ -270,10 +337,30 @@ const defaultHarnessName = "opencode"
 // Order is significant only for the human-readable list in error messages
 // (canonical names are sorted there).
 func harnessRegistry() []Harness {
+	reg := builtinHarnessRegistry()
+	if harnessRegistryOverride != nil {
+		reg = harnessRegistryOverride(reg)
+	}
+	return reg
+}
+
+// harnessRegistryOverride lets a test change the descriptors, for example to
+// look at a harness that cannot receive MCP servers. It is nil outside tests.
+var harnessRegistryOverride func([]Harness) []Harness
+
+// OverrideHarnessesForTest applies mutate to every registry lookup until the
+// returned function runs. Only tests call it; it is not safe for parallel tests.
+func OverrideHarnessesForTest(mutate func([]Harness) []Harness) (restore func()) {
+	harnessRegistryOverride = mutate
+	return func() { harnessRegistryOverride = nil }
+}
+
+func builtinHarnessRegistry() []Harness {
 	opentuiDataDir := xdgDataDir("opentui")
 	return []Harness{
 		{
 			Name:         "opencode",
+			MCPScan:      MCPScanOpenCode,
 			Aliases:      []string{"oc"},
 			InnerCmd:     []string{"opencode"},
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, PortFlag: "--port", AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
@@ -312,9 +399,11 @@ func harnessRegistry() []Harness {
 			// too broad. A user relying on env-based provider auth declares the
 			// specific key in the profile's environment.allow_vars.
 			NeedsPluginBootstrap: true,
+			MCPInjection:         MCPInjectOpenCodeEnv,
 		},
 		{
 			Name:    "claude-code",
+			MCPScan: MCPScanClaude,
 			Aliases: []string{"claude", "cc"},
 			// Claude Code's CLI executable is `claude`.
 			InnerCmd: []string{"claude"},
@@ -324,6 +413,7 @@ func harnessRegistry() []Harness {
 			ServerLaunch: nil,
 			BridgeDir:    ".claude",
 			SkillsBase:   "claude",
+			MCPInjection: MCPInjectClaudeFlag,
 			// Claude Code's config home is ~/.claude, not ~/.config/claude,
 			// so its global skills live in ~/.claude/skills.
 			UserConfigHome: ".claude",
@@ -357,8 +447,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "codex",
-			Aliases: []string{"cx"},
+			Name:         "codex",
+			MCPScan:      MCPScanCodex,
+			MCPInjection: MCPInjectCodexFlag,
+			Aliases:      []string{"cx"},
 			// OpenAI Codex CLI executable is `codex`.
 			InnerCmd: []string{"codex"},
 			// codex app-server is experimental; under `omac serve` it runs as-is.
@@ -388,8 +480,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "copilot",
-			Aliases: []string{"co"},
+			Name:         "copilot",
+			MCPScan:      MCPScanCopilot,
+			MCPInjection: MCPInjectCopilotFlag,
+			Aliases:      []string{"co"},
 			// GitHub Copilot CLI executable is `copilot` (standalone binary,
 			// not the `gh copilot` extension).
 			InnerCmd: []string{"copilot"},
@@ -446,8 +540,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "pi",
-			Aliases: []string{},
+			Name:         "pi",
+			MCPScan:      MCPScanPi,
+			MCPInjection: MCPInjectPiExtension,
+			Aliases:      []string{},
 			// Pi coding agent CLI executable is `pi` (pi.dev).
 			InnerCmd: []string{"pi"},
 			// Pi has no server mode; under `omac serve` it runs as-is.
@@ -489,8 +585,10 @@ func harnessRegistry() []Harness {
 			NeedsPluginBootstrap: false,
 		},
 		{
-			Name:    "codewhale",
-			Aliases: []string{"cw"},
+			Name:         "codewhale",
+			MCPScan:      MCPScanCodeWhale,
+			MCPInjection: MCPInjectCodeWhaleEnv,
+			Aliases:      []string{"cw"},
 			// CodeWhale CLI executable is `codewhale` (Rust; npm package
 			// "codewhale"). Headless runs use `codewhale exec "<prompt>"`.
 			InnerCmd: []string{"codewhale"},

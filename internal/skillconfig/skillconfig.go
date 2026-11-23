@@ -23,6 +23,8 @@ import (
 	"sort"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -107,14 +109,7 @@ func Path(workdir string) string {
 // "omac" leaf, matching the launcher config's global location. An
 // empty string means no global directory could be resolved.
 func GlobalDir() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "omac")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".config", "omac")
+	return globaldir.Dir()
 }
 
 // GlobalPath returns the user-global skill-config file path, or "" when

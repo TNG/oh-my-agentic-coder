@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // promoteToReady promotes a pending-credentials skill to READY in both the
 // dirState and the facade, then refreshes flat aliases. This lets the
 // flat-alias security tests exercise the alias lifecycle without spawning
 // real sidecars (which would need a supervisor and a working python3).
-func promoteToReady(t *testing.T, s *serveServer, dir, mount, token string, port int) {
+func promoteToReady(t *testing.T, s *serveServer, dir, mount, token string, up sidecarauth.Upstream) {
 	t.Helper()
 	s.mu.RLock()
 	d := s.dirs[dir]
@@ -30,13 +31,13 @@ func promoteToReady(t *testing.T, s *serveServer, dir, mount, token string, port
 	sr.State = facade.RouteReady
 	d.mu.Unlock()
 	s.facade.AddRoute(facade.Route{
-		Mount:        mount,
-		Namespace:    token,
-		UpstreamPort: port,
-		Skill:        sr.Name,
-		Owner:        sr.Name,
-		SkillDir:     sr.SkillDir,
-		State:        facade.RouteReady,
+		Mount:     mount,
+		Namespace: token,
+		Upstream:  up,
+		Skill:     sr.Name,
+		Owner:     sr.Name,
+		SkillDir:  sr.SkillDir,
+		State:     facade.RouteReady,
 	})
 	s.refreshSingleDirAliases()
 }
@@ -74,9 +75,13 @@ func TestSecurityFlatAliasesClearedBeforeSecondDirVisible(t *testing.T) {
 	if tokenA == "" {
 		t.Fatal("activate A returned no dir_token")
 	}
-	promoteToReady(t, s, dirA, "alpha", tokenA, 50001)
+	promoteToReady(t, s, dirA, "alpha", tokenA, sidecarauth.Upstream{Port: 50001, Secret: "alias-secret"})
 	if !s.facade.HasRoute("", "alpha") {
 		t.Fatal("precondition: flat alias for A's ready skill should exist")
+	}
+	flat, ok := s.facade.Upstream("", "alpha")
+	if !ok || flat.Secret != "alias-secret" || flat.Port != 50001 {
+		t.Fatalf("flat alias upstream = %+v, %v; want the namespaced route's port and secret", flat, ok)
 	}
 
 	// Dir B: stage many skills to widen the activation window.
@@ -166,7 +171,7 @@ func TestSecurityFlatAliasGoneDuringSecondDirActivation(t *testing.T) {
 	if tokenA == "" {
 		t.Fatal("activate A returned no dir_token")
 	}
-	promoteToReady(t, s, dirA, "alpha", tokenA, 50002)
+	promoteToReady(t, s, dirA, "alpha", tokenA, sidecarauth.Upstream{Port: 50002})
 	if !s.facade.HasRoute("", "alpha") {
 		t.Fatal("precondition: flat alias for A's ready skill should exist")
 	}

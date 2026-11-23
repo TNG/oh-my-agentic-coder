@@ -15,7 +15,7 @@ const sidebars = {
       type: 'category',
       label: 'Usage',
       collapsed: false,
-      items: ['usage/cli', 'usage/skills', 'configuration'],
+      items: ['usage/cli', 'usage/skills', 'usage/mcp', 'configuration'],
     },
     {
       type: 'category',

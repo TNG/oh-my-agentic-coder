@@ -134,6 +134,7 @@ func commands() map[string]Command {
 	return map[string]Command{
 		"register":   {Name: "register", Short: "Register a skill's sidecar in this workdir.", Run: runRegister},
 		"deregister": {Name: "deregister", Short: "Deregister a skill's sidecar.", Run: runDeregister},
+		"mcp":        {Name: "mcp", Short: "Register MCP servers (register|list|show|deregister|serve|bridge).", Run: runMCP},
 		"list":       {Name: "list", Short: "List registered skills.", Run: runList},
 		"secrets":    {Name: "secrets", Short: "Manage skill secrets in the OS keychain.", Run: runSecrets},
 		"config":     {Name: "config", Short: "Show resolved config + secret fingerprints for a skill.", Run: runConfig},

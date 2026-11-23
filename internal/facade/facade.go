@@ -39,7 +39,9 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/intent"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxdeny"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // RouteState describes whether a route forwards to a live sidecar or
@@ -51,7 +53,7 @@ import (
 type RouteState string
 
 const (
-	// RouteReady forwards to UpstreamPort.
+	// RouteReady forwards to Upstream.
 	RouteReady RouteState = "ready"
 	// RoutePendingCredentials returns 409 with X-Omac-Reason: pending-credentials.
 	RoutePendingCredentials RouteState = "pending-credentials"
@@ -71,7 +73,7 @@ const (
 type Route struct {
 	Mount        string // e.g. "slack"
 	Namespace    string // "" (flat) or a dir token or "__global__" (serve mode)
-	UpstreamPort int
+	Upstream     sidecarauth.Upstream
 	MaxBodyBytes int64         // 0 = inherit facade default
 	IdleTimeout  time.Duration // inactivity limit of upgraded connections; 0 = Facade.IdleTimeout
 	Skill        string        // registry name
@@ -103,6 +105,10 @@ type Route struct {
 	// per-sidecar request cap, so a client can still poll the health of a
 	// busy sidecar.
 	HealthPath string
+
+	// MCP is the policy of an MCP gateway route. Non-nil routes are gated
+	// by the MCP policy instead of Approvals.
+	MCP *mcppolicy.Policy
 
 	// State selects forward vs. stub behavior. The zero value ("") is
 	// treated as RouteReady so existing callers that don't set it keep
@@ -201,12 +207,15 @@ type Facade struct {
 	slots     map[int]sidecarSlots // by sidecar port, created on first use
 	limits    upstreamLimits
 
-	server      *http.Server
-	unixLn      net.Listener
-	tcpLn       net.Listener
-	boundTCPort int // resolved port if TCPAddr ends in :0
-	accLog      *log.Logger
-	accFile     *os.File
+	// mcpAllowances remembers allowed MCP tool calls so the bridge's
+	// transport retry of one call does not ask again.
+	mcpAllowances mcpAllowanceCache
+	server        *http.Server
+	unixLn        net.Listener
+	tcpLn         net.Listener
+	boundTCPort   int // resolved port if TCPAddr ends in :0
+	accLog        *log.Logger
+	accFile       *os.File
 }
 
 // ProtectedPathChecker reports whether a given absolute path is covered
@@ -383,16 +392,16 @@ func (f *Facade) HasRoute(namespace, mount string) bool {
 	return ok
 }
 
-// UpstreamPort returns the upstream port of the route for namespace/mount,
-// or 0 if there is no such route (or it is a stub with no upstream). Used
-// by serve mode to mirror a live route as a flat single-dir alias (§5.5).
-func (f *Facade) UpstreamPort(namespace, mount string) int {
+// Upstream returns the upstream of the route for namespace/mount, or false
+// if there is no such route. Used by serve mode to mirror a live route as a
+// flat single-dir alias (§5.5); the copy keeps the route's secret.
+func (f *Facade) Upstream(namespace, mount string) (sidecarauth.Upstream, bool) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if r, ok := f.routes[routeKey(namespace, mount)]; ok {
-		return r.UpstreamPort
+		return r.Upstream, true
 	}
-	return 0
+	return sidecarauth.Upstream{}, false
 }
 
 // Start opens the listeners and begins serving. Returns once both are
@@ -659,6 +668,11 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 			"detail": route.Detail,
 		})
 		f.logAccess(r, route, rest, http.StatusBadGateway, 0, time.Since(started))
+		return
+	}
+
+	if route.MCP != nil {
+		f.handleMCP(w, r, route, rest, started)
 		return
 	}
 
@@ -1053,7 +1067,7 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 
 // proxyHTTP forwards plain HTTP (including SSE).
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
-	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
+	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.Upstream.Port)}
 
 	// The slot bounds how many requests wait on the sidecar at once. It is
 	// released when the response has been copied, or as soon as an SSE
@@ -1095,9 +1109,12 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			pr.Out.URL.Host = upstream.Host
 			pr.Out.URL.Path = "/" + rest
 			pr.Out.Host = upstream.Host
+			sidecarauth.StripInbound(pr.Out.Header)
+			pr.Out.Header.Set(sidecarauth.Header, route.Upstream.Secret)
 			pr.Out.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			sidecarauth.StripInbound(resp.Header)
 			if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
 				resp.Header.Set("X-Accel-Buffering", "no")
 				release()
@@ -1135,7 +1152,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 // while waiting.
 func (f *Facade) acquireSlot(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) (release func(), waited time.Duration, ok bool) {
 	waitStart := time.Now()
-	release, err := f.slotsFor(route.UpstreamPort).acquire(r.Context(), f.limits.queueWait)
+	release, err := f.slotsFor(route.Upstream.Port).acquire(r.Context(), f.limits.queueWait)
 	waited = time.Since(waitStart)
 	if err == nil {
 		return release, waited, true
@@ -1180,7 +1197,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 		r.Body = &limitedBody{ReadCloser: r.Body, n: limit}
 	}
 
-	upstreamAddr := upstreamHost(route.UpstreamPort)
+	upstreamAddr := upstreamHost(route.Upstream.Port)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	upConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstreamAddr)
@@ -1200,6 +1217,8 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	for _, h := range hopByHopHeaders {
 		clone.Header.Del(h)
 	}
+	sidecarauth.StripInbound(clone.Header)
+	clone.Header.Set(sidecarauth.Header, route.Upstream.Secret)
 	clone.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	if err := clone.Write(upConn); err != nil {
 		w.Header().Set("X-Omac-Reason", "upstream-error")
@@ -1218,6 +1237,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	}
 	if upResp.StatusCode != http.StatusSwitchingProtocols {
 		// Upstream refused the upgrade; relay its response to the client.
+		sidecarauth.StripInbound(upResp.Header)
 		for k, vs := range upResp.Header {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -1255,6 +1275,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	// Forward the 101 response (stripped of hop-by-hop headers) to the client.
 	respOut := &strings.Builder{}
 	respOut.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+	sidecarauth.StripInbound(upResp.Header)
 	for k, vs := range upResp.Header {
 		skip := false
 		for _, h := range hopByHopHeaders {
@@ -1362,9 +1383,13 @@ func (f *Facade) logAccessWaited(r *http.Request, route *Route, rest string, sta
 	// Audit sink: one facade.request event per request, with the namespace
 	// hashed by the auditor (a secret dir-token must never be written).
 	if f.auditor != nil {
-		f.auditor.Emit(audit.FacadeRequest(
+		ev := audit.FacadeRequest(
 			r.Method, route.Mount, route.Namespace, "/"+rest,
-			status, bytes, dur.Milliseconds()))
+			status, bytes, dur.Milliseconds())
+		if info, ok := mcpToolFrom(r.Context()); ok {
+			ev = ev.WithTool(info.tool, info.class, info.args)
+		}
+		f.auditor.Emit(ev)
 	}
 	if f.accLog == nil {
 		return
@@ -1457,9 +1482,21 @@ type statusCaptureWriter struct {
 	status    int
 	bytes     int64
 	headerSet bool
+	// onStatus, when set, sees the final (non-1xx) status once, before it
+	// is written.
+	onStatus func(status int)
+	notified bool
+}
+
+func (w *statusCaptureWriter) notify(code int) {
+	if w.onStatus != nil && !w.notified && code >= 200 {
+		w.notified = true
+		w.onStatus(code)
+	}
 }
 
 func (w *statusCaptureWriter) WriteHeader(code int) {
+	w.notify(code)
 	w.status = code
 	w.headerSet = true
 	w.ResponseWriter.WriteHeader(code)
@@ -1467,6 +1504,7 @@ func (w *statusCaptureWriter) WriteHeader(code int) {
 
 func (w *statusCaptureWriter) Write(b []byte) (int, error) {
 	if !w.headerSet {
+		w.notify(http.StatusOK)
 		w.headerSet = true
 	}
 	n, err := w.ResponseWriter.Write(b)

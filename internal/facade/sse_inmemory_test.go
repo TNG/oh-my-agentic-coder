@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"net"
 	"net/http"
 	"strings"
@@ -32,7 +33,7 @@ func TestFacadeSSE_InMemory(t *testing.T) {
 
 	// 2. Facade pointed at the upstream.
 	f := New("", "", // listeners unused; we don't Start() the facade
-		[]Route{{Mount: "echo", UpstreamPort: upstreamPort, Skill: "echo-rest"}},
+		[]Route{{Mount: "echo", Upstream: sidecarauth.Upstream{Port: upstreamPort}, Skill: "echo-rest"}},
 		1<<20, 30*time.Second, "", "test")
 	// Build the handler manually (same wiring as Facade.Start, minus the listener).
 	handler := http.HandlerFunc(f.handle)

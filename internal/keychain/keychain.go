@@ -111,7 +111,7 @@ func Delete(skillName, name string) error {
 // mirrors the remembered default.
 func SetScoped(scope, skillName, name string, value secrets.Secret) error {
 	if mock := mockBackend(); mock != nil {
-		return mock.set(scope, skillName, name, value.ExposeString())
+		return mock.set(ScopedService(scope, skillName), name, value.ExposeString())
 	}
 	svc := ScopedService(scope, skillName)
 	if err := keyring.Set(svc, name, value.ExposeString()); err != nil {
@@ -133,7 +133,7 @@ func SetScoped(scope, skillName, name string, value secrets.Secret) error {
 // ErrUnavailable only once no fallback satisfied the secret.
 func GetScoped(scope, skillName, name string) (secrets.Secret, error) {
 	if mock := mockBackend(); mock != nil {
-		v, err := mock.get(scope, skillName, name)
+		v, err := mock.get(ScopedService(scope, skillName), name)
 		if err != nil {
 			return secrets.Secret{}, err
 		}
@@ -264,7 +264,7 @@ func GetWithFallback(scope, skillName, name string) (secrets.Secret, error) {
 // Returns false (not an error) when the keychain backend is unavailable.
 func HasScoped(scope, skillName, name string) (bool, error) {
 	if mock := mockBackend(); mock != nil {
-		return mock.has(scope, skillName, name)
+		return mock.has(ScopedService(scope, skillName), name)
 	}
 	svc := ScopedService(scope, skillName)
 	_, err := keyring.Get(svc, name)
@@ -281,7 +281,7 @@ func HasScoped(scope, skillName, name string) (bool, error) {
 // not an error.
 func DeleteScoped(scope, skillName, name string) error {
 	if mock := mockBackend(); mock != nil {
-		return mock.delete(scope, skillName, name)
+		return mock.delete(ScopedService(scope, skillName), name)
 	}
 	svc := ScopedService(scope, skillName)
 	err := keyring.Delete(svc, name)
@@ -388,14 +388,13 @@ func (m *fileMock) save(entries []mockEntry) error {
 	return os.WriteFile(m.path, data, 0o600)
 }
 
-func (m *fileMock) set(scope, skill, name, value string) error {
+func (m *fileMock) set(svc, name, value string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entries, err := m.load()
 	if err != nil {
 		return err
 	}
-	svc := ScopedService(scope, skill)
 	for i, e := range entries {
 		if e.Service == svc && e.Name == name {
 			entries[i].Value = value
@@ -406,14 +405,13 @@ func (m *fileMock) set(scope, skill, name, value string) error {
 	return m.save(entries)
 }
 
-func (m *fileMock) get(scope, skill, name string) (string, error) {
+func (m *fileMock) get(svc, name string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entries, err := m.load()
 	if err != nil {
 		return "", err
 	}
-	svc := ScopedService(scope, skill)
 	for _, e := range entries {
 		if e.Service == svc && e.Name == name {
 			return e.Value, nil
@@ -422,8 +420,8 @@ func (m *fileMock) get(scope, skill, name string) (string, error) {
 	return "", ErrNotFound
 }
 
-func (m *fileMock) has(scope, skill, name string) (bool, error) {
-	_, err := m.get(scope, skill, name)
+func (m *fileMock) has(svc, name string) (bool, error) {
+	_, err := m.get(svc, name)
 	if err == nil {
 		return true, nil
 	}
@@ -433,14 +431,13 @@ func (m *fileMock) has(scope, skill, name string) (bool, error) {
 	return false, err
 }
 
-func (m *fileMock) delete(scope, skill, name string) error {
+func (m *fileMock) delete(svc, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	entries, err := m.load()
 	if err != nil {
 		return err
 	}
-	svc := ScopedService(scope, skill)
 	for i, e := range entries {
 		if e.Service == svc && e.Name == name {
 			entries = append(entries[:i], entries[i+1:]...)

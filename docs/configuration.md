@@ -13,7 +13,7 @@ description: omac configuration files and options
 | `sidecar.json` | Skill registry: names, directories, bundle hashes, declared secrets | `omac register` / `omac deregister`   |
 | `skill-config.yaml` | Non-secret per-skill fields: API base URLs, region names, feature flags | `omac register` / `omac config`       |
 
-These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
+These files live under `~/.config/omac/` (user-global) or `<workdir>/.opencode/` (workdir-local). When `$XDG_CONFIG_HOME` is set, the user-global directory is `$XDG_CONFIG_HOME/omac/` instead, for every file in the table and for the sandbox profiles. The launcher config is read from both locations when both exist; see [Per-project configuration](#per-project-configuration) for what each location can control.
 
 ## Launcher config
 
@@ -34,9 +34,19 @@ audit:
   strict: false                     # fail-closed: abort the run if a log write fails
 cache:
   scope: workdir                    # tool cache sharing: workdir (default), config, or global; see Cache
+mcp:
+  unregistered: ignore              # harness MCP entries omac did not register: allow | warn | ignore | refuse (default: ignore for Claude Code, refuse otherwise)
 ```
 
 **`cache.scope`** controls how widely omac's isolated tool cache is shared between projects. It can be overridden per session with `--cache-scope`. See [Cache](./advanced/cache.md) for details.
+
+**`mcp`** controls what omac does about MCP entries in the harness's own config files once you have registered a server (for this project or globally, for any harness) with the [MCP gateway](./usage/mcp.md). It is read from the global `config.yaml` only (`~/.config/omac/config.yaml`, or `$XDG_CONFIG_HOME/omac/config.yaml`); a project-local file cannot set it. `omac start --mcp-unregistered=<value>` overrides `unregistered` for one run. See [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config).
+
+The modes are `allow` (entries load, silent), `warn` (entries load, listed), `ignore` (entries are not loaded, listed as a notice, start proceeds) and `refuse` (entries are not loaded, start is refused). `ignore` needs a harness that can suppress its own MCP config, which only Claude Code can; for OpenCode and the other harnesses it falls back to `refuse` with a message. The default is `ignore` for Claude Code and `refuse` for every other harness; an explicit setting always wins.
+
+For Claude Code the default `ignore` (and `refuse`) starts it in strict MCP mode, even when nothing is registered, so it does not auto-load servers from plugins or its own config. To keep those, for example plugins your organization requires, set `mcp:` `unregistered: allow` here, or pass `--mcp-unregistered=allow` for one run: see [how to skip the disabling](./usage/mcp.md#keeping-plugins-or-servers-you-have-to-use).
+
+Registered MCP servers are not configured in this file. Their definitions (command, secrets, tool classes, `access`, `approvals` and the `reviewed` record of the tool list) live on the host under `~/.config/omac/mcp/`; see the [definition reference](./usage/mcp.md#definition-reference).
 
 **`idle_timeout_secs`** controls how long an idle connection to the facade is held open. For plain HTTP it is the keep-alive time between requests. For a WebSocket connection it is the inactivity limit: the connection closes after this many seconds with no data in either direction, and one that keeps sending messages or pings stays open. A skill can set its own WebSocket limit with `limits.idle_timeout_secs` (see [Skill authoring](./skills/authoring.md)). The setting does not end the session; the agent and sandbox keep running.
 
@@ -149,7 +159,7 @@ A few things to know:
 
 ### Running an MCP server the harness launches
 
-An MCP server is configured in the harness, not in omac.
+An MCP server is configured in the harness, not in omac. Inside omac, MCP configuration comes only from the omac registry (see the [MCP gateway](./usage/mcp.md)). Once you register a server, omac does not load such harness entries (Claude Code, `ignore`) or refuses to start while they exist (other harnesses, `refuse`), unless you run with `--mcp-unregistered=allow` (see [Existing MCP entries](./usage/mcp.md#existing-mcp-entries-in-the-harness-config)).
 The harness (opencode, claude-code, …) launches MCP servers **inside the sandbox**, so the MCP server is limited by the sandbox restrictions. Two things commonly need granting:
 
 - **A token**, if the server authenticates with an API key: add the variable to `environment.allow_vars` (see above) and export it before `omac start`.
@@ -164,7 +174,7 @@ For example, an MCP server that reads `KAGGLE_KEY` and listens on port 3334:
 
 **The token can be accessed by the agent in this setting.** So:
 
-- For anything holding a real secret, prefer an omac skill if one exists or can be written (see [Authoring skills](./skills/authoring.md)).
+- For anything holding a real secret, register the server with the [MCP gateway](./usage/mcp.md), which runs it outside the sandbox with its credentials, or use an omac skill if one exists or can be written (see [Authoring skills](./skills/authoring.md)).
 - If you do use an MCP server with a token, use a scoped, least-privilege token.
 
 ### Java and Node dependency downloads

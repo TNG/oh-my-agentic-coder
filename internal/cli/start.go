@@ -21,10 +21,12 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpinject"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 	"github.com/TNG/oh-my-agentic-coder/internal/session"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillconfig"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillsource"
 	"github.com/TNG/oh-my-agentic-coder/internal/skillstate"
@@ -78,6 +80,8 @@ type launchOpts struct {
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
 	openPorts []int
+	// mcpUnregistered overrides mcp.unregistered for this run; empty keeps the config value.
+	mcpUnregistered string
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -106,6 +110,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		auditLog           = fs.String("audit-log", "", "Path to the audit log (default: persistent central location). Overrides config.")
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
+		mcpUnregistered    = fs.String("mcp-unregistered", "", "How to treat MCP servers the harness config defines that are not registered with omac: allow, warn, ignore or refuse. Overrides mcp.unregistered for this run.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
 	)
 	var openPorts intMultiFlag
@@ -150,6 +155,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 			return launchOpts{}, ExitMisuse
 		}
 	}
+	if *mcpUnregistered != "" && !mcpinject.Mode(*mcpUnregistered).Valid() {
+		fmt.Fprintf(env.Stderr, "omac %s: invalid --mcp-unregistered %q: want allow, warn, ignore or refuse\n", cmdName, *mcpUnregistered)
+		return launchOpts{}, ExitMisuse
+	}
 	innerArgs = append(fs.Args(), innerArgs...)
 	return launchOpts{
 		label:              cmdName,
@@ -169,6 +178,7 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit:            *noAudit,
 		auditStrict:        *auditStrict,
 		sessionID:          *sessionID,
+		mcpUnregistered:    *mcpUnregistered,
 		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
 	}, ExitOK
@@ -253,6 +263,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
+	}
+	mcp, mcpCode := prepareMCP(env, harness, lc, opts)
+	if mcpCode != ExitOK {
+		return mcpCode
 	}
 	// One resolved sandbox plan for the whole launch: the launcher profile
 	// (templated argv) plus, for omac's native backend, its policy profile
@@ -572,6 +586,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 			secretValues = append(secretValues, sec.ExposeString())
 		}
 	}
+	mcp.loadAllSecrets(env, prefix)
+	secretValues = append(secretValues, mcp.secretValues()...)
 	// fatalTeardown is assigned its real body once sup/facade/control exist;
 	// until then a strict write failure (only possible after those are up)
 	// cannot occur, but we default it to a plain exit for safety.
@@ -685,11 +701,18 @@ func runLaunch(env *Env, opts launchOpts) int {
 			LogPath:          filepath.Join(rtDir, "logs", s.Entry.Name+".log"),
 			Workdir:          env.Workdir,
 			HarnessSkillsDir: harness.WorkdirSkillsDir(),
+			RequireSecret:    snapM.Sidecar.RequireSecret,
 		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	running, err := sup.StartAll(ctx, specs)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitSidecarHealthcheckFail
+	}
+	defer mcp.shutdown()
+	mcpRoutes, err := mcp.launchMCPGateways(ctx, env, prefix, lc, auditor, rtDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, prefix+":", err)
 		return ExitSidecarHealthcheckFail
@@ -700,12 +723,13 @@ func runLaunch(env *Env, opts launchOpts) int {
 	mounts := make([]string, 0, len(running))
 	for i, r := range running {
 		mount := approved[i].Mount
-		routes = append(routes, startRoute(mount, r.Port, r.Name, approved[i].AbsDir, approved[i].Meta, approvalSets[i], healthPaths[i]))
+		routes = append(routes, startRoute(mount, r.Upstream, r.Name, approved[i].AbsDir, approved[i].Meta, approvalSets[i], healthPaths[i]))
 		mounts = append(mounts, mount)
 	}
 	// Mount unapproved skills as broken routes so a probe gets an
 	// actionable 502 instead of a silent 404 (and they never spawn).
 	routes = append(routes, refusedRoutes...)
+	routes = append(routes, mcpRoutes...)
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
@@ -738,6 +762,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	defer f.Close()
 	tcpPort := f.TCPPort()
+	mcp.watch(ctx, f)
+	if err := mcp.buildInjection(harness, innerArgs, socketPath, tcpPort, f.FacadeToken, sandboxTmp); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitIOError
+	}
+	if err := mcp.checkSandboxEnv(env, prefix, plan, noSandbox); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] facade listening on %s and 127.0.0.1:%d (%d route(s))\n",
 			socketPath, tcpPort, len(routes))
@@ -750,6 +783,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		env: env, facade: f, sup: sup, auditor: auditor, ctx: ctx,
 		rtDir: rtDir, socket: socketPath, tcpPort: tcpPort, verbose: verbose,
 		skipSecretPattern: skipSecretPattern,
+		mcp:               mcp,
 		mounted:           map[string]string{},
 	}
 	for _, a := range approved {
@@ -773,6 +807,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
+	inner = append(inner, mcp.innerArgs()...)
 	if len(innerArgs) > 0 {
 		inner = append(inner, innerArgs...)
 	}
@@ -845,6 +880,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
 		argv = forwardHarnessEnv(env, argv, harness, plan)
+		argv = mcp.allowEnv(argv, plan)
 		// User --open-port grants (e.g. local Playwright webServer). Additive
 		// on top of the profile; no-op on non-native backends (with a warning).
 		argv = injectUserOpenPorts(env, argv, opts.openPorts, prof)
@@ -933,6 +969,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra["OMAC_CONTROL_TOKEN"] = reloader.controlToken
 	}
 	extra["OMAC_FACADE_TOKEN"] = reloader.facade.FacadeToken
+	mcp.addEnv(extra)
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).
@@ -968,6 +1005,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if !keepRunning {
 			sup.ShutdownAll(5 * time.Second)
 		}
+		mcp.shutdown()
 		_ = f.Close()
 		closeControl()
 		os.Exit(ExitIOError)
@@ -1546,14 +1584,14 @@ func createRuntimeDir(workdir string) (string, error) {
 
 // startRoute is the route that start mounts for a running skill sidecar on
 // port, with the limits from its manifest.
-func startRoute(mount string, port int, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
+func startRoute(mount string, up sidecarauth.Upstream, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
 	var maxBody int64
 	if meta != nil && meta.Sidecar != nil && meta.Sidecar.Limits != nil {
 		maxBody = meta.Sidecar.Limits.MaxBodyBytes
 	}
 	return facade.Route{
 		Mount:        mount,
-		UpstreamPort: port,
+		Upstream:     up,
 		MaxBodyBytes: maxBody,
 		IdleTimeout:  routeIdleTimeout(meta),
 		Skill:        name,

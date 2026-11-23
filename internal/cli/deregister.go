@@ -146,6 +146,22 @@ func runDeregister(args []string, env *Env) int {
 		}
 	}
 
+	// Stored approvals belong to the skill that was approved: a different
+	// skill registered later under the same name must not inherit them. Keep
+	// them while another entry of that name (another harness) stays.
+	approvalsRemoved := 0
+	if existed {
+		if reg, err := loadRegistry(env.Workdir, global); err == nil {
+			if left, _ := reg.Find(name); left == nil {
+				n, rerr := revokeStoredApprovals(name, projectScope(env.Workdir).Key, global)
+				if rerr != nil {
+					fmt.Fprintf(env.Stderr, "omac deregister: could not remove stored approvals (%v)\n", rerr)
+				}
+				approvalsRemoved = n
+			}
+		}
+	}
+
 	if *purge {
 		if err := keychain.DeleteAll(name, declared); err != nil {
 			fmt.Fprintln(env.Stderr, "omac deregister: keychain:", err)
@@ -172,6 +188,9 @@ func runDeregister(args []string, env *Env) int {
 		} else {
 			fmt.Fprintf(env.Stdout, "[noop] %s was not registered and no skill of that name was found on disk", name)
 		}
+	}
+	if existed {
+		fmt.Fprintf(env.Stdout, "; removed %d stored approval(s)", approvalsRemoved)
 	}
 	if *purgeFields {
 		fmt.Fprintf(env.Stdout, "; deleted %d config field(s)", removedFields)

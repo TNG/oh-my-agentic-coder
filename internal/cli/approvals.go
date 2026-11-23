@@ -129,3 +129,16 @@ Answers "for this session" and "deny everything from this skill" are not
 stored; they end when omac start or omac serve stops.
 `)
 }
+
+// revokeStoredApprovals removes the stored "allow always" answers of one
+// skill (or, with the "mcp:" prefix, one MCP server). With allScopes it takes
+// the answers of every project and of serve's global scope; otherwise only
+// those bound to scopeKey, so another project's answers stay.
+func revokeStoredApprovals(skill, scopeKey string, allScopes bool) (int, error) {
+	if registry.GlobalDir() == "" {
+		return 0, nil
+	}
+	return approver.NewStore("").RevokeWhere(func(v approver.Verdict) bool {
+		return v.Skill == skill && (allScopes || v.Scope == scopeKey)
+	})
+}

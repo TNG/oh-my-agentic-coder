@@ -331,6 +331,7 @@ func TestWarnEmptyAllowVars(t *testing.T) {
 func TestRunRejectsFlagPortsAboveCap(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

@@ -12,5 +12,6 @@ func TestMain(m *testing.M) {
 	for _, name := range HomeEnvNames() {
 		os.Unsetenv(name)
 	}
+	os.Unsetenv("XDG_CONFIG_HOME")
 	os.Exit(m.Run())
 }

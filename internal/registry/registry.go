@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 )
 
 // SchemaVersion is the current on-disk format version.
@@ -80,14 +81,7 @@ func LockPath(workdir string) string {
 // directory can be determined; callers should treat that as "no
 // global store available" and fall back to workdir-only behavior.
 func GlobalDir() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "omac")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".config", "omac")
+	return globaldir.Dir()
 }
 
 // GlobalPath returns the user-global registry file path, or "" when no

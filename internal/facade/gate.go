@@ -9,6 +9,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 )
 
 // ApprovalRequest is what the gate observed about a request that needs a
@@ -40,6 +41,16 @@ type ApprovalRequest struct {
 	// CatchAll is true when the matched entry is on ANY or a ** path, so
 	// Match is the exact route rather than the entry.
 	CatchAll bool
+	// MCP is set when the request is a tools/call to an MCP gateway route.
+	MCP *MCPCall
+}
+
+// MCPCall describes the MCP tool call an ApprovalRequest is about.
+type MCPCall struct {
+	Server, Tool string
+	Class        mcppolicy.Class
+	// Args is a masked, capped summary of the call's arguments.
+	Args string
 }
 
 // ApprovalSource says where a decision came from. The gate picks the status
@@ -47,15 +58,19 @@ type ApprovalRequest struct {
 type ApprovalSource string
 
 const (
-	SourceDeclared    ApprovalSource = "declared"     // approval: none
-	SourcePrompt      ApprovalSource = "prompt"       // the user answered the dialog
-	SourceSession     ApprovalSource = "session"      // an earlier "for this session" answer
-	SourceAlways      ApprovalSource = "always"       // a stored "always" answer
-	SourceDenyAll     ApprovalSource = "deny-all"     // "deny everything from this skill"
-	SourceTimeout     ApprovalSource = "timeout"      // nobody answered in time
-	SourceUnavailable ApprovalSource = "unavailable"  // no dialog could be shown
-	SourceAbandoned   ApprovalSource = "abandoned"    // the client went away while held
-	SourceInvalidPath ApprovalSource = "invalid-path" // the path cannot be cleaned unambiguously
+	SourceDeclared       ApprovalSource = "declared"        // approval: none
+	SourcePrompt         ApprovalSource = "prompt"          // the user answered the dialog
+	SourceSession        ApprovalSource = "session"         // an earlier "for this session" answer
+	SourceAlways         ApprovalSource = "always"          // a stored "always" answer
+	SourceDenyAll        ApprovalSource = "deny-all"        // "deny everything from this skill"
+	SourceTimeout        ApprovalSource = "timeout"         // nobody answered in time
+	SourceUnavailable    ApprovalSource = "unavailable"     // no dialog could be shown
+	SourceAbandoned      ApprovalSource = "abandoned"       // the client went away while held
+	SourceInvalidPath    ApprovalSource = "invalid-path"    // the path cannot be cleaned unambiguously
+	SourceMCPUnparseable ApprovalSource = "mcp-unparseable" // the MCP message failed strict parsing
+	SourceMCPUnlisted    ApprovalSource = "mcp-unlisted"    // the MCP method or tool is not allowed or not declared
+	SourceMCPAccess      ApprovalSource = "mcp-access"      // the tool's class is not allowed by the access mode
+	SourceRetry          ApprovalSource = "retry"           // an MCP call repeated within seconds of its allowed transport attempt
 )
 
 // ApprovalScope is how far a user answer reaches.

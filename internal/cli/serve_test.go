@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1154,11 +1155,7 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Sandbox profiles are trusted only from the global config; write there.
-	globalHome, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(globalHome, ".config", "omac", "config.yaml")
+	configPath := filepath.Join(globaldir.Dir(), "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}

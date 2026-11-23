@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -211,7 +213,7 @@ func (o outcome) String() string {
 
 func startFacadeFor(t *testing.T, s scenario, upPort int) (network, addr string) {
 	t.Helper()
-	routes := []Route{{Mount: "skill", UpstreamPort: upPort, State: RouteReady, IdleTimeout: s.routeIdle}}
+	routes := []Route{{Mount: "skill", Upstream: sidecarauth.Upstream{Port: upPort}, State: RouteReady, IdleTimeout: s.routeIdle}}
 	if s.transport == "unix" {
 		dir, err := os.MkdirTemp("", "ws")
 		if err != nil {

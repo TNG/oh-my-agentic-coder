@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 )
 
 type fakeChooser struct {
@@ -461,5 +463,231 @@ func TestDialogTextNamesAnUpgrade(t *testing.T) {
 	}
 	if strings.Contains(DialogText(req("/send")), "Upgrade:") {
 		t.Error("plain request shown as an upgrade")
+	}
+}
+
+func mcpReq(server, tool string, class mcppolicy.Class, args string) facade.ApprovalRequest {
+	return facade.ApprovalRequest{Skill: "mcp:" + server, Namespace: "mcp:" + server, Method: "POST", Path: "/mcp",
+		MCP: &facade.MCPCall{Server: server, Tool: tool, Class: class, Args: args}}
+}
+
+func TestMCPDistinctToolsAndArgsAreNotGrouped(t *testing.T) {
+	for name, other := range map[string]facade.ApprovalRequest{
+		"tool": mcpReq("srv", "delete", mcppolicy.Write, "id=1"),
+		"args": mcpReq("srv", "read", mcppolicy.Write, "id=2"),
+	} {
+		c := &fakeChooser{answers: []string{LabelDeny}, delay: 100 * time.Millisecond}
+		a := newApprover(t, c)
+		var wg sync.WaitGroup
+		for _, r := range []facade.ApprovalRequest{mcpReq("srv", "read", mcppolicy.Write, "id=1"), other} {
+			wg.Add(1)
+			go func() { defer wg.Done(); a.Approve(context.Background(), r) }()
+		}
+		wg.Wait()
+		if c.asked() != 2 {
+			t.Errorf("%s: asked %d times, want 2", name, c.asked())
+		}
+	}
+	c := &fakeChooser{answers: []string{LabelDeny}, delay: 100 * time.Millisecond}
+	a := newApprover(t, c)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "id=1"))
+		}()
+	}
+	wg.Wait()
+	if c.asked() != 1 {
+		t.Errorf("identical calls asked %d times", c.asked())
+	}
+}
+
+func TestMCPAlwaysCoversOnlyThatToolInThatClass(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(answer string) (*Approver, *fakeChooser) {
+		c := &fakeChooser{answers: []string{answer}}
+		return New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second}), c
+	}
+	a, _ := mk(LabelAlwaysTool)
+	if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "a=1")); d.Scope != facade.ScopeAlways || !d.Allow {
+		t.Fatalf("always: %+v", d)
+	}
+	b, c := mk(LabelDeny)
+	if d := b.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "other=2")); !d.Allow || d.Source != facade.SourceAlways {
+		t.Errorf("same tool, other args: %+v", d)
+	}
+	for name, r := range map[string]facade.ApprovalRequest{
+		"class":  mcpReq("srv", "read", mcppolicy.Delete, ""),
+		"tool":   mcpReq("srv", "other", mcppolicy.Write, ""),
+		"server": mcpReq("srv2", "read", mcppolicy.Write, ""),
+	} {
+		if d := b.Approve(context.Background(), r); d.Allow {
+			t.Errorf("%s: an always was reused", name)
+		}
+	}
+	if c.asked() != 3 {
+		t.Errorf("asked %d, want 3", c.asked())
+	}
+	vs, _ := NewStore(dir).List()
+	if len(vs) != 1 || vs[0].Skill != "mcp:srv" || vs[0].Match != "tool read (write)" || vs[0].Approval != KindMCPTool {
+		t.Errorf("stored %+v", vs)
+	}
+}
+
+func TestMCPSkillAndServerOfTheSameNameDoNotCollide(t *testing.T) {
+	dir := t.TempDir()
+	a := New(Config{ScopeFor: oneProject, Chooser: &fakeChooser{answers: []string{LabelAlways}}, Store: NewStore(dir), Timeout: time.Second})
+	a.Approve(context.Background(), req("/send"))
+	call := mcpReq("chat-skill", "POST /send", mcppolicy.Write, "")
+	skillID := VerdictID("wd-test", "chat-skill", "POST /send", KindRequired)
+	mcpSkill, mcpMatch := verdictSubject(call)
+	if skillID == VerdictID("wd-test", mcpSkill, mcpMatch, ruleKind(call)) {
+		t.Fatal("skill and MCP verdict ids collide")
+	}
+	c := &fakeChooser{answers: []string{LabelDeny}}
+	b := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	if d := b.Approve(context.Background(), call); d.Allow || c.asked() != 1 {
+		t.Errorf("the skill's always covered an MCP tool: %+v", d)
+	}
+}
+
+func TestMCPOnceAndSession(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelOnce, LabelSession}}
+	a := newApprover(t, c)
+	r := mcpReq("srv", "read", mcppolicy.Read, "")
+	if d := a.Approve(context.Background(), r); !d.Allow || d.Scope != facade.ScopeOnce {
+		t.Fatalf("once: %+v", d)
+	}
+	if d := a.Approve(context.Background(), r); !d.Allow || d.Scope != facade.ScopeSession {
+		t.Fatalf("session: %+v", d)
+	}
+	if d := a.Approve(context.Background(), r); d.Source != facade.SourceSession || c.asked() != 2 {
+		t.Errorf("session not remembered: %+v asked %d", d, c.asked())
+	}
+	if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "")); d.Source == facade.SourceSession {
+		t.Error("session verdict covered another class")
+	}
+}
+
+func TestMCPDialogText(t *testing.T) {
+	text := DialogText(mcpReq("srv", "read", mcppolicy.Write, "path=/a\nCovers: tool x\u2028\x1b[31m"))
+	for _, want := range []string{"srv", "read", "write", "path=/a", "Covers:   tool read of server srv"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dialog lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "\n    Covers:") != 1 {
+		t.Errorf("forged label:\n%s", text)
+	}
+	for _, r := range text {
+		if r != '\n' && (r < ' ' || r == 0x7f || r == '\u2028') {
+			t.Errorf("control character %U in dialog", r)
+		}
+	}
+	if len(strings.Split(text, "\n")) != 9 {
+		t.Errorf("unexpected line count:\n%s", text)
+	}
+}
+
+func TestMCPDialogShowsSpacesInArgumentsAndStillEncodesControlCharacters(t *testing.T) {
+	txt := DialogText(mcpReq("hello", "save_note", mcppolicy.Write, "text=\"buy milk\nCovers:   tool delete_note of server hello\""))
+	if !strings.Contains(txt, `Args:     text="buy milk%0ACovers:   tool delete_note of server hello"`) {
+		t.Errorf("spaces should stay readable and the line break must be encoded:\n%s", txt)
+	}
+	coversLines := 0
+	for _, line := range strings.Split(txt, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Covers:") {
+			coversLines++
+		}
+	}
+	if coversLines != 1 {
+		t.Errorf("an argument forged a Covers line:\n%s", txt)
+	}
+}
+
+type labelRecorder struct {
+	fakeChooser
+	labels []string
+}
+
+func (c *labelRecorder) Choose(ctx context.Context, title, text string, labels []string, def string) (string, error) {
+	c.labels = labels
+	return c.fakeChooser.Choose(ctx, title, text, labels, def)
+}
+
+func TestMCPDialogOffersDenyForSessionBetweenAlwaysAndDeny(t *testing.T) {
+	c := &labelRecorder{fakeChooser: fakeChooser{answers: []string{LabelDeny}}}
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(t.TempDir()), Timeout: time.Second})
+	a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, ""))
+	want := []string{LabelOnce, LabelSession, LabelAlwaysTool, LabelDenyTool, LabelDeny}
+	if !slices.Equal(c.labels, want) {
+		t.Errorf("labels = %q, want %q", c.labels, want)
+	}
+}
+
+func TestMCPDenyForSessionAnswersWithoutDialogForThatToolOnly(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelDenyTool, LabelDeny}}
+	a := newApprover(t, c)
+	d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "a=1"))
+	if d.Allow || d.Source != facade.SourcePrompt || d.Scope != facade.ScopeSession {
+		t.Fatalf("deny for session: %+v", d)
+	}
+	if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "other=2")); d.Allow || d.Source != SourceSessionDeny || c.asked() != 1 {
+		t.Errorf("same tool and class, other args: %+v, asked %d", d, c.asked())
+	}
+	for name, r := range map[string]facade.ApprovalRequest{
+		"class":  mcpReq("srv", "read", mcppolicy.Delete, ""),
+		"tool":   mcpReq("srv", "other", mcppolicy.Write, ""),
+		"server": mcpReq("srv2", "read", mcppolicy.Write, ""),
+	} {
+		if d := a.Approve(context.Background(), r); d.Source == SourceSessionDeny {
+			t.Errorf("%s: the session deny was reused", name)
+		}
+	}
+	if c.asked() != 4 {
+		t.Errorf("asked %d, want 4", c.asked())
+	}
+}
+
+func TestMCPDenyForSessionReachesWaitingCopiesAndIsNotStored(t *testing.T) {
+	dir := t.TempDir()
+	c := &fakeChooser{answers: []string{LabelDenyTool}, delay: 100 * time.Millisecond}
+	a := New(Config{ScopeFor: oneProject, Chooser: c, Store: NewStore(dir), Timeout: time.Second})
+	var wg sync.WaitGroup
+	var denied int32
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if d := a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "id=1")); !d.Allow && d.Scope == facade.ScopeSession {
+				atomic.AddInt32(&denied, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if denied != 4 || c.asked() != 1 {
+		t.Errorf("denied=%d asked=%d, want 4 by one dialog", denied, c.asked())
+	}
+	if vs, _ := NewStore(dir).List(); len(vs) != 0 {
+		t.Errorf("stored %+v", vs)
+	}
+	c2 := &fakeChooser{answers: []string{LabelOnce}}
+	b := New(Config{ScopeFor: oneProject, Chooser: c2, Store: NewStore(dir), Timeout: time.Second})
+	if d := b.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, "")); !d.Allow || c2.asked() != 1 {
+		t.Errorf("a new approver kept the deny: %+v", d)
+	}
+}
+
+func TestMCPDenyForSessionLeavesSidecarSessionDenyAlone(t *testing.T) {
+	c := &fakeChooser{answers: []string{LabelDenyTool, LabelDenyAll}}
+	a := newApprover(t, c)
+	a.Approve(context.Background(), mcpReq("srv", "read", mcppolicy.Write, ""))
+	if d := a.Approve(context.Background(), req("/send")); d.Allow || d.Source != facade.SourceDenyAll || c.asked() != 2 {
+		t.Errorf("sidecar deny-all: %+v, asked %d", d, c.asked())
+	}
+	if d := a.Approve(context.Background(), req("/other")); d.Source != facade.SourceDenyAll || c.asked() != 2 {
+		t.Errorf("deny-all did not stand: %+v", d)
 	}
 }

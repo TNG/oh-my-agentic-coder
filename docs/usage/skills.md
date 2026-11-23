@@ -38,5 +38,5 @@ After running `omac setup`, these skills appear in `omac list`:
 |---|---|---|
 | `omac register <skill>` | Prompts for API keys and settings; stores them in the OS keychain. | — |
 | `omac list` | Shows registered skills and whether they are active. | — |
-| `omac deregister <skill>` | Removes a skill and deletes its stored secrets. | `--global` for user-global skills |
+| `omac deregister <skill>` | Removes a skill and its stored "Allow always" approvals (this project's, or with `--global` all projects'), and deletes its stored secrets. | `--global` for user-global skills |
 

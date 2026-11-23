@@ -3,6 +3,7 @@ package facade
 import (
 	"context"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"net/http"
@@ -75,7 +76,7 @@ func TestResolveUnit(t *testing.T) {
 	f := New("", "", nil, 0, 0, "", "test")
 	f.routes = map[string]*Route{}
 	add := func(ns, mount string) {
-		r := Route{Mount: mount, Namespace: ns, UpstreamPort: 1}
+		r := Route{Mount: mount, Namespace: ns, Upstream: sidecarauth.Upstream{Port: 1}}
 		f.routes[r.key()] = &r
 	}
 	add("", "flat")
@@ -150,7 +151,7 @@ func TestAddRemoveRouteFlat(t *testing.T) {
 		t.Fatalf("before AddRoute: code = %d, want 404", code)
 	}
 
-	f.AddRoute(Route{Mount: "demo", UpstreamPort: port, Skill: "demo"})
+	f.AddRoute(Route{Mount: "demo", Upstream: sidecarauth.Upstream{Port: port}, Skill: "demo"})
 	code, body := get(t, base+"/demo/hello/world")
 	if code != 200 {
 		t.Fatalf("after AddRoute: code = %d, want 200 (body=%q)", code, body)
@@ -174,8 +175,8 @@ func TestNamespacedRouting(t *testing.T) {
 	f, base := startTCPFacade(t, nil)
 
 	// Two directories each with a "slack" skill, plus one global skill.
-	f.AddRoute(Route{Mount: "slack", Namespace: "tokAAAA", UpstreamPort: portA, Skill: "slack"})
-	f.AddRoute(Route{Mount: "slack", Namespace: "tokBBBB", UpstreamPort: portB, Skill: "slack"})
+	f.AddRoute(Route{Mount: "slack", Namespace: "tokAAAA", Upstream: sidecarauth.Upstream{Port: portA}, Skill: "slack"})
+	f.AddRoute(Route{Mount: "slack", Namespace: "tokBBBB", Upstream: sidecarauth.Upstream{Port: portB}, Skill: "slack"})
 
 	codeA, bodyA := get(t, base+"/tokAAAA/slack/channels")
 	if codeA != 200 || !strings.Contains(bodyA, "path=/channels") {
@@ -207,7 +208,7 @@ func TestNamespacedRouting(t *testing.T) {
 func TestGlobalNamespaceRouting(t *testing.T) {
 	_, port := newUpstream(t)
 	f, base := startTCPFacade(t, nil)
-	f.AddRoute(Route{Mount: "weather", Namespace: GlobalNamespace, UpstreamPort: port, Skill: "weather"})
+	f.AddRoute(Route{Mount: "weather", Namespace: GlobalNamespace, Upstream: sidecarauth.Upstream{Port: port}, Skill: "weather"})
 
 	code, body := get(t, base+"/__global__/weather/today")
 	if code != 200 || !strings.Contains(body, "path=/today") {
@@ -256,7 +257,7 @@ func TestStubSwappedForLive(t *testing.T) {
 		t.Fatalf("expected 409 before swap")
 	}
 	// Swap to live (AddRoute replaces by key).
-	f.AddRoute(Route{Mount: "slack", Namespace: "tokAAAA", Skill: "slack", UpstreamPort: port})
+	f.AddRoute(Route{Mount: "slack", Namespace: "tokAAAA", Skill: "slack", Upstream: sidecarauth.Upstream{Port: port}})
 	if code, body := get(t, base+"/tokAAAA/slack/x"); code != 200 {
 		t.Fatalf("expected 200 after swap, got %d (%q)", code, body)
 	}

@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/globaldir"
 	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 )
@@ -168,14 +169,7 @@ func validProjectName(name string) bool {
 // "omac" leaf, matching the launcher/skill-config global location. An
 // empty string means no global directory could be resolved.
 func GlobalDir() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "omac")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".config", "omac")
+	return globaldir.Dir()
 }
 
 // Path returns the user-global prefs file path, or "" when no global

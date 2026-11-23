@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 	"io"
 	"net"
 	"strings"
@@ -94,9 +95,9 @@ func (s *fakeSidecar) saw() string {
 func startFacade(t *testing.T, s *fakeSidecar, maxBody int64) int {
 	t.Helper()
 	f := New("", "127.0.0.1:0", []Route{{
-		Mount:        "skill",
-		UpstreamPort: s.port,
-		State:        RouteReady,
+		Mount:    "skill",
+		Upstream: sidecarauth.Upstream{Port: s.port},
+		State:    RouteReady,
 	}}, maxBody, time.Minute, "", "test")
 	if err := f.Start(context.Background()); err != nil {
 		t.Fatalf("facade start: %v", err)

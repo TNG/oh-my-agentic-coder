@@ -43,6 +43,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `limits.idle_timeout_secs` | no | — | WebSocket (upgraded) connections only: seconds with no data in either direction before the proxy closes the connection. Plain HTTP keep-alive is not affected and always uses `facade.idle_timeout_secs`. If unset or 0, `facade.idle_timeout_secs` applies (default 300); a negative value is rejected. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
+| `require_secret` | no | `false` | When `true`, omac refuses to mount the skill unless its sidecar answers `401` to a request without the `X-Omac-Sidecar-Secret` header (see [Per-spawn secret](#per-spawn-secret)). A misspelled key such as `require_secrets` is an error. |
 | `approvals` | no | — | Which routes run without asking the user. Without the block nothing asks; with it, every route asks unless listed with `approval: none`. See [Approvals](#approvals-which-routes-run-without-asking). |
 
 **`secrets[]` entry fields**
@@ -185,6 +186,8 @@ Your sidecar must:
 - **Implement the health endpoint** at `health.path` (default `/status`; configure in `omac.yaml`). Return any 2xx (e.g. `{"ok": true}`). omac will not serve traffic until this succeeds.
 - **Never expose secrets** in response bodies or log lines.
 
+**Per-spawn secret.** On every start omac mints a random secret, passes it to your sidecar as `$OMAC_SIDECAR_SECRET`, and sends it on every request it forwards, in the `X-Omac-Sidecar-Secret` header. The health poll carries it too and expects a 2xx. A sidecar may check the header to make sure a request came through omac and not from another local process; with `require_secret: true` omac insists on it, and fails the start when a request without the header does not get a `401`. omac removes any `X-Omac-Sidecar-Secret` and `X-Omac-Facade-Token` header the agent sends, so you never see the agent's own, and it drops a `X-Omac-Sidecar-Secret` header from your responses. `OMAC_SIDECAR_SECRET` is reserved: it cannot be a name in `secrets`, `config` or `env_passthrough`.
+
 **Defining routes.** Your sidecar is an ordinary HTTP server, so define a handler for each path your skill needs (for example `GET /status`). The agent reaches it through omac at `$OMAC_MY_SKILL_BASE/status`, where `$OMAC_MY_SKILL_BASE` is the base URL the agent uses to reach your skill (see [How the agent reaches your skill](#how-the-agent-reaches-your-skill) below). 
 Before forwarding the request, omac strips your skill's mount prefix (`/my-skill`, the `mount` value from your `omac.yaml`), so your sidecar receives the bare path `/status`. Register your handlers for those bare paths: a handler for `/my-skill/status` would never be reached.
 
@@ -268,6 +271,7 @@ api_url = os.environ["API_BASE_URL"]   # from skill-config.yaml
 |---|---|
 | `SIDECAR_PORT` | Bind your HTTP server on `127.0.0.1:<SIDECAR_PORT>`. |
 | `SIDECAR_SKILL` | Your skill's name — prefix log lines with it for easier debugging. |
+| `OMAC_SIDECAR_SECRET` | The per-spawn secret omac sends in `X-Omac-Sidecar-Secret`; compare it in constant time. |
 | `OMAC_WORKDIR` | Absolute path of the project directory omac was invoked in — use when your sidecar needs to read or write project files. |
 | Each declared secret name | The credential value (from the OS keychain) — pass to your upstream API client, as in the example above. |
 | Each declared config field name | The config value — use for non-secret settings like base URLs, regions, or feature flags. |

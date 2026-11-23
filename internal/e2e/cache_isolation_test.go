@@ -96,7 +96,9 @@ func runOmacShell(t *testing.T, omacBin, home, workdir string, extraArgs []strin
 	defer cancel()
 	args := []string{"start", "claude-code"}
 	args = append(args, extraArgs...)
-	args = append(args, "--inner", "/bin/sh", "--")
+	// Claude Code starts in strict MCP mode by default and gets
+	// --strict-mcp-config; /bin/sh rejects that flag as an invalid option.
+	args = append(args, "--mcp-unregistered", "allow", "--inner", "/bin/sh", "--")
 	if len(innerArgv) > 0 && innerArgv[0] == "/bin/sh" {
 		innerArgv = innerArgv[1:]
 	}
@@ -763,7 +765,9 @@ func runOmacShellWithEnv(t *testing.T, omacBin, home, workdir string, extraArgs,
 	defer cancel()
 	args := []string{"start", "claude-code"}
 	args = append(args, extraArgs...)
-	args = append(args, "--inner", "/bin/sh", "--")
+	// Claude Code starts in strict MCP mode by default and gets
+	// --strict-mcp-config; /bin/sh rejects that flag as an invalid option.
+	args = append(args, "--mcp-unregistered", "allow", "--inner", "/bin/sh", "--")
 	if len(innerArgv) > 0 && innerArgv[0] == "/bin/sh" {
 		innerArgv = innerArgv[1:]
 	}

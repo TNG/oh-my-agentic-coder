@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
 
 // dialWS opens a WebSocket through the facade at addr and completes the
@@ -96,8 +98,8 @@ func startTwoRouteFacade(t *testing.T) *Facade {
 	t.Helper()
 	a, b := startWSUpstream(t, false), startWSUpstream(t, false)
 	f := New("", "127.0.0.1:0", []Route{
-		{Mount: "skill", UpstreamPort: a.port, State: RouteReady, Owner: "skill"},
-		{Mount: "other", UpstreamPort: b.port, State: RouteReady, Owner: "other"},
+		{Mount: "skill", Upstream: sidecarauth.Upstream{Port: a.port}, State: RouteReady, Owner: "skill"},
+		{Mount: "other", Upstream: sidecarauth.Upstream{Port: b.port}, State: RouteReady, Owner: "other"},
 	}, 0, time.Hour, "", "test")
 	if err := f.Start(context.Background()); err != nil {
 		t.Skipf("tcp listen not possible: %v", err)
@@ -151,8 +153,8 @@ func TestReplaceRouteClosesItsWebSockets(t *testing.T) {
 	bystander := startBusyWS(t, f, "/other/ws")
 	requireTracked(t, f, 2)
 
-	port := f.UpstreamPort("", "skill")
-	f.AddRoute(Route{Mount: "skill", UpstreamPort: port, State: RouteReady, Owner: "skill"})
+	port := f.upstreamPortOf("", "skill")
+	f.AddRoute(Route{Mount: "skill", Upstream: sidecarauth.Upstream{Port: port}, State: RouteReady, Owner: "skill"})
 	victim.requireClosed(t, "after the route was replaced")
 	bystander.requireOpen(t, "other route after the replacement")
 	requireTracked(t, f, 1)
@@ -166,7 +168,7 @@ func TestRefusedReplaceKeepsWebSockets(t *testing.T) {
 	ws := startBusyWS(t, f, "/skill/ws")
 	requireTracked(t, f, 1)
 
-	f.AddRoute(Route{Mount: "skill", UpstreamPort: 1, State: RouteReady, Owner: "forged"})
+	f.AddRoute(Route{Mount: "skill", Upstream: sidecarauth.Upstream{Port: 1}, State: RouteReady, Owner: "forged"})
 	ws.requireOpen(t, "after a refused replacement")
 	requireTracked(t, f, 1)
 }
@@ -242,7 +244,7 @@ func TestTrackUpgradeRefusesAGoneRoute(t *testing.T) {
 	t.Run("replaced route", func(t *testing.T) {
 		f := startTwoRouteFacade(t)
 		old := installedRoute(f)
-		f.AddRoute(Route{Mount: "skill", UpstreamPort: f.UpstreamPort("", "skill"), State: RouteReady, Owner: "skill"})
+		f.AddRoute(Route{Mount: "skill", Upstream: sidecarauth.Upstream{Port: f.upstreamPortOf("", "skill")}, State: RouteReady, Owner: "skill"})
 		if tryTrack(t, f, old) {
 			t.Fatal("trackUpgrade accepted a connection for a replaced route")
 		}
@@ -259,4 +261,10 @@ func TestTrackUpgradeRefusesAGoneRoute(t *testing.T) {
 		}
 		requireTracked(t, f, 0)
 	})
+}
+
+// upstreamPortOf is the port of the route for namespace/mount, 0 if absent.
+func (f *Facade) upstreamPortOf(namespace, mount string) int {
+	up, _ := f.Upstream(namespace, mount)
+	return up.Port
 }
