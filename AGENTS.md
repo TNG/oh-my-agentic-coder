@@ -33,6 +33,14 @@ API documentation or licensing.
 In every fix round, check documentation accuracy and comment placement.
 Put usage guidance in documentation and fix history in the PR.
 
+## Commits
+
+Every commit needs a DCO sign-off: use `git commit -s`, which adds a
+`Signed-off-by:` line. The DCO check fails the PR otherwise. This includes
+amended and fixup commits, and commits made by agents. Before pushing, check
+that each commit on the branch has one:
+`git log main..HEAD --format='%h %(trailers:key=Signed-off-by,valueonly)'`.
+
 ## Communication
 
 In communication with the user, as well as when adding comments to the code
