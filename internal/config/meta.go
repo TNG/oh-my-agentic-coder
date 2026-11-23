@@ -734,6 +734,9 @@ func (s *SidecarMeta) Validate(skillName string) error {
 		}
 	}
 	if s.Limits != nil {
+		if n := s.Limits.MaxBodyBytes; n < 0 {
+			return fmt.Errorf("sidecar.limits.max_body_bytes %d must not be negative; leave it unset or 0 to use facade.max_body_bytes", n)
+		}
 		switch n := s.Limits.IdleTimeoutSecs; {
 		case n < 0:
 			return fmt.Errorf("sidecar.limits.idle_timeout_secs %d must not be negative; leave it unset or 0 to use facade.idle_timeout_secs", n)

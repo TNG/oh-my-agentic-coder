@@ -1137,6 +1137,8 @@ type skillRoute struct {
 	Approvals   *approval.Set // declared endpoints from the approved snapshot; nil = ungated
 	HealthPath  string        // the sidecar's health endpoint; exempt from the facade's request cap
 	IdleTimeout time.Duration // from the approved snapshot; 0 = facade default
+	// MaxBodyBytes is the skill's limits.max_body_bytes; 0 = facade default.
+	MaxBodyBytes int64
 }
 
 type dirState struct {
@@ -1958,6 +1960,7 @@ func (sr *skillRoute) facadeRoute(port int) facade.Route {
 		Mount:        sr.Mount,
 		Namespace:    sr.Namespace,
 		UpstreamPort: port,
+		MaxBodyBytes: sr.MaxBodyBytes,
 		Skill:        sr.Name,
 		Owner:        sr.Name,
 		SkillDir:     sr.SkillDir,
@@ -1984,7 +1987,7 @@ func (sr *skillRoute) flatAliasRoute(port int) facade.Route {
 // with the approvals, health path and idle timeout of its approved snapshot.
 func readySkillRoute(name, mount, namespace, snapDir string, snapM *config.Meta) *skillRoute {
 	return &skillRoute{Name: name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady,
-		Approvals: routeApprovals(snapM), HealthPath: config.DefaultHealthPath, IdleTimeout: routeIdleTimeout(snapM)}
+		Approvals: routeApprovals(snapM), HealthPath: config.DefaultHealthPath, IdleTimeout: routeIdleTimeout(snapM), MaxBodyBytes: routeMaxBodyBytes(snapM)}
 }
 
 func (s *serveServer) installRoute(sr *skillRoute, port int) {

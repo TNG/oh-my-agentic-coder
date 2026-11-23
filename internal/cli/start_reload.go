@@ -547,6 +547,7 @@ func reloadRoute(mount string, port int, name string, meta *config.Meta) facade.
 		Mount:        mount,
 		UpstreamPort: port,
 		IdleTimeout:  routeIdleTimeout(meta),
+		MaxBodyBytes: routeMaxBodyBytes(meta),
 		Skill:        name,
 		Owner:        name,
 		Approvals:    routeApprovals(meta),
