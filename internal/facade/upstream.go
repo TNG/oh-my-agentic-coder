@@ -31,45 +31,39 @@ const (
 // errSidecarBusy is returned by acquire when no slot frees up in time.
 var errSidecarBusy = errors.New("sidecar busy")
 
-// upstream is the connection pool the facade keeps for one sidecar port.
-// All proxied requests to that sidecar share its Transport, so keep-alive
-// connections are reused instead of opened per request, and at most
-// maxConnsPerSidecar of them are in flight at once.
-type upstream struct {
-	transport *http.Transport
-	slots     chan struct{}
+// newUpstreamTransport builds the Transport that all proxied requests
+// share. It pools keep-alive connections per sidecar port.
+func newUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   maxIdleConnsPerSidecar,
+		IdleConnTimeout:       upstreamIdleTimeout,
+	}
 }
 
-// newUpstreamPool builds the pool for one sidecar. idle is how long a parked
-// connection may sit unused before it is closed.
-func newUpstreamPool(idle time.Duration) *upstream {
-	return &upstream{
-		slots: make(chan struct{}, maxConnsPerSidecar),
-		transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-			DisableCompression:    true,
-			ResponseHeaderTimeout: 30 * time.Second,
-			MaxIdleConns:          maxIdleConnsPerSidecar,
-			MaxIdleConnsPerHost:   maxIdleConnsPerSidecar,
-			IdleConnTimeout:       idle,
-		},
-	}
+// sidecarSlots bounds the requests in flight to one sidecar.
+type sidecarSlots chan struct{}
+
+func newSidecarSlots() sidecarSlots {
+	return make(sidecarSlots, maxConnsPerSidecar)
 }
 
 // acquire takes one of the sidecar's request slots. It waits at most wait
 // for a free slot (errSidecarBusy) and gives up when ctx ends (ctx.Err()).
 // The returned release is safe to call more than once.
-func (u *upstream) acquire(ctx context.Context, wait time.Duration) (release func(), err error) {
-	release = sync.OnceFunc(func() { <-u.slots })
+func (s sidecarSlots) acquire(ctx context.Context, wait time.Duration) (release func(), err error) {
+	release = sync.OnceFunc(func() { <-s })
 	select {
-	case u.slots <- struct{}{}:
+	case s <- struct{}{}:
 		return release, nil
 	default:
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
-	case u.slots <- struct{}{}:
+	case s <- struct{}{}:
 		return release, nil
 	case <-timer.C:
 		return nil, errSidecarBusy

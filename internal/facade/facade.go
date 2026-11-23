@@ -188,11 +188,11 @@ type Facade struct {
 
 	mu     sync.RWMutex
 	routes map[string]*Route
-	// upstreams holds one connection pool per sidecar port, created on
-	// first use. A port is dropped once no route references it.
-	upstreams map[int]*upstream
-	// upstreamIdle overrides upstreamIdleTimeout in tests; zero uses the constant.
-	upstreamIdle time.Duration
+	// transport is shared by all proxied requests, so upstream connections
+	// are reused across requests.
+	transport *http.Transport
+	slotsMu   sync.Mutex
+	slots     map[int]sidecarSlots // by sidecar port, created on first use
 	// queueWait overrides upstreamQueueWait in tests; zero uses the constant.
 	queueWait time.Duration
 	// slowWait overrides slowSlotWait in tests; zero uses the constant.
@@ -233,6 +233,7 @@ func New(socketPath, tcpAddr string, routes []Route, maxBody int64, idle time.Du
 		AccessLogPath: accessLog,
 		Version:       version,
 		routes:        m,
+		transport:     newUpstreamTransport(),
 	}
 }
 
@@ -267,9 +268,7 @@ func (f *Facade) AddRoute(r Route) {
 		return
 	}
 	f.routes[rr.key()] = &rr
-	dropped := f.dropUnusedUpstreamsLocked()
 	f.mu.Unlock()
-	closeIdle(dropped)
 }
 
 // RemoveRoute drops the route with the given namespace/mount. A no-op if
@@ -277,57 +276,23 @@ func (f *Facade) AddRoute(r Route) {
 func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
 	delete(f.routes, routeKey(namespace, mount))
-	dropped := f.dropUnusedUpstreamsLocked()
 	f.mu.Unlock()
-	closeIdle(dropped)
 }
 
-// upstreamFor returns the connection pool for a sidecar port, creating it
-// on first use. Routes that share a port (a namespaced route and its flat
-// alias) share the pool.
-func (f *Facade) upstreamFor(port int) *upstream {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if u, ok := f.upstreams[port]; ok {
-		return u
+// slotsFor returns the request slots of a sidecar port. Routes that share
+// a port (a namespaced route and its flat alias) share the slots.
+func (f *Facade) slotsFor(port int) sidecarSlots {
+	f.slotsMu.Lock()
+	defer f.slotsMu.Unlock()
+	if s, ok := f.slots[port]; ok {
+		return s
 	}
-	if f.upstreams == nil {
-		f.upstreams = make(map[int]*upstream)
+	if f.slots == nil {
+		f.slots = make(map[int]sidecarSlots)
 	}
-	idle := f.upstreamIdle
-	if idle == 0 {
-		idle = upstreamIdleTimeout
-	}
-	u := newUpstreamPool(idle)
-	f.upstreams[port] = u
-	return u
-}
-
-// dropUnusedUpstreamsLocked removes and returns the pools whose port no
-// route references any more. The caller holds f.mu and closes the returned
-// pools after unlocking.
-func (f *Facade) dropUnusedUpstreamsLocked() []*upstream {
-	if len(f.upstreams) == 0 {
-		return nil
-	}
-	inUse := make(map[int]bool, len(f.routes))
-	for _, r := range f.routes {
-		inUse[r.UpstreamPort] = true
-	}
-	var dropped []*upstream
-	for port, u := range f.upstreams {
-		if !inUse[port] {
-			delete(f.upstreams, port)
-			dropped = append(dropped, u)
-		}
-	}
-	return dropped
-}
-
-func closeIdle(ups []*upstream) {
-	for _, u := range ups {
-		u.transport.CloseIdleConnections()
-	}
+	s := newSidecarSlots()
+	f.slots[port] = s
+	return s
 }
 
 // HasRoute reports whether a route exists for namespace/mount.
@@ -455,14 +420,9 @@ func (f *Facade) Close() error {
 			firstErr = err
 		}
 	}
-	f.mu.Lock()
-	ups := make([]*upstream, 0, len(f.upstreams))
-	for _, u := range f.upstreams {
-		ups = append(ups, u)
+	if f.transport != nil {
+		f.transport.CloseIdleConnections()
 	}
-	f.upstreams = nil
-	f.mu.Unlock()
-	closeIdle(ups)
 	if f.unixLn != nil {
 		_ = f.unixLn.Close()
 	}
@@ -1004,7 +964,6 @@ func (f *Facade) writeStatus(w http.ResponseWriter, _ *http.Request) {
 // proxyHTTP forwards plain HTTP (including SSE).
 func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route, rest string, started time.Time) {
 	upstream := &url.URL{Scheme: "http", Host: upstreamHost(route.UpstreamPort)}
-	up := f.upstreamFor(route.UpstreamPort)
 
 	// The slot bounds how many requests wait on the sidecar at once. It is
 	// released when the response has been copied, or as soon as an SSE
@@ -1017,7 +976,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 		}
 		var err error
 		waitStart := time.Now()
-		release, err = up.acquire(r.Context(), wait)
+		release, err = f.slotsFor(route.UpstreamPort).acquire(r.Context(), wait)
 		if err == nil {
 			f.logSlotWait(route, time.Since(waitStart), "served")
 		}
@@ -1085,7 +1044,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 			w.Header().Set("X-Omac-Reason", reason)
 			http.Error(w, "omac: "+reason, code)
 		},
-		Transport: up.transport,
+		Transport: f.transport,
 	}
 
 	// Wrap ResponseWriter so we capture the upstream status for logging.

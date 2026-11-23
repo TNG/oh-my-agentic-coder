@@ -131,31 +131,18 @@ func TestProxyReusesUpstreamConnections(t *testing.T) {
 	}
 }
 
-func TestRouteRemovalClosesIdleUpstreamConns(t *testing.T) {
-	up := newCountingUpstream(t, okHandler())
-	f, base := poolFacade(t, echoRoute(up.port))
-
-	getStatus(t, http.DefaultClient, base+"/echo/ping")
-	if up.accepted() != 1 || up.closed() != 0 {
-		t.Fatalf("accepted=%d closed=%d, want 1 and 0", up.accepted(), up.closed())
-	}
-	f.RemoveRoute("", "echo")
-	eventually(t, "upstream connection to close", func() bool { return up.closed() == 1 })
-}
-
-func TestRouteReplacementClosesOldUpstream(t *testing.T) {
+func TestRouteReplacementUsesNewUpstream(t *testing.T) {
 	a := newCountingUpstream(t, okHandler())
 	b := newCountingUpstream(t, okHandler())
 	f, base := poolFacade(t, echoRoute(a.port))
 
 	getStatus(t, http.DefaultClient, base+"/echo/ping")
 	f.AddRoute(echoRoute(b.port))
-	eventually(t, "old upstream connection to close", func() bool { return a.closed() == 1 })
 	if code := getStatus(t, http.DefaultClient, base+"/echo/ping"); code != 200 {
 		t.Fatalf("status %d after replacement", code)
 	}
-	if b.accepted() != 1 {
-		t.Errorf("new upstream accepted %d connections, want 1", b.accepted())
+	if a.accepted() != 1 || b.accepted() != 1 {
+		t.Errorf("accepted old=%d new=%d connections, want 1 and 1", a.accepted(), b.accepted())
 	}
 }
 
@@ -485,7 +472,7 @@ func TestSSEStreamOutlivesPoolIdleTimeout(t *testing.T) {
 		}
 	}))
 	f, base := poolFacade(t, echoRoute(up.port))
-	f.upstreamIdle = 100 * time.Millisecond
+	f.transport.IdleConnTimeout = 100 * time.Millisecond
 
 	resp, err := http.Get(base + "/echo/sse")
 	if err != nil {
