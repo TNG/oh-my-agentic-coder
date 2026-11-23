@@ -83,6 +83,7 @@ func TestHarnessMCPInjectionKinds(t *testing.T) {
 		"opencode":    MCPInjectOpenCodeEnv,
 		"claude-code": MCPInjectClaudeFlag,
 		"codewhale":   MCPInjectCodeWhaleEnv,
+		"copilot":     MCPInjectCopilotFlag,
 	}
 	for name, kind := range want {
 		h, ok := LookupHarness(name)

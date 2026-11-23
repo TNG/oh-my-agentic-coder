@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
@@ -19,6 +20,7 @@ const (
 	// ~/.codewhale/mcp.json.
 	CodeWhaleConfigEnv  = "CODEWHALE_MCP_CONFIG"
 	codeWhaleConfigFile = "omac-mcp-codewhale.json"
+	copilotConfigFile   = "omac-mcp-copilot.json"
 )
 
 const (
@@ -73,6 +75,13 @@ func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir stri
 		return inj, nil
 	case config.MCPInjectCodeWhaleEnv:
 		return buildCodeWhale(sorted, tmpDir)
+	case config.MCPInjectCopilotFlag:
+		args, err := buildCopilot(sorted, tmpDir, userArgs)
+		if err != nil {
+			return Injection{}, err
+		}
+		inj.InnerArgs = append(inj.InnerArgs, args...)
+		return inj, nil
 	}
 	return Injection{}, fmt.Errorf("MCP injection kind %d is not supported", kind)
 }
@@ -134,6 +143,33 @@ func buildCodeWhale(servers []Server, tmpDir string) (Injection, error) {
 		Env:      map[string]string{CodeWhaleConfigEnv: file},
 		AllowEnv: []string{CodeWhaleConfigEnv},
 	}, nil
+}
+
+// buildCopilot passes the servers in a session-only config file with
+// --additional-mcp-config @file, so omac never touches ~/.copilot/mcp-config.json.
+// The flag and its "@file" form come from the public documentation and are
+// unverified against a running Copilot CLI, as are the entry fields: "type"
+// local, "command", "args", "env" and "tools" ["*"]. Whether Copilot accepts
+// the flag twice is unknown, so a flag the user passes too is an error.
+func buildCopilot(servers []Server, tmpDir string, userArgs []string) ([]string, error) {
+	for _, a := range userArgs {
+		if a == additionalMCPConfigFlag || strings.HasPrefix(a, additionalMCPConfigFlag+"=") {
+			return nil, fmt.Errorf("cannot add registered MCP servers: %s is also passed after the omac flags; remove it or register the servers it defines", additionalMCPConfigFlag)
+		}
+	}
+	file, err := writeServersFile(servers, tmpDir, copilotConfigFile, "mcpServers", func(s Server) map[string]any {
+		return map[string]any{
+			"type":    "local",
+			"command": s.Argv[0],
+			"args":    s.Argv[1:],
+			"env":     nonNilEnv(s.Env),
+			"tools":   []string{"*"},
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []string{additionalMCPConfigFlag, "@" + file}, nil
 }
 
 // writeServersFile writes {key: {name: entry}} to tmpDir/name with mode 0600

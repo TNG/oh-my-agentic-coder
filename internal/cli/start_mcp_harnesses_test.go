@@ -110,3 +110,66 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+func TestMCPCopilotReceivesTheRegisteredServer(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	r := newMCPRig(t)
+	r.register("demo", true, "copilot")
+
+	code, stderr := r.launch("copilot", r.captureCopying("", "--additional-mcp-config"), nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	args := r.rawArgs()
+	flagAt := -1
+	for i, a := range args {
+		if a == "--additional-mcp-config" {
+			flagAt = i
+		}
+	}
+	if flagAt < 0 || flagAt+1 >= len(args) || !strings.HasPrefix(args[flagAt+1], "@") {
+		t.Fatalf("args = %q", args)
+	}
+	servers, _ := r.copiedConfig()["mcpServers"].(map[string]any)
+	entry, _ := servers["demo"].(map[string]any)
+	if entry == nil || entry["type"] != "local" {
+		t.Fatalf("entry = %v", servers)
+	}
+	if strings.Contains(strings.Join(args, " "), "tok-from-keychain") || strings.Contains(string(mustJSON(t, entry)), "tok-from-keychain") {
+		t.Error("a registered secret reached the harness config")
+	}
+}
+
+func TestMCPCopilotDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	for _, mode := range []string{"", "ignore"} {
+		r := newMCPRig(t)
+		r.register("demo", true, "copilot")
+		r.writeFile(".mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
+
+		code, stderr := r.launch("copilot", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
+		if code != ExitConfigInvalid || !strings.Contains(stderr, `unregistered MCP server "native"`) {
+			t.Fatalf("mode %q: exit %d\n%s", mode, code, stderr)
+		}
+		if _, _, ran := r.captured(); ran {
+			t.Error("the inner command ran")
+		}
+	}
+}
+
+func TestMCPCopilotUserAdditionalConfigIsNotCombined(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	r := newMCPRig(t)
+	r.register("demo", true, "copilot")
+
+	code, stderr := r.launch("copilot", r.capture, func(o *launchOpts) {
+		o.mcpUnregistered = "warn"
+		o.innerArgs = []string{"--additional-mcp-config", `{"mcpServers":{}}`}
+	})
+	if code == ExitOK || !strings.Contains(stderr, "--additional-mcp-config") {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	if _, _, ran := r.captured(); ran {
+		t.Error("the inner command ran")
+	}
+}

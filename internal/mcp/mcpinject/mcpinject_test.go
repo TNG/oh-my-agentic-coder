@@ -386,3 +386,40 @@ func TestBuildCodeWhaleInactiveInjectsNothing(t *testing.T) {
 		t.Fatalf("inj = %+v, err = %v", inj, err)
 	}
 }
+
+func TestBuildCopilotPassesASessionFile(t *testing.T) {
+	const golden = `{"mcpServers":{"gh":{"args":["mcp","bridge","gh"],"command":"/bin/omac","env":{"OMAC_BASE":"http://h","OMAC_FACADE_TOKEN":"t","OMAC_SOCKET":"/s"},"tools":["*"],"type":"local"}}}`
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
+		dir := t.TempDir()
+		inj, err := Build(config.MCPInjectCopilotFlag, testServers, Policy{Unregistered: mode, Active: true}, dir, []string{"--model", "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(dir, "omac-mcp-copilot.json")
+		raw, err := os.ReadFile(file)
+		if err != nil || string(raw) != golden {
+			t.Fatalf("%s: file %s err %v", mode, raw, err)
+		}
+		if info, _ := os.Stat(file); info.Mode().Perm() != 0o600 {
+			t.Fatalf("mode = %v", info.Mode().Perm())
+		}
+		if inj.Env != nil || inj.AllowEnv != nil || !reflect.DeepEqual(inj.InnerArgs, []string{"--additional-mcp-config", "@" + file}) {
+			t.Fatalf("%s: %+v", mode, inj)
+		}
+	}
+}
+
+func TestBuildCopilotRefusesASecondAdditionalConfigFlag(t *testing.T) {
+	for _, args := range [][]string{{"--additional-mcp-config", "{}"}, {"--additional-mcp-config={}"}} {
+		if _, err := Build(config.MCPInjectCopilotFlag, testServers, Policy{Unregistered: ModeRefuse, Active: true}, t.TempDir(), args); err == nil {
+			t.Fatalf("no error for %v", args)
+		}
+	}
+}
+
+func TestBuildCopilotInactiveInjectsNothing(t *testing.T) {
+	inj, err := Build(config.MCPInjectCopilotFlag, testServers, Policy{}, t.TempDir(), []string{"--additional-mcp-config", "{}"})
+	if err != nil || !reflect.DeepEqual(inj, Injection{}) {
+		t.Fatalf("inj = %+v, err = %v", inj, err)
+	}
+}

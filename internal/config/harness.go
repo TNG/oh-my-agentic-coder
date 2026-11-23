@@ -223,6 +223,8 @@ const (
 	MCPInjectClaudeFlag
 	// MCPInjectCodeWhaleEnv injects through a file that CODEWHALE_MCP_CONFIG names.
 	MCPInjectCodeWhaleEnv
+	// MCPInjectCopilotFlag injects through --additional-mcp-config.
+	MCPInjectCopilotFlag
 )
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -453,9 +455,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "copilot",
-			MCPScan: MCPScanCopilot,
-			Aliases: []string{"co"},
+			Name:         "copilot",
+			MCPScan:      MCPScanCopilot,
+			MCPInjection: MCPInjectCopilotFlag,
+			Aliases:      []string{"co"},
 			// GitHub Copilot CLI executable is `copilot` (standalone binary,
 			// not the `gh copilot` extension).
 			InnerCmd: []string{"copilot"},
