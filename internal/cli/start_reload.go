@@ -540,6 +540,8 @@ func (r *startReloader) reload() []string {
 	return added
 }
 
+// reloadRoute is the ready route that a reload mounts for a newly added
+// skill, in front of the sidecar listening on port.
 func reloadRoute(mount string, port int, name string, meta *config.Meta) facade.Route {
 	return facade.Route{
 		Mount:        mount,

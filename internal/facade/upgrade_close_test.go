@@ -202,3 +202,61 @@ func TestEndedWebSocketIsUntracked(t *testing.T) {
 		t.Fatalf("upgrade registry keeps %d empty route entries", n)
 	}
 }
+
+// installedRoute is the route the facade currently has for "skill".
+func installedRoute(f *Facade) *Route {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.routes[routeKey("", "skill")]
+}
+
+// tryTrack offers a throwaway connection pair for route to trackUpgrade.
+func tryTrack(t *testing.T, f *Facade, route *Route) bool {
+	t.Helper()
+	c1, c2 := net.Pipe()
+	u1, u2 := net.Pipe()
+	t.Cleanup(func() { c1.Close(); c2.Close(); u1.Close(); u2.Close() })
+	return f.trackUpgrade(route, &upgradedConn{client: c1, upstream: u1})
+}
+
+// An upgrade that resolved its route just before the route was removed or
+// replaced, or the facade was closed, must not be registered: nothing would
+// ever close it. trackUpgrade refuses it and the proxy drops the connection.
+func TestTrackUpgradeRefusesAGoneRoute(t *testing.T) {
+	t.Parallel()
+	t.Run("installed route is accepted", func(t *testing.T) {
+		f := startTwoRouteFacade(t)
+		if !tryTrack(t, f, installedRoute(f)) {
+			t.Fatal("trackUpgrade refused the installed route")
+		}
+	})
+	t.Run("removed route", func(t *testing.T) {
+		f := startTwoRouteFacade(t)
+		old := installedRoute(f)
+		f.RemoveRoute("", "skill")
+		if tryTrack(t, f, old) {
+			t.Fatal("trackUpgrade accepted a connection for a removed route")
+		}
+		requireTracked(t, f, 0)
+	})
+	t.Run("replaced route", func(t *testing.T) {
+		f := startTwoRouteFacade(t)
+		old := installedRoute(f)
+		f.AddRoute(Route{Mount: "skill", UpstreamPort: f.UpstreamPort("", "skill"), State: RouteReady, Owner: "skill"})
+		if tryTrack(t, f, old) {
+			t.Fatal("trackUpgrade accepted a connection for a replaced route")
+		}
+		if !tryTrack(t, f, installedRoute(f)) {
+			t.Fatal("trackUpgrade refused the replacement route")
+		}
+	})
+	t.Run("closed facade", func(t *testing.T) {
+		f := startTwoRouteFacade(t)
+		route := installedRoute(f)
+		f.Close()
+		if tryTrack(t, f, route) {
+			t.Fatal("trackUpgrade accepted a connection after Close")
+		}
+		requireTracked(t, f, 0)
+	})
+}

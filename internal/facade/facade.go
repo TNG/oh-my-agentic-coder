@@ -9,7 +9,9 @@
 // pass through without buffering.
 //
 // Upgrades (WebSocket) are handled via hijacking: after proxying the
-// handshake, raw TCP bytes are spliced bidirectionally.
+// handshake, raw TCP bytes are spliced bidirectionally. A spliced
+// connection ends after its idle time without data in either direction, and
+// when its route is removed or replaced or the facade is closed.
 package facade
 
 import (

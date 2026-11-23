@@ -1544,6 +1544,8 @@ func createRuntimeDir(workdir string) (string, error) {
 	return newRuntimeDir(base, "omac-", []string{"logs", "pids"})
 }
 
+// startRoute is the route that start mounts for a running skill sidecar on
+// port, with the limits from its manifest.
 func startRoute(mount string, port int, name, skillDir string, meta *config.Meta, approvals *approval.Set, healthPath string) facade.Route {
 	var maxBody int64
 	if meta != nil && meta.Sidecar != nil && meta.Sidecar.Limits != nil {

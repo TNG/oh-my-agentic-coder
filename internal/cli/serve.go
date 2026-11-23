@@ -1127,16 +1127,15 @@ func (m *intMultiFlag) Set(v string) error {
 // ---- server state (docs/contributing/serve-spec.md) ----
 
 type skillRoute struct {
-	Name       string
-	Mount      string
-	Namespace  string // dir token or facade.GlobalNamespace
-	SkillDir   string // skill's on-disk dir; source of SKILL.md auto-discovery
-	State      facade.RouteState
-	Detail     string
-	Missing    []string
-	Approvals  *approval.Set // declared endpoints from the approved snapshot; nil = ungated
-	HealthPath string        // the sidecar's health endpoint; exempt from the facade's request cap
-
+	Name        string
+	Mount       string
+	Namespace   string // dir token or facade.GlobalNamespace
+	SkillDir    string // skill's on-disk dir; source of SKILL.md auto-discovery
+	State       facade.RouteState
+	Detail      string
+	Missing     []string
+	Approvals   *approval.Set // declared endpoints from the approved snapshot; nil = ungated
+	HealthPath  string        // the sidecar's health endpoint; exempt from the facade's request cap
 	IdleTimeout time.Duration // from the approved snapshot; 0 = facade default
 }
 
@@ -1952,6 +1951,8 @@ func joinCSV(parts []string) string {
 	return out
 }
 
+// facadeRoute is the route that serve mode mounts for sr, in front of the
+// sidecar listening on port.
 func (sr *skillRoute) facadeRoute(port int) facade.Route {
 	return facade.Route{
 		Mount:        sr.Mount,
@@ -1968,6 +1969,9 @@ func (sr *skillRoute) facadeRoute(port int) facade.Route {
 	}
 }
 
+// flatAliasRoute is the namespace-less, always-ready route that
+// single-directory serve mounts next to the namespaced one, so the flat path
+// /<mount> reaches the same sidecar.
 func (sr *skillRoute) flatAliasRoute(port int) facade.Route {
 	r := sr.facadeRoute(port)
 	r.Namespace = ""
@@ -1976,6 +1980,8 @@ func (sr *skillRoute) flatAliasRoute(port int) facade.Route {
 	return r
 }
 
+// readySkillRoute is the skillRoute for a skill whose sidecar is running,
+// with the approvals, health path and idle timeout of its approved snapshot.
 func readySkillRoute(name, mount, namespace, snapDir string, snapM *config.Meta) *skillRoute {
 	return &skillRoute{Name: name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady,
 		Approvals: routeApprovals(snapM), HealthPath: config.DefaultHealthPath, IdleTimeout: routeIdleTimeout(snapM)}
