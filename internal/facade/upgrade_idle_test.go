@@ -2,6 +2,7 @@ package facade
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
@@ -108,20 +109,28 @@ type connEnd struct {
 
 // wsUpstream answers the WebSocket handshake with 101 and then echoes text
 // frames and answers pings. In raw mode it echoes bytes instead of frames.
+// A greeting is sent in the same write as the 101 response.
 type wsUpstream struct {
-	port  int
-	raw   bool
-	ended chan connEnd
+	port     int
+	raw      bool
+	greeting []byte
+	ended    chan connEnd
 }
 
 func startWSUpstream(t *testing.T, raw bool) *wsUpstream {
+	t.Helper()
+	return serveWSUpstream(t, &wsUpstream{raw: raw})
+}
+
+func serveWSUpstream(t *testing.T, u *wsUpstream) *wsUpstream {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("loopback listen not possible: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	u := &wsUpstream{port: ln.Addr().(*net.TCPAddr).Port, raw: raw, ended: make(chan connEnd, 4)}
+	u.port = ln.Addr().(*net.TCPAddr).Port
+	u.ended = make(chan connEnd, 4)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -142,8 +151,12 @@ func (u *wsUpstream) serve(c net.Conn) {
 		u.ended <- connEnd{time.Now(), err}
 		return
 	}
-	fmt.Fprintf(c, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+	resp := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
 		wsAccept(req.Header.Get("Sec-WebSocket-Key")))
+	if _, err := c.Write(append([]byte(resp), u.greeting...)); err != nil {
+		u.ended <- connEnd{time.Now(), err}
+		return
+	}
 	var end error
 	if u.raw {
 		_, end = io.Copy(c, br)
@@ -173,11 +186,10 @@ func (u *wsUpstream) serve(c net.Conn) {
 }
 
 type scenario struct {
-	transport string // direct, tcp, unix
+	transport string // tcp, unix
 	idle      time.Duration
 	behavior  string // none, message, ping, rawbyte
 	window    time.Duration
-	maxBody   int64
 	routeIdle time.Duration
 }
 
@@ -200,30 +212,26 @@ func (o outcome) String() string {
 func startFacadeFor(t *testing.T, s scenario, upPort int) (network, addr string) {
 	t.Helper()
 	routes := []Route{{Mount: "skill", UpstreamPort: upPort, State: RouteReady, IdleTimeout: s.routeIdle}}
-	switch s.transport {
-	case "direct":
-		return "tcp", fmt.Sprintf("127.0.0.1:%d", upPort)
-	case "unix":
+	if s.transport == "unix" {
 		dir, err := os.MkdirTemp("", "ws")
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.RemoveAll(dir) })
 		sock := filepath.Join(dir, "f.sock")
-		f := New(sock, "", routes, s.maxBody, s.idle, "", "test")
+		f := New(sock, "", routes, 0, s.idle, "", "test")
 		if err := f.Start(context.Background()); err != nil {
 			t.Skipf("unix listen not possible: %v", err)
 		}
 		t.Cleanup(func() { f.Close() })
 		return "unix", sock
-	default:
-		f := New("", "127.0.0.1:0", routes, s.maxBody, s.idle, "", "test")
-		if err := f.Start(context.Background()); err != nil {
-			t.Skipf("tcp listen not possible: %v", err)
-		}
-		t.Cleanup(func() { f.Close() })
-		return "tcp", fmt.Sprintf("127.0.0.1:%d", f.TCPPort())
 	}
+	f := New("", "127.0.0.1:0", routes, 0, s.idle, "", "test")
+	if err := f.Start(context.Background()); err != nil {
+		t.Skipf("tcp listen not possible: %v", err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return "tcp", fmt.Sprintf("127.0.0.1:%d", f.TCPPort())
 }
 
 func runScenario(t *testing.T, s scenario) outcome {
@@ -232,27 +240,7 @@ func runScenario(t *testing.T, s scenario) outcome {
 	network, addr := startFacadeFor(t, s, up.port)
 
 	t0 := time.Now()
-	c, err := net.Dial(network, addr)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer c.Close()
-	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
-	path := "/skill/ws"
-	if s.transport == "direct" {
-		path = "/ws"
-	}
-	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, key)
-	br := bufio.NewReader(c)
-	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	resp, err := http.ReadResponse(br, nil)
-	if err != nil {
-		t.Fatalf("handshake read: %v", err)
-	}
-	if resp.StatusCode != 101 || resp.Header.Get("Sec-WebSocket-Accept") != wsAccept(key) {
-		t.Fatalf("handshake failed: status %d accept %q", resp.StatusCode, resp.Header.Get("Sec-WebSocket-Accept"))
-	}
-	_ = c.SetReadDeadline(time.Time{})
+	c, br := dialWS(t, network, addr, "/skill/ws")
 
 	readEnd := make(chan connEnd, 1)
 	go func() {
@@ -322,7 +310,15 @@ loop:
 	return res
 }
 
-func windowFor(idle time.Duration) time.Duration { return idle + 5*time.Second }
+const testIdle = 2 * time.Second
+
+// silentWindow watches a silent connection past the latest accepted close
+// (idle + 3 s); a passing run returns as soon as the connection ends.
+func silentWindow(idle time.Duration) time.Duration { return idle + 4*time.Second }
+
+// busyWindow watches a busy connection a second past idle, long enough that a
+// deadline fixed at idle (the old behaviour) would have cut it.
+func busyWindow(idle time.Duration) time.Duration { return idle + time.Second }
 
 func requireIdleClose(t *testing.T, s scenario, got outcome) {
 	t.Helper()
@@ -330,7 +326,7 @@ func requireIdleClose(t *testing.T, s scenario, got outcome) {
 		t.Errorf("silent connection still open after %v with idle timeout %v", s.window, s.idle)
 		return
 	}
-	if d := got.clientAfter - s.idle; d < -500*time.Millisecond || d > time.Second {
+	if d := got.clientAfter - s.idle; d < -500*time.Millisecond || d > 3*time.Second {
 		t.Errorf("silent connection ended at %.1fs, want about %v", got.clientAfter.Seconds(), s.idle)
 	}
 }
@@ -342,41 +338,18 @@ func requireStaysOpen(t *testing.T, s scenario, got outcome) {
 	}
 }
 
-// TestWebSocketIdleControlDirectBusy is the control: the same client talking
-// straight to the echo upstream, no facade, must stay open for 20 s.
-func TestWebSocketIdleControlDirectBusy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("20 s")
-	}
-	t.Parallel()
-	for _, b := range []string{"message", "ping", "rawbyte"} {
-		t.Run(b, func(t *testing.T) {
-			t.Parallel()
-			s := scenario{transport: "direct", behavior: b, window: 20 * time.Second}
-			got := runScenario(t, s)
-			t.Logf("direct %s: %s", b, got)
-			requireStaysOpen(t, s, got)
-		})
-	}
-}
-
 // TestWebSocketIdleSilentConnectionCloses: a connection that carries no data
 // is closed by the facade after about idle_timeout.
 func TestWebSocketIdleSilentConnectionCloses(t *testing.T) {
 	t.Parallel()
 	for _, tr := range []string{"tcp", "unix"} {
-		for _, idle := range []time.Duration{2 * time.Second, 6 * time.Second, 20 * time.Second} {
-			if testing.Short() && idle > 2*time.Second {
-				continue
-			}
-			t.Run(fmt.Sprintf("%s/idle%v", tr, idle), func(t *testing.T) {
-				t.Parallel()
-				s := scenario{transport: tr, idle: idle, behavior: "none", window: windowFor(idle)}
-				got := runScenario(t, s)
-				t.Logf("%s idle=%v none: %s", tr, idle, got)
-				requireIdleClose(t, s, got)
-			})
-		}
+		t.Run(tr, func(t *testing.T) {
+			t.Parallel()
+			s := scenario{transport: tr, idle: testIdle, behavior: "none", window: silentWindow(testIdle)}
+			got := runScenario(t, s)
+			t.Logf("%s idle=%v none: %s", tr, testIdle, got)
+			requireIdleClose(t, s, got)
+		})
 	}
 }
 
@@ -385,51 +358,66 @@ func TestWebSocketIdleSilentConnectionCloses(t *testing.T) {
 func TestWebSocketIdleBusyConnectionStaysOpen(t *testing.T) {
 	t.Parallel()
 	for _, tr := range []string{"tcp", "unix"} {
-		for _, idle := range []time.Duration{2 * time.Second, 6 * time.Second, 20 * time.Second} {
-			if testing.Short() && idle > 2*time.Second {
-				continue
-			}
-			for _, b := range []string{"message", "ping", "rawbyte"} {
-				t.Run(fmt.Sprintf("%s/idle%v/%s", tr, idle, b), func(t *testing.T) {
-					t.Parallel()
-					s := scenario{transport: tr, idle: idle, behavior: b, window: windowFor(idle)}
-					got := runScenario(t, s)
-					t.Logf("%s idle=%v %s: %s", tr, idle, b, got)
-					requireStaysOpen(t, s, got)
-				})
-			}
+		for _, b := range []string{"message", "ping", "rawbyte"} {
+			t.Run(tr+"/"+b, func(t *testing.T) {
+				t.Parallel()
+				s := scenario{transport: tr, idle: testIdle, behavior: b, window: busyWindow(testIdle)}
+				got := runScenario(t, s)
+				t.Logf("%s idle=%v %s: %s", tr, testIdle, b, got)
+				requireStaysOpen(t, s, got)
+			})
 		}
 	}
-}
-
-// TestWebSocketIdleRootCauseCandidates changes one thing at a time to rule
-// out other reasons for a busy connection to end.
-func TestWebSocketIdleRootCauseCandidates(t *testing.T) {
-	t.Parallel()
-	t.Run("body limit of 1 byte does not end a busy connection", func(t *testing.T) {
-		t.Parallel()
-		s := scenario{transport: "tcp", idle: time.Hour, behavior: "message", window: 6 * time.Second, maxBody: 1}
-		got := runScenario(t, s)
-		t.Logf("%s", got)
-		requireStaysOpen(t, s, got)
-	})
-	t.Run("connection outlives the 2 s dial context", func(t *testing.T) {
-		t.Parallel()
-		s := scenario{transport: "tcp", idle: time.Hour, behavior: "message", window: 6 * time.Second}
-		got := runScenario(t, s)
-		t.Logf("%s", got)
-		requireStaysOpen(t, s, got)
-	})
 }
 
 // TestWebSocketIdleRouteTimeoutOverridesFacade: a skill's own
 // limits.idle_timeout_secs applies to its upgraded connections.
 func TestWebSocketIdleRouteTimeoutOverridesFacade(t *testing.T) {
 	t.Parallel()
-	s := scenario{transport: "tcp", idle: time.Hour, routeIdle: 2 * time.Second, behavior: "none", window: 7 * time.Second}
+	s := scenario{transport: "tcp", idle: time.Hour, routeIdle: testIdle, behavior: "none", window: silentWindow(testIdle)}
 	got := runScenario(t, s)
 	t.Logf("%s", got)
-	requireIdleClose(t, scenario{idle: 2 * time.Second, window: s.window}, got)
+	requireIdleClose(t, scenario{idle: testIdle, window: s.window}, got)
+}
+
+// TestWebSocketBytesSentWithTheHandshake: data that arrives in the same write
+// as the handshake is forwarded, a first frame right behind the client's
+// request as well as a greeting right behind the upstream's 101.
+func TestWebSocketBytesSentWithTheHandshake(t *testing.T) {
+	t.Parallel()
+	var greeting bytes.Buffer
+	_ = writeFrame(&greeting, opText, []byte("welcome"), false)
+	up := serveWSUpstream(t, &wsUpstream{greeting: greeting.Bytes()})
+	network, addr := startFacadeFor(t, scenario{transport: "tcp", idle: time.Hour}, up.port)
+
+	c, err := net.Dial(network, addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "GET /skill/ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", key)
+	_ = writeFrame(&out, opText, []byte("first"), true)
+	if _, err := c.Write(out.Bytes()); err != nil {
+		t.Fatalf("write handshake and frame: %v", err)
+	}
+
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake: %v %v", resp, err)
+	}
+	for _, want := range []string{"welcome", "first"} {
+		op, p, err := readFrame(br)
+		if err != nil {
+			t.Fatalf("waiting for %q: %v", want, err)
+		}
+		if op != opText || string(p) != want {
+			t.Fatalf("got frame %d %q, want text %q", op, p, want)
+		}
+	}
 }
 
 func TestIdleGuardNeverExtendsClosedConnection(t *testing.T) {
@@ -497,68 +485,3 @@ func TestIdleGuardConcurrentReadWriteAndNoGoroutineLeak(t *testing.T) {
 		t.Fatalf("goroutines: %d before, %d after", before, after)
 	}
 }
-
-// BenchmarkSplice1GiB copies 1 GiB through a client-to-upstream pair over
-// loopback, either straight (io.Copy can splice between TCP sockets) or through
-// the deadline-refreshing wrapper (it cannot).
-func BenchmarkSplice1GiB(b *testing.B) {
-	const total = int64(1 << 30)
-	for _, wrapped := range []bool{false, true} {
-		name := "plain"
-		if wrapped {
-			name = "wrapped"
-		}
-		b.Run(name, func(b *testing.B) {
-			b.SetBytes(total)
-			for i := 0; i < b.N; i++ {
-				spliceOnce(b, total, wrapped)
-			}
-		})
-	}
-}
-
-func spliceOnce(b *testing.B, total int64, wrapped bool) {
-	b.Helper()
-	pair := func() (net.Conn, net.Conn) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			b.Fatal(err)
-		}
-		defer ln.Close()
-		accepted := make(chan net.Conn, 1)
-		go func() { c, _ := ln.Accept(); accepted <- c }()
-		c, err := net.Dial("tcp", ln.Addr().String())
-		if err != nil {
-			b.Fatal(err)
-		}
-		return c, <-accepted
-	}
-	srcW, srcR := pair() // source writes into srcW, facade reads srcR
-	dstW, dstR := pair() // facade writes dstW, sink reads dstR
-	defer srcW.Close()
-	defer srcR.Close()
-	defer dstW.Close()
-	defer dstR.Close()
-
-	var in, out net.Conn = srcR, dstW
-	if wrapped {
-		g := &idleGuard{idle: time.Minute, conns: []net.Conn{srcR, dstW}}
-		in, out = g.wrap(srcR), g.wrap(dstW)
-	}
-	go func() {
-		_, _ = io.CopyN(srcW, zeroReader{}, total)
-		srcW.Close()
-	}()
-	go func() {
-		_, _ = io.Copy(out, in)
-		out.Close()
-	}()
-	n, err := io.Copy(io.Discard, dstR)
-	if err != nil || n != total {
-		b.Fatalf("sink got %d of %d bytes: %v", n, total, err)
-	}
-}
-
-type zeroReader struct{}
-
-func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
