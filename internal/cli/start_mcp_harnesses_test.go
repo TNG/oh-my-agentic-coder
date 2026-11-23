@@ -221,3 +221,55 @@ func TestMCPCodexDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPPiReceivesTheRegisteredServer(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	r := newMCPRig(t)
+	r.register("demo", true, "pi")
+
+	code, stderr := r.launch("pi", r.captureCopying("", "-e"), nil)
+	if code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+	args := r.rawArgs()
+	if len(args) < 2 || args[0] != "-e" || !strings.HasSuffix(args[1], "omac-mcp-pi.js") {
+		t.Fatalf("args = %q", args)
+	}
+	code2, err := os.ReadFile(r.argsPath + ".cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(code2), `pi.registerMcpServer(name, config)`) || !strings.Contains(string(code2), `[["demo",`) {
+		t.Errorf("the extension does not register the server:\n%s", code2)
+	}
+	_, env, _ := r.captured()
+	if env["OMAC_FACADE_TOKEN"] == "" || strings.Contains(string(code2), env["OMAC_FACADE_TOKEN"]) {
+		t.Error("the facade token is missing from the environment or present in the extension")
+	}
+	if strings.Contains(string(code2)+strings.Join(args, " "), "tok-from-keychain") {
+		t.Error("a registered secret reached the extension or the command line")
+	}
+	if logs := r.gatewayLogs(); len(logs) == 0 {
+		t.Error("no gateway started")
+	}
+}
+
+func TestMCPPiDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	for _, mode := range []string{"", "ignore"} {
+		r := newMCPRig(t)
+		r.register("demo", true, "pi")
+		r.writeFile(".pi/mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
+
+		code, stderr := r.launch("pi", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
+		if code != ExitConfigInvalid || !strings.Contains(stderr, `unregistered MCP server "native"`) {
+			t.Fatalf("mode %q: exit %d\n%s", mode, code, stderr)
+		}
+		if mode == "ignore" && !strings.Contains(stderr, "ignore is not available for pi") {
+			t.Errorf("no fallback message:\n%s", stderr)
+		}
+		if _, _, ran := r.captured(); ran {
+			t.Error("the inner command ran")
+		}
+	}
+}

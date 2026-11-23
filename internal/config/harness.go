@@ -227,6 +227,9 @@ const (
 	MCPInjectCopilotFlag
 	// MCPInjectCodexFlag injects through -c mcp_servers.<name>=... overrides.
 	MCPInjectCodexFlag
+	// MCPInjectPiExtension injects through a generated extension that -e loads
+	// and that calls pi.registerMcpServer.
+	MCPInjectPiExtension
 )
 
 // SessionListKind selects how omac enumerates a harness's prior sessions for
@@ -334,6 +337,25 @@ const defaultHarnessName = "opencode"
 // Order is significant only for the human-readable list in error messages
 // (canonical names are sorted there).
 func harnessRegistry() []Harness {
+	reg := builtinHarnessRegistry()
+	if harnessRegistryOverride != nil {
+		reg = harnessRegistryOverride(reg)
+	}
+	return reg
+}
+
+// harnessRegistryOverride lets a test change the descriptors, for example to
+// look at a harness that cannot receive MCP servers. It is nil outside tests.
+var harnessRegistryOverride func([]Harness) []Harness
+
+// OverrideHarnessesForTest applies mutate to every registry lookup until the
+// returned function runs. Only tests call it; it is not safe for parallel tests.
+func OverrideHarnessesForTest(mutate func([]Harness) []Harness) (restore func()) {
+	harnessRegistryOverride = mutate
+	return func() { harnessRegistryOverride = nil }
+}
+
+func builtinHarnessRegistry() []Harness {
 	opentuiDataDir := xdgDataDir("opentui")
 	return []Harness{
 		{
@@ -518,9 +540,10 @@ func harnessRegistry() []Harness {
 			},
 		},
 		{
-			Name:    "pi",
-			MCPScan: MCPScanPi,
-			Aliases: []string{},
+			Name:         "pi",
+			MCPScan:      MCPScanPi,
+			MCPInjection: MCPInjectPiExtension,
+			Aliases:      []string{},
 			// Pi coding agent CLI executable is `pi` (pi.dev).
 			InnerCmd: []string{"pi"},
 			// Pi has no server mode; under `omac serve` it runs as-is.

@@ -9,8 +9,24 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
 )
 
+// withoutMCPInjection makes the named harness one that cannot receive MCP
+// servers until the test ends; every built-in harness can receive them now.
+func withoutMCPInjection(t *testing.T, name string) {
+	t.Helper()
+	restore := config.OverrideHarnessesForTest(func(reg []config.Harness) []config.Harness {
+		for i := range reg {
+			if reg[i].Name == name {
+				reg[i].MCPInjection = config.MCPInjectNone
+			}
+		}
+		return reg
+	})
+	t.Cleanup(restore)
+}
+
 func unsupportedRig(t *testing.T) *mcpRig {
 	t.Helper()
+	withoutMCPInjection(t, "pi")
 	r := newMCPRig(t)
 	for _, name := range []string{"CODEX_HOME", "COPILOT_HOME", "PI_CODING_AGENT_DIR", "CODEWHALE_HOME", "CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"} {
 		t.Setenv(name, "")
@@ -179,6 +195,7 @@ func TestMCPUnsupportedHarnessSharesThePathOfContinueAndResume(t *testing.T) {
 }
 
 func TestMCPRegistrationRejectsHarnessWithoutMCPSupport(t *testing.T) {
+	withoutMCPInjection(t, "pi")
 	wd, def := mcpTestSetup(t)
 	t.Setenv("OMAC_SECRET_API_TOKEN", "tok")
 	want := "omac cannot provide MCP servers to %s yet (supported: " + supportedMCPHarnesses() + ")"
@@ -211,6 +228,7 @@ func TestMCPRegistrationKeepsUnknownHarnessError(t *testing.T) {
 }
 
 func TestMCPDiagnoseScansHarnessesWithoutInjectionAndFlagsUnsupportedRegistrations(t *testing.T) {
+	withoutMCPInjection(t, "pi")
 	f := newDiagFixture(t)
 	for _, name := range []string{"CODEX_HOME", "COPILOT_HOME", "PI_CODING_AGENT_DIR", "CODEWHALE_HOME", "CODEWHALE_MCP_CONFIG", "DEEPSEEK_MCP_CONFIG"} {
 		t.Setenv(name, "")

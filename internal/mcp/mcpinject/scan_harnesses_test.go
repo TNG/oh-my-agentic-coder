@@ -493,6 +493,7 @@ func TestPluginProvidedIsReported(t *testing.T) {
 }
 
 func TestEvaluateUnsupported(t *testing.T) {
+	withoutMCPInjection(t, "pi")
 	entries := []Existing{{Harness: "pi", File: "/p/config.toml", Name: "native", Command: "npx"}}
 	message := "omac cannot provide MCP servers to pi yet (supported: " + strings.Join(config.MCPCapableHarnessNames(), ", ") + "). Registered servers that will not be available: a, b."
 	tests := []struct {
@@ -560,6 +561,7 @@ func TestEvaluateUnsupported(t *testing.T) {
 }
 
 func TestAddCommandIsEmptyForHarnessesWithoutMCPSupport(t *testing.T) {
+	withoutMCPInjection(t, "pi")
 	if got := AddCommand(Existing{Harness: "pi", Name: "x", Command: "npx"}); got != "" {
 		t.Errorf("AddCommand = %q", got)
 	}
@@ -574,4 +576,19 @@ func TestEveryHarnessHasAScanKind(t *testing.T) {
 			t.Errorf("%s: %v", h.Name, err)
 		}
 	}
+}
+
+// withoutMCPInjection makes the named harness one that cannot receive MCP
+// servers until the test ends; every built-in harness can receive them now.
+func withoutMCPInjection(t *testing.T, name string) {
+	t.Helper()
+	restore := config.OverrideHarnessesForTest(func(reg []config.Harness) []config.Harness {
+		for i := range reg {
+			if reg[i].Name == name {
+				reg[i].MCPInjection = config.MCPInjectNone
+			}
+		}
+		return reg
+	})
+	t.Cleanup(restore)
 }

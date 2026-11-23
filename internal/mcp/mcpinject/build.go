@@ -22,6 +22,7 @@ const (
 	CodeWhaleConfigEnv  = "CODEWHALE_MCP_CONFIG"
 	codeWhaleConfigFile = "omac-mcp-codewhale.json"
 	copilotConfigFile   = "omac-mcp-copilot.json"
+	piExtensionFile     = "omac-mcp-pi.js"
 )
 
 const (
@@ -78,6 +79,14 @@ func Build(kind config.MCPInjectionKind, servers []Server, p Policy, tmpDir stri
 		return buildCodeWhale(sorted, tmpDir)
 	case config.MCPInjectCodexFlag:
 		return buildCodex(sorted)
+	case config.MCPInjectPiExtension:
+		args, env, allow, err := buildPi(sorted, tmpDir)
+		if err != nil {
+			return Injection{}, err
+		}
+		inj.InnerArgs = append(inj.InnerArgs, args...)
+		inj.Env, inj.AllowEnv = env, allow
+		return inj, nil
 	case config.MCPInjectCopilotFlag:
 		args, err := buildCopilot(sorted, tmpDir, userArgs)
 		if err != nil {
@@ -212,15 +221,10 @@ func buildCodex(servers []Server) (Injection, error) {
 		if !codexBareKey.MatchString(s.Name) {
 			return Injection{}, fmt.Errorf("MCP server %q: Codex accepts only letters, digits, - and _ in a server name", s.Name)
 		}
-		names := make([]string, 0, len(s.Env))
-		for k, v := range s.Env {
-			if old, ok := env[k]; ok && old != v {
-				return Injection{}, fmt.Errorf("MCP servers pass different values for %s, which Codex cannot take from one environment", k)
-			}
-			env[k] = v
-			names = append(names, k)
+		names, err := mergeServerEnv(env, s, "Codex")
+		if err != nil {
+			return Injection{}, err
 		}
-		sort.Strings(names)
 		table := "{command = " + tomlString(s.Argv[0]) + ", args = " + tomlStringList(s.Argv[1:])
 		if len(names) > 0 {
 			table += ", env_vars = " + tomlStringList(names)
@@ -228,12 +232,80 @@ func buildCodex(servers []Server) (Injection, error) {
 		table += "}"
 		args = append(args, "-c", "mcp_servers."+s.Name+"="+table)
 	}
-	allow := make([]string, 0, len(env))
-	for k := range env {
-		allow = append(allow, k)
+	return Injection{Env: env, AllowEnv: sortedEnvNames(env), InnerArgs: args}, nil
+}
+
+// mergeServerEnv adds the server's env to the one shared environment of the
+// harness process and returns the sorted names. A name that two servers set to
+// different values cannot be served from one environment.
+func mergeServerEnv(env map[string]string, s Server, harness string) ([]string, error) {
+	names := make([]string, 0, len(s.Env))
+	for k, v := range s.Env {
+		if old, ok := env[k]; ok && old != v {
+			return nil, fmt.Errorf("MCP servers pass different values for %s, which %s cannot take from one environment", k, harness)
+		}
+		env[k] = v
+		names = append(names, k)
 	}
-	sort.Strings(allow)
-	return Injection{Env: env, AllowEnv: allow, InnerArgs: args}, nil
+	sort.Strings(names)
+	return names, nil
+}
+
+func sortedEnvNames(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+var piServerName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// buildPi writes a small extension that registers the servers with
+// pi.registerMcpServer and loads it with -e, so omac never edits mcp.json or
+// pi's settings. pi documents -e (repeatable, loaded even with --no-extensions)
+// and registerMcpServer(name, config) for this, and the file is code that runs
+// inside pi, so it is written 0600 and only from omac's own data. The server
+// entries carry no env: pi resolves $VAR and !command in env values, and the
+// server process inherits pi's environment, so the bridge variables are set in
+// the harness environment as for Codex. A server of the same name in pi's
+// mcp.json takes precedence over the registration; the default mcp.unregistered
+// refuse mode already stops a start that finds such an entry. Names that differ
+// only in - versus _ share a namespace in pi and are refused.
+func buildPi(servers []Server, tmpDir string) (args []string, env map[string]string, allow []string, err error) {
+	env = map[string]string{}
+	pairs := make([][2]any, 0, len(servers))
+	seen := map[string]string{}
+	for _, s := range servers {
+		if !piServerName.MatchString(s.Name) {
+			return nil, nil, nil, fmt.Errorf("MCP server %q: pi accepts only letters, digits, - and _ in a server name", s.Name)
+		}
+		ns := strings.ReplaceAll(s.Name, "-", "_")
+		if other, ok := seen[ns]; ok {
+			return nil, nil, nil, fmt.Errorf("MCP servers %q and %q differ only in - versus _, which pi treats as one name", other, s.Name)
+		}
+		seen[ns] = s.Name
+		if _, err := mergeServerEnv(env, s, "pi"); err != nil {
+			return nil, nil, nil, err
+		}
+		pairs = append(pairs, [2]any{s.Name, map[string]any{"command": s.Argv[0], "args": s.Argv[1:]}})
+	}
+	// An array of pairs, not an object literal: a server named __proto__ would
+	// set the prototype of an object literal instead of an entry.
+	data, err := json.Marshal(pairs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	code := "export default function (pi) {\n  for (const [name, config] of " + string(data) + ") pi.registerMcpServer(name, config);\n}\n"
+	file := filepath.Join(tmpDir, piExtensionFile)
+	if err := os.WriteFile(file, []byte(code), 0o600); err != nil {
+		return nil, nil, nil, fmt.Errorf("write %s: %w", file, err)
+	}
+	if err := os.Chmod(file, 0o600); err != nil {
+		return nil, nil, nil, fmt.Errorf("chmod %s: %w", file, err)
+	}
+	return []string{"-e", file}, env, sortedEnvNames(env), nil
 }
 
 func tomlStringList(items []string) string {

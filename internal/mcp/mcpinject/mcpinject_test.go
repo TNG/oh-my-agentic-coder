@@ -508,3 +508,73 @@ func TestBuildRefusesEnvValuesThatTheHarnessExpands(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPiLoadsAnExtensionThatRegistersTheServers(t *testing.T) {
+	const golden = "export default function (pi) {\n  for (const [name, config] of [[\"gh\",{\"args\":[\"mcp\",\"bridge\",\"gh\"],\"command\":\"/bin/omac\"}]]) pi.registerMcpServer(name, config);\n}\n"
+	for _, mode := range []Mode{ModeAllow, ModeWarn, ModeIgnore, ModeRefuse} {
+		dir := t.TempDir()
+		inj, err := Build(config.MCPInjectPiExtension, testServers, Policy{Unregistered: mode, Active: true}, dir, []string{"--model", "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(dir, "omac-mcp-pi.js")
+		raw, err := os.ReadFile(file)
+		if err != nil || string(raw) != golden {
+			t.Fatalf("%s: file %q err %v", mode, raw, err)
+		}
+		if info, _ := os.Stat(file); info.Mode().Perm() != 0o600 {
+			t.Fatalf("mode = %v", info.Mode().Perm())
+		}
+		if !reflect.DeepEqual(inj.InnerArgs, []string{"-e", file}) {
+			t.Fatalf("%s: args = %v", mode, inj.InnerArgs)
+		}
+		// pi interprets $VAR and !command in env values and the server
+		// inherits pi's environment: the values travel in the environment only.
+		if strings.Contains(string(raw), "http://h") || strings.Contains(string(raw), "env") {
+			t.Fatalf("the extension carries env: %s", raw)
+		}
+		if inj.Env["OMAC_FACADE_TOKEN"] != "t" || len(inj.Env) != 3 ||
+			!reflect.DeepEqual(inj.AllowEnv, []string{"OMAC_BASE", "OMAC_FACADE_TOKEN", "OMAC_SOCKET"}) {
+			t.Fatalf("%s: %+v", mode, inj)
+		}
+	}
+}
+
+func TestBuildPiKeepsAServerNamedProto(t *testing.T) {
+	servers := []Server{{Name: "__proto__", Argv: []string{"x"}}}
+	dir := t.TempDir()
+	if _, err := Build(config.MCPInjectPiExtension, servers, Policy{Unregistered: ModeRefuse, Active: true}, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "omac-mcp-pi.js"))
+	if !strings.Contains(string(raw), `[["__proto__",`) {
+		t.Fatalf("the name is not a pair entry: %s", raw)
+	}
+}
+
+func TestBuildPiRefusesWhatItCannotExpress(t *testing.T) {
+	policy := Policy{Unregistered: ModeRefuse, Active: true}
+	for _, name := range []string{"a.b", "a b"} {
+		if _, err := Build(config.MCPInjectPiExtension, []Server{{Name: name, Argv: []string{"x"}}}, policy, t.TempDir(), nil); err == nil {
+			t.Errorf("name %q was accepted", name)
+		}
+	}
+	same := []Server{{Name: "a-b", Argv: []string{"x"}}, {Name: "a_b", Argv: []string{"x"}}}
+	if _, err := Build(config.MCPInjectPiExtension, same, policy, t.TempDir(), nil); err == nil {
+		t.Error("names that differ only in - versus _ were accepted")
+	}
+	clash := []Server{
+		{Name: "a", Argv: []string{"x"}, Env: map[string]string{"OMAC_BASE": "1"}},
+		{Name: "b", Argv: []string{"x"}, Env: map[string]string{"OMAC_BASE": "2"}},
+	}
+	if _, err := Build(config.MCPInjectPiExtension, clash, policy, t.TempDir(), nil); err == nil {
+		t.Error("differing values for one variable were accepted")
+	}
+}
+
+func TestBuildPiInactiveInjectsNothing(t *testing.T) {
+	inj, err := Build(config.MCPInjectPiExtension, testServers, Policy{}, t.TempDir(), nil)
+	if err != nil || !reflect.DeepEqual(inj, Injection{}) {
+		t.Fatalf("inj = %+v, err = %v", inj, err)
+	}
+}
