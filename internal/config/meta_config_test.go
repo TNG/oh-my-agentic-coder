@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -217,5 +219,40 @@ func TestSecretSpecValidateValue(t *testing.T) {
 	bad := SecretSpec{Name: "Y", Pattern: "([unclosed"}
 	if err := bad.ValidateValue("whatever"); err == nil {
 		t.Error("invalid pattern should error, not silently accept")
+	}
+}
+
+func TestSidecarLimits_IdleTimeoutSecs(t *testing.T) {
+	cases := []struct {
+		secs    int
+		wantErr string
+	}{
+		{0, ""},
+		{90, ""},
+		{int(maxIdleTimeoutSecs), ""},
+		{-1, "sidecar.limits.idle_timeout_secs -1 must not be negative"},
+		{int(maxIdleTimeoutSecs) + 1, "sidecar.limits.idle_timeout_secs"},
+	}
+	for _, c := range cases {
+		m := validMeta()
+		m.Sidecar.Limits = &LimitsSpec{IdleTimeoutSecs: c.secs}
+		err := m.Validate()
+		switch {
+		case c.wantErr == "" && err != nil:
+			t.Errorf("idle_timeout_secs %d: unexpected error: %v", c.secs, err)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("idle_timeout_secs %d: error %v, want one containing %q", c.secs, err, c.wantErr)
+		}
+	}
+}
+
+func TestLoadMetaRejectsNegativeIdleTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), MetaFileName)
+	yaml := "name: limited\nsidecar:\n  command: [\"true\"]\n  limits:\n    idle_timeout_secs: -1\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMeta(path); err == nil || !strings.Contains(err.Error(), "limits.idle_timeout_secs") {
+		t.Fatalf("LoadMeta: error %v, want one naming limits.idle_timeout_secs", err)
 	}
 }

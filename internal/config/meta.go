@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -731,8 +733,20 @@ func (s *SidecarMeta) Validate(skillName string) error {
 			return fmt.Errorf("sidecar.health.path %q must start with '/' and contain no '@' or ':'", p)
 		}
 	}
+	if s.Limits != nil {
+		switch n := s.Limits.IdleTimeoutSecs; {
+		case n < 0:
+			return fmt.Errorf("sidecar.limits.idle_timeout_secs %d must not be negative; leave it unset or 0 to use facade.idle_timeout_secs", n)
+		case int64(n) > maxIdleTimeoutSecs:
+			return fmt.Errorf("sidecar.limits.idle_timeout_secs %d is too large; at most %d", n, maxIdleTimeoutSecs)
+		}
+	}
 	return nil
 }
+
+// maxIdleTimeoutSecs is the largest limits.idle_timeout_secs that still fits
+// in a time.Duration (about 292 years).
+const maxIdleTimeoutSecs = int64(math.MaxInt64 / int64(time.Second))
 
 // splitDocsRef splits a `docs` value into the file path and the optional
 // section anchor after the first '#'. For "SKILL.md#getting-a-token" it
