@@ -1502,10 +1502,12 @@ func writeReason(w http.ResponseWriter, reason string, code int) {
 var errBodyTooLarge = errors.New("request body too large")
 
 // limitedBody wraps a request body and returns errBodyTooLarge when the body
-// holds more than n bytes; a body of exactly n bytes reads to io.EOF.
-// Unlike http.MaxBytesReader it does NOT store
-// the ResponseWriter, so it cannot call requestTooLarge() from a transport
-// goroutine and race with any concurrent ResponseWriter write.
+// holds more than n bytes; a body of exactly n bytes reads to io.EOF. Unlike
+// http.MaxBytesReader it does NOT store the ResponseWriter, so it cannot call
+// requestTooLarge() from a transport goroutine and race with any concurrent
+// ResponseWriter write. exceeded records that the limit was hit, so that
+// proxyUpgrade can tell a failed upstream write caused by the limit from any
+// other write error.
 type limitedBody struct {
 	io.ReadCloser
 	n        int64
