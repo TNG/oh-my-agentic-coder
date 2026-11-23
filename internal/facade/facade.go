@@ -1117,8 +1117,7 @@ func (f *Facade) proxyHTTP(w http.ResponseWriter, r *http.Request, route *Route,
 				reason = "sidecar-down"
 				code = http.StatusServiceUnavailable
 			}
-			w.Header().Set("X-Omac-Reason", reason)
-			http.Error(w, "omac: "+reason, code)
+			writeReason(w, reason, code)
 		},
 		Transport: f.transport,
 	}
@@ -1205,8 +1204,7 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	clone.Header.Set("X-Forwarded-Prefix", "/"+route.key())
 	if err := clone.Write(upConn); err != nil {
 		if capped != nil && capped.exceeded {
-			w.Header().Set("X-Omac-Reason", "body-too-large")
-			http.Error(w, "omac: body-too-large", http.StatusRequestEntityTooLarge)
+			writeReason(w, "body-too-large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		w.Header().Set("X-Omac-Reason", "upstream-error")
@@ -1490,6 +1488,13 @@ func (w *statusCaptureWriter) Flush() {
 
 // (No Hijack method on the wrapper; the facade calls Hijack on the raw
 // ResponseWriter in proxyUpgrade before wrapping would have happened.)
+
+// writeReason answers with the given status and names the reason in the
+// X-Omac-Reason header and the body.
+func writeReason(w http.ResponseWriter, reason string, code int) {
+	w.Header().Set("X-Omac-Reason", reason)
+	http.Error(w, "omac: "+reason, code)
+}
 
 // errBodyTooLarge is returned by limitedBody when the request body exceeds
 // the configured cap. It is distinct from http.MaxBytesError so it can be
