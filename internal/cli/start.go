@@ -673,7 +673,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			health = *snapM.Sidecar.Health
 		}
 		approvalSets = append(approvalSets, routeApprovals(snapM))
-		healthPaths = append(healthPaths, health.Defaults().Path)
+		healthPaths = append(healthPaths, routeHealthPath(snapM))
 		specs = append(specs, supervisor.SidecarSpec{
 			Name:             s.Entry.Name,
 			SkillDir:         s.AbsDir,
