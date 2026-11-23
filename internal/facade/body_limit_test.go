@@ -85,6 +85,19 @@ func TestLimitedBodyNeverReturnsZeroWithoutError(t *testing.T) {
 	t.Fatal("no terminal error after 10 reads")
 }
 
+// bodyDrainingSidecarPort starts a sidecar that reads each request body to the
+// end and returns its port.
+func bodyDrainingSidecarPort(t *testing.T) int {
+	t.Helper()
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+	}))
+	t.Cleanup(sidecar.Close)
+	return sidecar.Listener.Addr().(*net.TCPAddr).Port
+}
+
 func bodyOfSize(n int64) []byte { return bytes.Repeat([]byte("x"), int(n)) }
 
 // TestFacadeBodyLimitIsInclusive: a body of exactly the limit passes, one
@@ -95,15 +108,7 @@ func TestFacadeBodyLimitIsInclusive(t *testing.T) {
 	const limit = 4096
 
 	t.Run("plain", func(t *testing.T) {
-		sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if _, err := io.Copy(io.Discard, r.Body); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-			}
-		}))
-		t.Cleanup(sidecar.Close)
-		_, p, _ := net.SplitHostPort(sidecar.Listener.Addr().String())
-		var port int
-		fmt.Sscanf(p, "%d", &port)
+		port := bodyDrainingSidecarPort(t)
 		fport := startFacade(t, &fakeSidecar{port: port}, limit)
 
 		for _, chunked := range []bool{false, true} {

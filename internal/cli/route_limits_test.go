@@ -96,17 +96,22 @@ func TestRoutesDoNotRemoveBodyLimitForNegativeValue(t *testing.T) {
 	}
 }
 
-func TestRoutesEnforceDeclaredMaxBodyBytes(t *testing.T) {
-	sectest.RequireLoopbackListener(t)
+// bodyDrainingSidecarPort starts a sidecar that reads each request body to the
+// end and returns its port.
+func bodyDrainingSidecarPort(t *testing.T) int {
+	t.Helper()
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 	}))
 	t.Cleanup(sidecar.Close)
-	_, portStr, _ := net.SplitHostPort(sidecar.Listener.Addr().String())
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	return sidecar.Listener.Addr().(*net.TCPAddr).Port
+}
+
+func TestRoutesEnforceDeclaredMaxBodyBytes(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	port := bodyDrainingSidecarPort(t)
 
 	for _, limit := range []int64{declaredLarge, declaredSmall} {
 		meta := metaDeclaringBodyLimit(t, limit)
