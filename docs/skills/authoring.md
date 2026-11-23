@@ -40,7 +40,7 @@ omac reads only the fields listed below. Other keys do not stop the skill from l
 | `health.interval_ms` | no | `500` | Milliseconds between health polls. |
 | `install_scripts` | no | — | Map of OS key → relative script path (e.g. `{linux: install/install.linux.sh, macos: install/install.macos.sh}`). omac prints these paths at `omac register` time for you to run yourself; it never executes them. |
 | `limits.max_body_bytes` | no | — | Maximum request/response body the proxy will forward, in bytes. |
-| `limits.idle_timeout_secs` | no | — | Seconds of inactivity before the proxy closes a sidecar connection. |
+| `limits.idle_timeout_secs` | no | — | WebSocket (upgraded) connections only: seconds with no data in either direction before the proxy closes the connection. Plain HTTP keep-alive is not affected and always uses `facade.idle_timeout_secs`. If unset or 0, `facade.idle_timeout_secs` applies (default 300); a negative value is rejected. |
 | `secrets` | no | `[]` | List of credential declarations (see below). |
 | `config` | no | `[]` | List of non-secret config field declarations (see below). |
 | `approvals` | no | — | Which routes run without asking the user. Without the block nothing asks; with it, every route asks unless listed with `approval: none`. See [Approvals](#approvals-which-routes-run-without-asking). |
@@ -246,7 +246,7 @@ sidecar:
 **How omac reads a request**
 
 - omac cleans the path before it matches and forwards that same cleaned path (dot segments, `//`, percent-encoded forms), and removes `X-HTTP-Method-Override` style headers (also spelled with `_`) so the sidecar runs the method that was approved. omac does not read the query or body, so your sidecar must not honour a method override there either, such as a `_method=DELETE` parameter that Rack, Laravel or Symfony accept by default.
-- A held request still streams its response. A WebSocket upgrade is decided once, when it connects; frames are not checked.
+- A held request still streams its response. A WebSocket upgrade is decided once, when it connects; frames are not checked. The connection is closed after `limits.idle_timeout_secs` without data, and when the skill's route is removed or replaced (a reload, or a directory deactivated in `omac serve`), so clients should reconnect.
 - An omac that predates this block ignores it and forwards every call. Do not publish a skill that relies on it before a release that has it.
 
 ## Environment variables injected into the sidecar

@@ -530,15 +530,7 @@ func (r *startReloader) reload() []string {
 			}
 			continue
 		}
-		r.facade.AddRoute(facade.Route{
-			Mount:        mount,
-			UpstreamPort: running.Port,
-			Skill:        e.Name,
-			Owner:        e.Name,
-			Approvals:    routeApprovals(snapM),
-			HealthPath:   health.Defaults().Path,
-			State:        facade.RouteReady,
-		})
+		r.facade.AddRoute(reloadRoute(mount, running.Port, e.Name, snapM))
 		r.markMounted(e.Name, mount)
 		added = append(added, mount)
 		if r.verbose {
@@ -546,4 +538,19 @@ func (r *startReloader) reload() []string {
 		}
 	}
 	return added
+}
+
+// reloadRoute is the ready route that a reload mounts for a newly added
+// skill, in front of the sidecar listening on port.
+func reloadRoute(mount string, port int, name string, meta *config.Meta) facade.Route {
+	return facade.Route{
+		Mount:        mount,
+		UpstreamPort: port,
+		IdleTimeout:  routeIdleTimeout(meta),
+		Skill:        name,
+		Owner:        name,
+		Approvals:    routeApprovals(meta),
+		HealthPath:   config.DefaultHealthPath,
+		State:        facade.RouteReady,
+	}
 }

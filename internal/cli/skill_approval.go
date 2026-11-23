@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -140,6 +141,15 @@ func routeApprovals(m *config.Meta) *approval.Set {
 		return approval.AskAll()
 	}
 	return set
+}
+
+// routeIdleTimeout is the skill's limits.idle_timeout_secs, or 0 to use the
+// facade's value.
+func routeIdleTimeout(m *config.Meta) time.Duration {
+	if m == nil || m.Sidecar == nil || m.Sidecar.Limits == nil {
+		return 0
+	}
+	return time.Duration(m.Sidecar.Limits.IdleTimeoutSecs) * time.Second
 }
 
 // errSkillNotApproved is the uniform refusal error/detail; it names the

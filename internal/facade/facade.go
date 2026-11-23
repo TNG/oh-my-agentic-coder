@@ -9,7 +9,9 @@
 // pass through without buffering.
 //
 // Upgrades (WebSocket) are handled via hijacking: after proxying the
-// handshake, raw TCP bytes are spliced bidirectionally.
+// handshake, raw TCP bytes are spliced bidirectionally. A spliced
+// connection ends after its idle time without data in either direction, and
+// when its route is removed or replaced or the facade is closed.
 package facade
 
 import (
@@ -71,7 +73,7 @@ type Route struct {
 	Namespace    string // "" (flat) or a dir token or "__global__" (serve mode)
 	UpstreamPort int
 	MaxBodyBytes int64         // 0 = inherit facade default
-	IdleTimeout  time.Duration // 0 = inherit facade default
+	IdleTimeout  time.Duration // inactivity limit of upgraded connections; 0 = Facade.IdleTimeout
 	Skill        string        // registry name
 
 	// Owner is the skill name that installed this route. When non-empty,
@@ -149,7 +151,7 @@ type Facade struct {
 	TCPAddr       string // bind addr for TCP listener (e.g. "127.0.0.1:0"); "" disables TCP.
 	Routes        []Route
 	MaxBodyBytes  int64
-	IdleTimeout   time.Duration
+	IdleTimeout   time.Duration // plain HTTP keep-alive; also the inactivity limit of upgraded connections unless the route sets its own
 	AccessLogPath string
 	Version       string
 
@@ -188,8 +190,10 @@ type Facade struct {
 	// the intended end-state (tracked in issue #88).
 	FacadeToken string
 
-	mu     sync.RWMutex
-	routes map[string]*Route
+	mu       sync.RWMutex
+	routes   map[string]*Route
+	upgrades map[*Route]map[*upgradedConn]struct{} // spliced connections per installed route, guarded by mu
+	closed   bool                                  // set by Close; no connection is tracked after it
 	// transport is shared by all proxied requests, so upstream connections
 	// are reused across requests.
 	transport *http.Transport
@@ -252,7 +256,9 @@ func (f *Facade) SetAuditor(a audit.Auditor) {
 // AddRoute installs (or replaces) a route at runtime. Safe to call after
 // Start and from multiple goroutines. Used by serve mode to mount a
 // directory's skills lazily and to swap a stub route for a live one once
-// credentials arrive.
+// credentials arrive. Replacing a route closes the WebSocket connections
+// opened through the old one, as RemoveRoute does: they were let through
+// under the old route's upstream and approvals.
 //
 // When both the existing route and the new route carry a non-empty Owner,
 // a replacement is refused if the owners differ — this prevents a forged
@@ -263,20 +269,94 @@ func (f *Facade) AddRoute(r Route) {
 	if f.routes == nil {
 		f.routes = make(map[string]*Route)
 	}
-	if existing, ok := f.routes[rr.key()]; ok && existing.Owner != "" && existing.Owner != rr.Owner {
+	existing, ok := f.routes[rr.key()]
+	if ok && existing.Owner != "" && existing.Owner != rr.Owner {
 		f.mu.Unlock()
 		return
 	}
 	f.routes[rr.key()] = &rr
+	stale := f.takeUpgradesLocked(existing)
 	f.mu.Unlock()
+	closeUpgrades(stale)
 }
 
 // RemoveRoute drops the route with the given namespace/mount. A no-op if
-// absent. Used by serve mode when a directory is deactivated.
+// absent. Used by serve mode when a directory is deactivated. WebSocket
+// connections opened through the route are closed.
 func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
-	delete(f.routes, routeKey(namespace, mount))
+	key := routeKey(namespace, mount)
+	stale := f.takeUpgradesLocked(f.routes[key])
+	delete(f.routes, key)
 	f.mu.Unlock()
+	closeUpgrades(stale)
+}
+
+// upgradedConn is one spliced WebSocket connection: the hijacked client side
+// and the upstream side. Closing either ends the splice.
+type upgradedConn struct{ client, upstream net.Conn }
+
+func (u *upgradedConn) close() {
+	_ = u.client.Close()
+	_ = u.upstream.Close()
+}
+
+// trackUpgrade records u under route. It refuses (false) when route is no
+// longer the installed route for its key, because it was removed or replaced
+// after the request resolved it, or when the facade is closed; the caller
+// then drops the connection. Checking and recording under one lock means
+// RemoveRoute, AddRoute and Close either see u or make trackUpgrade refuse.
+func (f *Facade) trackUpgrade(route *Route, u *upgradedConn) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.routes[route.key()] != route {
+		return false
+	}
+	if f.upgrades == nil {
+		f.upgrades = make(map[*Route]map[*upgradedConn]struct{})
+	}
+	set := f.upgrades[route]
+	if set == nil {
+		set = make(map[*upgradedConn]struct{})
+		f.upgrades[route] = set
+	}
+	set[u] = struct{}{}
+	return true
+}
+
+// untrackUpgrade forgets u once its splice has ended. A no-op when RemoveRoute,
+// AddRoute or Close already took it.
+func (f *Facade) untrackUpgrade(route *Route, u *upgradedConn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if set := f.upgrades[route]; set != nil {
+		delete(set, u)
+		if len(set) == 0 {
+			delete(f.upgrades, route)
+		}
+	}
+}
+
+// takeUpgradesLocked removes and returns the connections tracked for route.
+// The caller holds f.mu and closes them after unlocking (closeUpgrades), so no
+// network call runs under the lock.
+func (f *Facade) takeUpgradesLocked(route *Route) []*upgradedConn {
+	if route == nil {
+		return nil
+	}
+	set := f.upgrades[route]
+	delete(f.upgrades, route)
+	out := make([]*upgradedConn, 0, len(set))
+	for u := range set {
+		out = append(out, u)
+	}
+	return out
+}
+
+func closeUpgrades(us []*upgradedConn) {
+	for _, u := range us {
+		u.close()
+	}
 }
 
 // slotsFor returns the request slots of a sidecar port. Routes that share
@@ -410,8 +490,18 @@ func (f *Facade) cleanupListeners() {
 	}
 }
 
-// Close tears down the server and removes the socket.
+// Close tears down the server, closes the WebSocket connections it spliced
+// and removes the socket.
 func (f *Facade) Close() error {
+	f.mu.Lock()
+	f.closed = true
+	var stale []*upgradedConn
+	for route := range f.upgrades {
+		stale = append(stale, f.takeUpgradesLocked(route)...)
+	}
+	f.mu.Unlock()
+	closeUpgrades(stale)
+
 	var firstErr error
 	if f.server != nil {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1154,6 +1244,14 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 	}
 	defer clientConn.Close()
 
+	// Track the pair so removing or replacing the route, or closing the
+	// facade, ends it. If the route went away since it was resolved, stop.
+	tracked := &upgradedConn{client: clientConn, upstream: upConn}
+	if !f.trackUpgrade(route, tracked) {
+		return
+	}
+	defer f.untrackUpgrade(route, tracked)
+
 	// Forward the 101 response (stripped of hop-by-hop headers) to the client.
 	respOut := &strings.Builder{}
 	respOut.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
@@ -1177,34 +1275,80 @@ func (f *Facade) proxyUpgrade(w http.ResponseWriter, r *http.Request, route *Rou
 		return
 	}
 
-	// Set idle deadlines on both connections.
-	idleTimeout := f.IdleTimeout
+	idleTimeout := route.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = f.IdleTimeout
+	}
 	if idleTimeout <= 0 {
 		idleTimeout = 5 * time.Minute
 	}
-	_ = upConn.SetDeadline(time.Now().Add(idleTimeout))
-	_ = clientConn.SetDeadline(time.Now().Add(idleTimeout))
+	guard := &idleGuard{idle: idleTimeout, conns: []net.Conn{upConn, clientConn}}
+	guard.touch()
+	upSide := guard.wrap(upConn)
+	clientSide := guard.wrap(clientConn)
 
 	// Flush anything already buffered from the client to the upstream.
 	if buf != nil && buf.Reader.Buffered() > 0 {
-		if _, err := io.CopyN(upConn, buf.Reader, int64(buf.Reader.Buffered())); err != nil {
+		if _, err := io.CopyN(upSide, buf.Reader, int64(buf.Reader.Buffered())); err != nil {
 			return
 		}
 	}
 
 	// Also drain any bytes the upstream already sent after the 101 headers.
 	if upReader.Buffered() > 0 {
-		if _, err := io.CopyN(clientConn, upReader, int64(upReader.Buffered())); err != nil {
+		if _, err := io.CopyN(clientSide, upReader, int64(upReader.Buffered())); err != nil {
 			return
 		}
 	}
 
 	// Splice both directions.
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(upConn, clientConn); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(clientConn, upConn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upSide, clientSide); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(clientSide, upSide); done <- struct{}{} }()
 	<-done
 	f.logAccess(r, route, rest, 101, 0, time.Since(started))
+}
+
+// idleGuard pushes the deadline of every spliced connection forward whenever
+// data moves on any of them, so a connection is cut only after idle with no
+// traffic in either direction.
+type idleGuard struct {
+	idle  time.Duration
+	conns []net.Conn
+
+	mu sync.Mutex // keeps concurrent touches from setting an older deadline last
+}
+
+func (g *idleGuard) touch() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	deadline := time.Now().Add(g.idle)
+	for _, c := range g.conns {
+		_ = c.SetDeadline(deadline)
+	}
+}
+
+func (g *idleGuard) wrap(c net.Conn) net.Conn { return &guardedConn{Conn: c, guard: g} }
+
+type guardedConn struct {
+	net.Conn
+	guard *idleGuard
+}
+
+func (c *guardedConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.guard.touch()
+	}
+	return n, err
+}
+
+func (c *guardedConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.guard.touch()
+	}
+	return n, err
 }
 
 func (f *Facade) logAccess(r *http.Request, route *Route, rest string, status int, bytes int64, dur time.Duration) {

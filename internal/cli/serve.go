@@ -1127,15 +1127,16 @@ func (m *intMultiFlag) Set(v string) error {
 // ---- server state (docs/contributing/serve-spec.md) ----
 
 type skillRoute struct {
-	Name       string
-	Mount      string
-	Namespace  string // dir token or facade.GlobalNamespace
-	SkillDir   string // skill's on-disk dir; source of SKILL.md auto-discovery
-	State      facade.RouteState
-	Detail     string
-	Missing    []string
-	Approvals  *approval.Set // declared endpoints from the approved snapshot; nil = ungated
-	HealthPath string        // the sidecar's health endpoint; exempt from the facade's request cap
+	Name        string
+	Mount       string
+	Namespace   string // dir token or facade.GlobalNamespace
+	SkillDir    string // skill's on-disk dir; source of SKILL.md auto-discovery
+	State       facade.RouteState
+	Detail      string
+	Missing     []string
+	Approvals   *approval.Set // declared endpoints from the approved snapshot; nil = ungated
+	HealthPath  string        // the sidecar's health endpoint; exempt from the facade's request cap
+	IdleTimeout time.Duration // from the approved snapshot; 0 = facade default
 }
 
 type dirState struct {
@@ -1835,7 +1836,7 @@ func (s *serveServer) bringUp(e registry.Entry, absDir, workdir, namespace, secr
 		s.installRoute(sr, 0)
 		return sr
 	}
-	sr := &skillRoute{Name: e.Name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady, Approvals: routeApprovals(snapM), HealthPath: health.Defaults().Path}
+	sr := readySkillRoute(e.Name, mount, namespace, snapDir, snapM)
 	s.installRoute(sr, running.Port)
 	return sr
 }
@@ -1950,8 +1951,10 @@ func joinCSV(parts []string) string {
 	return out
 }
 
-func (s *serveServer) installRoute(sr *skillRoute, port int) {
-	s.facade.AddRoute(facade.Route{
+// facadeRoute is the route that serve mode mounts for sr, in front of the
+// sidecar listening on port.
+func (sr *skillRoute) facadeRoute(port int) facade.Route {
+	return facade.Route{
 		Mount:        sr.Mount,
 		Namespace:    sr.Namespace,
 		UpstreamPort: port,
@@ -1960,9 +1963,32 @@ func (s *serveServer) installRoute(sr *skillRoute, port int) {
 		SkillDir:     sr.SkillDir,
 		Approvals:    sr.Approvals,
 		HealthPath:   sr.HealthPath,
+		IdleTimeout:  sr.IdleTimeout,
 		State:        sr.State,
 		Detail:       sr.Detail,
-	})
+	}
+}
+
+// flatAliasRoute is the namespace-less, always-ready route that
+// single-directory serve mounts next to the namespaced one, so the flat path
+// /<mount> reaches the same sidecar.
+func (sr *skillRoute) flatAliasRoute(port int) facade.Route {
+	r := sr.facadeRoute(port)
+	r.Namespace = ""
+	r.State = facade.RouteReady
+	r.Detail = ""
+	return r
+}
+
+// readySkillRoute is the skillRoute for a skill whose sidecar is running,
+// with the approvals, health path and idle timeout of its approved snapshot.
+func readySkillRoute(name, mount, namespace, snapDir string, snapM *config.Meta) *skillRoute {
+	return &skillRoute{Name: name, Mount: mount, Namespace: namespace, SkillDir: snapDir, State: facade.RouteReady,
+		Approvals: routeApprovals(snapM), HealthPath: config.DefaultHealthPath, IdleTimeout: routeIdleTimeout(snapM)}
+}
+
+func (s *serveServer) installRoute(sr *skillRoute, port int) {
+	s.facade.AddRoute(sr.facadeRoute(port))
 	// Audit a route entering a non-ready state (pending-credentials or
 	// broken). Ready routes are covered by process.exec/facade.request.
 	if sr.State != facade.RouteReady {
@@ -2011,7 +2037,7 @@ func (s *serveServer) refreshSingleDirAliases() {
 		if port == 0 {
 			continue
 		}
-		s.facade.AddRoute(facade.Route{Mount: sr.Mount, Namespace: "", UpstreamPort: port, Skill: sr.Name, Owner: sr.Name, SkillDir: sr.SkillDir, Approvals: sr.Approvals, HealthPath: sr.HealthPath, State: facade.RouteReady})
+		s.facade.AddRoute(sr.flatAliasRoute(port))
 		s.flatAliasMu.Lock()
 		if s.flatAliases == nil {
 			s.flatAliases = map[string]struct{}{}

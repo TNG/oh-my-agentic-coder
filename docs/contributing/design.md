@@ -47,7 +47,7 @@ An omac skill needs two files: `SKILL.md`, read by the agent, and `omac.yaml`, r
 
 ### The facade is the single trust boundary
 
-Sidecar ports are ephemeral and bound to `127.0.0.1`. They are never exposed to the sandbox. Every sandbox request goes through the facade, which strips the `/<skill>/` mount prefix, enforces per-skill body-size and timeout limits, and routes to the right sidecar. A compromised sandbox can at most send HTTP to the facade — it cannot reach a sidecar port, host env var, or the keychain. The facade also gives skills a stable, mount-rooted URL regardless of which ephemeral port a sidecar lands on. Because it proxies rather than buffers, streaming responses such as Server-Sent Events and WebSocket upgrades reach the agent in real time.
+Sidecar ports are ephemeral and bound to `127.0.0.1`. They are never exposed to the sandbox. Every sandbox request goes through the facade, which strips the `/<skill>/` mount prefix, enforces per-skill body-size and timeout limits, and routes to the right sidecar. A compromised sandbox can at most send HTTP to the facade — it cannot reach a sidecar port, host env var, or the keychain. The facade also gives skills a stable, mount-rooted URL regardless of which ephemeral port a sidecar lands on. Because it proxies rather than buffers, streaming responses such as Server-Sent Events and WebSocket upgrades reach the agent in real time. An upgraded connection is closed after its idle time without data, and when its route is removed or replaced.
 
 ## Architecture diagram
 
