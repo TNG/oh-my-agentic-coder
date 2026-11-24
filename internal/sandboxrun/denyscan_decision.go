@@ -124,9 +124,9 @@ func (s *ProtectedScan) SandboxFlags() []string {
 	return flags
 }
 
-// SessionEndNotes are printed after the session: the max_entries value that
-// avoids the question next time for every folder that finished after a
-// continue, and which folders were started with incomplete protection.
+// SessionEndNotes are printed after the session: how many entries each folder
+// that finished after a continue needed, one max_entries value that covers
+// them all, and which folders were started with incomplete protection.
 func (s *ProtectedScan) SessionEndNotes(profilePath string) []string {
 	profile := profilePath
 	if profile == "" {
@@ -134,13 +134,20 @@ func (s *ProtectedScan) SessionEndNotes(profilePath string) []string {
 	}
 	var notes []string
 	if s.Continued {
+		var lines []string
+		var most int64
 		for _, root := range s.asked {
 			if slices.Contains(s.Accepted, root) {
 				continue
 			}
 			needed := s.Entries[root]
-			notes = append(notes, fmt.Sprintf("note: the .env scan of %s needed %s entries.\nSet filesystem.deny_scan.max_entries to %d in %s to skip the question next time.",
-				root, formatCount(needed), roundUpToMillion(needed), profile))
+			most = max(most, needed)
+			lines = append(lines, fmt.Sprintf("note: the .env scan of %s needed %s entries.", root, formatCount(needed)))
+		}
+		if len(lines) > 0 {
+			lines = append(lines, fmt.Sprintf("Set filesystem.deny_scan.max_entries to %d in %s to skip the question next time.",
+				roundUpToMillion(most), profile))
+			notes = append(notes, strings.Join(lines, "\n"))
 		}
 	}
 	if len(s.Accepted) > 0 {

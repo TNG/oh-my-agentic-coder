@@ -228,17 +228,27 @@ func TestSessionEndNotesRounding(t *testing.T) {
 	s := &ProtectedScan{Continued: true, Entries: map[string]int64{root: 2_400_000}, asked: []string{root}}
 
 	notes := strings.Join(s.SessionEndNotes("/p/default.json"), "\n")
-	for _, want := range []string{
-		"the .env scan of /home/x/monorepo needed 2,400,000 entries",
-		"Set filesystem.deny_scan.max_entries to 3000000 in /p/default.json",
-	} {
-		if !strings.Contains(notes, want) {
-			t.Errorf("notes = %q, missing %q", notes, want)
-		}
+	want := "note: the .env scan of /home/x/monorepo needed 2,400,000 entries.\n" +
+		"Set filesystem.deny_scan.max_entries to 3000000 in /p/default.json to skip the question next time."
+	if notes != want {
+		t.Errorf("notes = %q, want %q", notes, want)
 	}
 
 	exact := &ProtectedScan{Continued: true, Entries: map[string]int64{root: 2_000_000}, asked: []string{root}}
 	if notes := strings.Join(exact.SessionEndNotes(""), "\n"); !strings.Contains(notes, "max_entries to 2000000 in your sandbox profile") {
 		t.Errorf("notes = %q, want an exact million kept and the generic profile name", notes)
+	}
+}
+
+func TestSessionEndNotesTwoRootsSuggestOneValue(t *testing.T) {
+	a, b := "/home/x/a", "/home/x/b"
+	s := &ProtectedScan{Continued: true, Entries: map[string]int64{a: 1_200_000, b: 4_100_000}, asked: []string{a, b}}
+
+	notes := strings.Join(s.SessionEndNotes("/p/default.json"), "\n")
+	want := "note: the .env scan of /home/x/a needed 1,200,000 entries.\n" +
+		"note: the .env scan of /home/x/b needed 4,100,000 entries.\n" +
+		"Set filesystem.deny_scan.max_entries to 5000000 in /p/default.json to skip the question next time."
+	if notes != want {
+		t.Errorf("notes = %q, want %q", notes, want)
 	}
 }
