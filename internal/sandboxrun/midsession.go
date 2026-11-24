@@ -100,19 +100,27 @@ func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.
 	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
 	protected = append(protected, literalDenies(p)...)
 	cache := newDenyScanCache()
+	params := denyScanParamsFor(p)
+	globs := denyGlobs(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny)
 	resolve := func(scanCache *denyScanCache, concurrency int) ([]string, error) {
-		out, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil, scanCache, concurrency)
+		out, byName, incomplete, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, params, nil, scanCache, concurrency)
+		if err == nil {
+			err = refuseIncompleteScan(incomplete, globs, p.Filesystem.OverrideDeny, params.limit)
+		}
 		if err == nil && len(byName.roots) > 0 {
 			// The folder grew past the cap during the session. The profile
 			// has no name rule for it, so stop as an incomplete scan does.
-			err = fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session", byName.roots[0], denyScanLimit.Load())
+			err = fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session", byName.roots[0], params.limit)
 		}
 		return out, err
 	}
 
 	known := map[string]bool{}
-	initial, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil, cache, denyScanConcurrency)
+	initial, byName, incomplete, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, params, nil, cache, denyScanConcurrency)
 	if err != nil {
+		return err
+	}
+	if err := refuseIncompleteScan(incomplete, globs, p.Filesystem.OverrideDeny, params.limit); err != nil {
 		return err
 	}
 	// A folder too large to scan is covered by a name rule (macOS), which

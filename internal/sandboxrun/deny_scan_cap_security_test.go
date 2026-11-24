@@ -17,13 +17,12 @@ import (
 // any file the configuration promises is blocked must remain blocked, so
 // the only safe response to an incomplete enumeration is to fail closed.
 func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
-	setDenyScanLimit(t, 20000)
 	setDenyByName(t, false) // Linux; macOS hides by name instead (deny_by_name_test.go)
 	workdir := t.TempDir()
 
 	// A protected baseline basename file placed at a lexically late path.
 	// The protection scan walks granted roots in lexical order and stops
-	// after maxDenyScanEntries, so a target sorted after the padding tree
+	// after the scan limit, so a target sorted after the padding tree
 	// is never visited and would be left unmasked by an implementation
 	// that fails open. Placing it late makes the incompleteness concrete:
 	// under the broken behavior the file is genuinely absent from the
@@ -39,8 +38,9 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 	populateLargeTree(t, workdir)
 
 	prof := &sandboxprofile.Profile{
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 
 	// Control: a small workdir resolves without error, proving any
@@ -71,16 +71,17 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 	}
 }
 
-// setDenyScanLimit lowers the scan cap for one test, so the test needs
-// thousands of files instead of a million.
-func setDenyScanLimit(t *testing.T, n int64) {
-	t.Helper()
-	old := denyScanLimit.Swap(n)
-	t.Cleanup(func() { denyScanLimit.Store(old) })
+// smallScanLimitEntries is the scan cap tests put in the profile, so a
+// test needs thousands of files instead of a million.
+const smallScanLimitEntries int64 = 20000
+
+func smallScanLimit() *sandboxprofile.DenyScan {
+	n := smallScanLimitEntries
+	return &sandboxprofile.DenyScan{MaxEntries: &n}
 }
 
 // populateLargeTree fills root with more entries than the protection scan
-// can enumerate (the current denyScanLimit), so the scan is guaranteed to
+// can enumerate (smallScanLimitEntries), so the scan is guaranteed to
 // be incomplete. It is laid out as many small directories whose names
 // sort before "zzz-*", keeping the protected target past the enumeration
 // bound. Directory reads are kept cheap by spreading entries across many
@@ -88,7 +89,7 @@ func setDenyScanLimit(t *testing.T, n int64) {
 func populateLargeTree(t *testing.T, root string) {
 	t.Helper()
 	const dirs = 400
-	perDir := int(denyScanLimit.Load())/dirs + 5
+	perDir := int(smallScanLimitEntries)/dirs + 5
 
 	workers := 16
 	jobs := make(chan int, workers*2)

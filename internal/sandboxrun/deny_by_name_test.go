@@ -79,12 +79,12 @@ func TestSbplNameRegex(t *testing.T) {
 // be hidden too, so that setup keeps refusing, as does Linux.
 func TestResolveGrantsHidesByNameWhenScanIsIncomplete(t *testing.T) {
 	setDenyByName(t, true)
-	setDenyScanLimit(t, 20000)
 	workdir := t.TempDir()
 	populateLargeTree(t, workdir)
 	prof := &sandboxprofile.Profile{
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 
 	var notices strings.Builder
@@ -137,9 +137,11 @@ func TestResolveGrantsNoNameRuleForCompleteScan(t *testing.T) {
 // must stop with an error instead of quietly checking only part of it.
 func TestWatchNewProtectedStopsWhenFolderOutgrowsCap(t *testing.T) {
 	setDenyByName(t, true)
-	setDenyScanLimit(t, 20000)
 	workdir := t.TempDir()
-	prof := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	prof := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
+	}
 	stop := make(chan struct{})
 	defer close(stop)
 	done := make(chan error, 1)

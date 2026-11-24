@@ -34,7 +34,6 @@ func writeEnv(t *testing.T, dir string) string {
 // A granted Nix store larger than the scan limit must not stop launch
 // (#394). The store is left out of the scan, so it never hits the limit.
 func TestResolveGrantsSkipsLargeNixStoreGrant(t *testing.T) {
-	setDenyScanLimit(t, 20000)
 	setDenyByName(t, false) // Linux, where hitting the limit refuses launch
 	parent := canonicalPath(t.TempDir())
 	store := filepath.Join(parent, "nix", "store")
@@ -45,7 +44,7 @@ func TestResolveGrantsSkipsLargeNixStoreGrant(t *testing.T) {
 
 	prof := &sandboxprofile.Profile{
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Filesystem: sandboxprofile.Filesystem{Read: []string{store}},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{store}, DenyScan: smallScanLimit()},
 		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 	g, err := ResolveGrants(prof, workdir, nil)
@@ -62,7 +61,6 @@ func TestResolveGrantsSkipsLargeNixStoreGrant(t *testing.T) {
 // A grant that only reaches the store through a symlink, like
 // ~/.nix-profile, is skipped as well.
 func TestResolveGrantsPrunesNixStoreInsideBroadGrant(t *testing.T) {
-	setDenyScanLimit(t, 20000)
 	setDenyByName(t, false)
 	parent := canonicalPath(t.TempDir())
 	store := filepath.Join(parent, "store")
@@ -77,7 +75,7 @@ func TestResolveGrantsPrunesNixStoreInsideBroadGrant(t *testing.T) {
 
 	prof := &sandboxprofile.Profile{
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessNone},
-		Filesystem: sandboxprofile.Filesystem{Read: []string{parent, link}},
+		Filesystem: sandboxprofile.Filesystem{Read: []string{parent, link}, DenyScan: smallScanLimit()},
 		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 	g, err := ResolveGrants(prof, t.TempDir(), nil)
