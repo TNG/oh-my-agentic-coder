@@ -30,7 +30,19 @@ type Options struct {
 	Flags   *sandboxprofile.Flags
 	Workdir string
 	Stderr  io.Writer
+	Stdin   *os.File
 }
+
+var (
+	newScanAsk = func(opts Options, stderr io.Writer, profilePath string) ScanAsk {
+		stdin := opts.Stdin
+		if stdin == nil {
+			stdin = os.Stdin
+		}
+		return TerminalScanAsk(stdin, stderr, profilePath)
+	}
+	runChild = execSandboxChild
+)
 
 // warnEmptyAllowVars warns when the merged profile carries no env
 // allowlist. An empty allow_vars is a misconfiguration rather than an
@@ -98,8 +110,24 @@ func Run(opts Options) int {
 	}
 	warnEmptyAllowVars(stderr, merged.Environment.AllowVars)
 
+	var scan *ProtectedScan
+	if !merged.DenyScanDecided() {
+		scan, err = ScanProtected(merged, opts.Workdir, profilePath, newScanAsk(opts, stderr, profilePath))
+		if err != nil {
+			return fail("%v", err)
+		}
+		merged, _ = sandboxprofile.Merge(merged, &sandboxprofile.Flags{
+			DenyScanLimit:            scan.Limit,
+			DenyScanAcceptIncomplete: scan.Accepted,
+		})
+	}
+
 	grants, err := ResolveGrants(merged, opts.Workdir, diag.Writer())
 	if err != nil {
+		var scanErr *IncompleteScanError
+		if errors.As(err, &scanErr) {
+			scanErr.ProfilePath = profilePath
+		}
 		return fail("%v", err)
 	}
 	if err := grants.Validate(); err != nil {
@@ -268,9 +296,14 @@ func Run(opts Options) int {
 	if recorder != nil {
 		onReady = recorder.Start
 	}
-	code, err := execSandboxChild(childArgv, env, grants.Workdir, onReady)
+	code, err := runChild(childArgv, env, grants.Workdir, onReady)
 	if err != nil {
 		return fail("%v", err)
+	}
+	if scan != nil {
+		for _, note := range scan.SessionEndNotes(profilePath) {
+			fmt.Fprintln(stderr, note)
+		}
 	}
 
 	if recorder != nil {
