@@ -583,19 +583,27 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // concurrency bounds how many folders the walk reads in parallel; launch
 // passes denyScanConcurrency, the watch's throttled full pass passes less.
 func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, params denyScanParams, notices io.Writer, cache *denyScanCache, concurrency int) (out []string, byName nameDeny, incomplete []rootScan, err error) {
+	out, byName, incomplete, _, err = resolveDenyScans(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs, params, notices, cache, concurrency)
+	return out, byName, incomplete, err
+}
+
+// resolveDenyScans is resolveDenyPaths plus the walk result of every root,
+// for callers that need the entry counts of roots that finished.
+func resolveDenyScans(userDeny, baselineBasenames, overrideDeny, scanRoots, protectedDirs []string, params denyScanParams, notices io.Writer, cache *denyScanCache, concurrency int) (out []string, byName nameDeny, incomplete, scans []rootScan, err error) {
 	if len(userDeny) == 0 && len(baselineBasenames) == 0 {
-		return nil, nameDeny{}, nil, nil
+		return nil, nameDeny{}, nil, nil, nil
 	}
 
 	out = pathFormDenies(userDeny, notices)
 	globs := denyGlobs(userDeny, baselineBasenames, overrideDeny)
 	if len(globs) == 0 {
-		return out, nameDeny{}, nil, nil
+		return out, nameDeny{}, nil, nil, nil
 	}
 
 	overrides := sandboxprofile.BuildOverrideLookup(overrideDeny)
 	var nameRoots []string
-	for _, scan := range walkGlobMatches(scanRoots, globs, protectedDirs, params, cache, concurrency) {
+	scans = walkGlobMatches(scanRoots, globs, protectedDirs, params, cache, concurrency)
+	for _, scan := range scans {
 		if scan.hitCap {
 			if ok, _ := canDenyByName(scan.root, globs, overrideDeny); ok {
 				nameRoots = append(nameRoots, scan.root)
@@ -613,7 +621,7 @@ func resolveDenyPaths(userDeny, baselineBasenames, overrideDeny, scanRoots, prot
 	if len(nameRoots) > 0 {
 		byName = nameDeny{roots: nameRoots, globs: globs}
 	}
-	return out, byName, incomplete, nil
+	return out, byName, incomplete, scans, nil
 }
 
 // denyGlobs lists the basename globs a scan matches: the user's deny
