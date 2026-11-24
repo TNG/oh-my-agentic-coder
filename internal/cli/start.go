@@ -873,10 +873,14 @@ func runLaunch(env *Env, opts launchOpts) int {
 		// The kernel mask cannot grow mid-session, so detect
 		// protected-pattern files (e.g. .env) created after launch and
 		// warn the user.
-		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+		watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
 			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
 		})
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, err)
+			return ExitConfigInvalid
+		}
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)

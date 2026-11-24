@@ -78,7 +78,20 @@ type protectedWatch struct {
 	workdir string
 }
 
-// startProtectedWatch mirrors the sandboxed child's deny-pattern walk
+// scanAskFor builds the question startProtectedWatch asks when the .env scan
+// hits its limit; tests replace it.
+var scanAskFor = func(env *Env, profilePath string) sandboxrun.ScanAsk {
+	return sandboxrun.TerminalScanAsk(env.Stdin, env.Stderr, profilePath)
+}
+
+// startProtectedWatch runs the launch .env scan, asking on the terminal when a
+// folder hits the entry limit, and returns argv with the decision injected for
+// the `omac sandbox run` child. The scan finishes before this returns, so
+// launching the child only with the returned argv keeps the parent's scan ahead
+// of the child's: a file created in between is reported by the watch.
+// An error means the launch must not happen; no watch is started then.
+//
+// The watch then mirrors the sandboxed child's deny-pattern walk
 // in the parent: a protected-pattern file (".env", ...) created after
 // launch is readable by the agent until the session restarts, because
 // the kernel mask is fixed at launch. Each tick's new paths arrive as
@@ -96,22 +109,30 @@ type protectedWatch struct {
 // onto the policy profile exactly like the sandbox child does, so the
 // watcher scans the same roots the child masks.
 //
-// Returns nil when there is nothing to mirror (non-native launcher,
-// argv not a `omac sandbox run`); callers skip learn mode, where
-// nothing is protected. checker may be nil; audit events are dropped
-// when a is nil. tuning comes from the launcher config's
-// sandbox.midsession_watch block.
-func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string, tuning sandboxrun.WatchTuning) *protectedWatch {
+// Returns a nil watch and argv unchanged when there is nothing to mirror
+// (non-native launcher, argv not a `omac sandbox run`); callers skip
+// learn mode, where nothing is protected. checker may be nil; audit
+// events are dropped when a is nil. tuning comes from the launcher
+// config's sandbox.midsession_watch block.
+func startProtectedWatch(env *Env, a audit.Auditor, checker *sandboxrun.ProtectedPathSet, plan sandboxPlan, argv []string, workdir string, tuning sandboxrun.WatchTuning) (*protectedWatch, []string, error) {
 	if !plan.Native || plan.Policy == nil || len(argv) < 3 || argv[1] != "sandbox" || argv[2] != "run" {
-		return nil
+		return nil, argv, nil
 	}
 	flags, err := sandboxprofile.ParseFlags(argv[3:])
 	if err != nil {
 		// The sandbox child parses the same argv; the launch is about
 		// to fail the same way and reports the usage error itself.
-		return nil
+		return nil, argv, nil
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
+	scan, err := sandboxrun.ScanProtected(profile, workdir, plan.PolicyPath, scanAskFor(env, plan.PolicyPath))
+	if err != nil {
+		return nil, nil, err
+	}
+	decision := scan.SandboxFlags()
+	for i := 0; i+1 < len(decision); i += 2 {
+		argv = injectSandboxFlag(argv, decision[i], decision[i+1])
+	}
 	store, loadNotice := loadWatchPrefs()
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &protectedWatch{
@@ -129,19 +150,19 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	if loadNotice != "" {
 		w.recordNotice(loadNotice)
 	}
+	for _, note := range scan.SessionEndNotes(plan.PolicyPath) {
+		w.recordNotice(note)
+	}
 	go func() {
 		defer close(w.exited)
-		scan, err := sandboxrun.ScanProtected(profile, workdir, plan.PolicyPath, nil)
-		if err == nil {
-			err = sandboxrun.WatchNewProtected(scan, profile, midsessionProtectedWatchInterval, func(paths []string) {
-				w.handle(paths, checker, a)
-			}, w.stop, tuning)
-		}
+		err := sandboxrun.WatchNewProtected(scan, profile, midsessionProtectedWatchInterval, func(paths []string) {
+			w.handle(paths, checker, a)
+		}, w.stop, tuning)
 		if err != nil {
-			w.recordNotice(fmt.Sprintf("protected-file watch not started: %v", err))
+			w.recordNotice(fmt.Sprintf("protected-file watch stopped: %v", err))
 		}
 	}()
-	return w
+	return w, argv, nil
 }
 
 // loadWatchPrefs reads the user-global prefs for the watch. On error it returns

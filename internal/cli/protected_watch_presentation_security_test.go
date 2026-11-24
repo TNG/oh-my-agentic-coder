@@ -34,7 +34,7 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(parent, ".env")
-	// Created before the watch starts, so the background scan counts it as
+	// Created before the watch starts, so the launch scan counts it as
 	// already present and never reports it. The test feeds it to the
 	// detection handler itself instead of waiting for a scan tick.
 	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
@@ -50,9 +50,9 @@ func TestProtectedWatchPresentationAndRawLookup(t *testing.T) {
 	checker := sandboxrun.UnrestrictedProtectedPathSet()
 	p := &sandboxprofile.Profile{}
 	p.Workdir.Access = sandboxprofile.AccessReadWrite
-	w := startProtectedWatch(a, checker, sandboxPlan{Native: true, Policy: p}, []string{"omac", "sandbox", "run", "--", "true"}, wd, sandboxrun.WatchTuning{})
-	if w == nil {
-		t.Fatal("watch did not start")
+	w, _, err := startProtectedWatch(&Env{}, a, checker, sandboxPlan{Native: true, Policy: p}, []string{"omac", "sandbox", "run", "--", "true"}, wd, sandboxrun.WatchTuning{})
+	if err != nil || w == nil {
+		t.Fatalf("watch did not start: %v", err)
 	}
 	var report bytes.Buffer
 	reported := false
