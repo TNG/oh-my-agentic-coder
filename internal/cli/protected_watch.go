@@ -150,7 +150,7 @@ func startProtectedWatch(env *Env, a audit.Auditor, checker *sandboxrun.Protecte
 	if loadNotice != "" {
 		w.recordNotice(loadNotice)
 	}
-	for _, note := range scan.SessionEndNotes(plan.PolicyPath) {
+	for _, note := range scan.SessionEndNotes() {
 		w.recordNotice(note)
 	}
 	go func() {

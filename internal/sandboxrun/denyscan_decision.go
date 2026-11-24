@@ -127,11 +127,7 @@ func (s *ProtectedScan) SandboxFlags() []string {
 // SessionEndNotes are printed after the session: how many entries each folder
 // that finished after a continue needed, one max_entries value that covers
 // them all, and which folders were started with incomplete protection.
-func (s *ProtectedScan) SessionEndNotes(profilePath string) []string {
-	profile := profilePath
-	if profile == "" {
-		profile = "your sandbox profile"
-	}
+func (s *ProtectedScan) SessionEndNotes() []string {
 	var notes []string
 	if s.Continued {
 		var lines []string
@@ -146,7 +142,7 @@ func (s *ProtectedScan) SessionEndNotes(profilePath string) []string {
 		}
 		if len(lines) > 0 {
 			lines = append(lines, fmt.Sprintf("Set filesystem.deny_scan.max_entries to %d in %s to skip the question next time.",
-				roundUpToMillion(most), profile))
+				roundUpToMillion(most), profileName(s.profilePath)))
 			notes = append(notes, strings.Join(lines, "\n"))
 		}
 	}

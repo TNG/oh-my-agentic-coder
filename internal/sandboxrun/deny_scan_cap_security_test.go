@@ -138,6 +138,38 @@ func TestSecurityDenyScanAcceptedRootStarts(t *testing.T) {
 	}
 }
 
+// TestSecurityDenyScanAcceptOnlyExactRoot asserts that accepting an
+// incomplete scan for one folder never extends to the over-limit root
+// through a shared name prefix, a parent or a child folder.
+func TestSecurityDenyScanAcceptOnlyExactRoot(t *testing.T) {
+	setDenyByName(t, false)
+	parent := t.TempDir()
+	workdir := filepath.Join(parent, "repo")
+	if err := os.Mkdir(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeEnvPair(t, workdir)
+	sibling := workdir + "2"
+	if err := os.Mkdir(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, accepted := range map[string]string{
+		"same prefix": sibling,
+		"parent":      parent,
+		"child":       filepath.Join(workdir, "g0000"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			prof := flaggedProfile(t, "--deny-scan-limit", "1000", "--deny-scan-accept-incomplete", accepted)
+			_, err := ResolveGrants(prof, workdir, nil)
+			var scanErr *IncompleteScanError
+			if !errors.As(err, &scanErr) {
+				t.Fatalf("accepting %s must not start %s with an incomplete scan; got %T: %v", accepted, workdir, err, err)
+			}
+		})
+	}
+}
+
 func TestSecurityDenyScanGrewDuringStart(t *testing.T) {
 	setDenyByName(t, false)
 	workdir := t.TempDir()

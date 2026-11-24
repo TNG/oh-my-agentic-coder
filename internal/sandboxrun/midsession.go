@@ -110,11 +110,7 @@ func WatchNewProtected(scan *ProtectedScan, p *sandboxprofile.Profile, interval 
 		}
 		grown = append(grown, byName.roots...)
 		if len(grown) > 0 {
-			profile := scan.profilePath
-			if profile == "" {
-				profile = "your sandbox profile"
-			}
-			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session; raise \"filesystem.deny_scan.max_entries\" in %s to keep watching it", strings.Join(grown, ", "), params.limit, profile)
+			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session; raise \"filesystem.deny_scan.max_entries\" in %s to keep watching it", strings.Join(grown, ", "), params.limit, profileName(scan.profilePath))
 		}
 		return out, nil
 	}

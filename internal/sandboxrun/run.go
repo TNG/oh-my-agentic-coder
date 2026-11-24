@@ -301,7 +301,7 @@ func Run(opts Options) int {
 		return fail("%v", err)
 	}
 	if scan != nil {
-		for _, note := range scan.SessionEndNotes(profilePath) {
+		for _, note := range scan.SessionEndNotes() {
 			fmt.Fprintln(stderr, note)
 		}
 	}

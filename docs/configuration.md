@@ -82,7 +82,7 @@ omac creates this file the first time you run `omac start`. Key fields:
 | `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
 | `filesystem.registry_config` | `string[]` | `[]` | Ecosystems whose package-registry settings are copied into the sandbox without their credentials. Currently `"npm"`. See [Private package registries](#private-package-registries) |
-| `filesystem.deny_scan.max_entries` | `number` | `1000000` | How many files and folders omac lists per granted directory when it looks for `.env` files to hide. Must be positive. Example: `{"filesystem": {"deny_scan": {"max_entries": 2000000}}}`. See [Scan limit](./security.md#filesystem) |
+| `filesystem.deny_scan.max_entries` | `number` | `1000000` | How many files and folders omac lists per granted directory when it looks for `.env` files to hide. Must be positive. Example: `{"filesystem": {"deny_scan": {"max_entries": 2000000}}}`. See [Filesystem](./security.md#filesystem) |
 | `filesystem.deny_scan.skip_dir_names` | `string[]` | `[]` | Folder names the `.env` scan does not enter, at any depth, in addition to the built-in ones such as `node_modules` and `build`. Each entry is one name without `/`. Example: `{"filesystem": {"deny_scan": {"skip_dir_names": ["build-gradle"]}}}`. A `.env` inside a skipped folder is not hidden |
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.

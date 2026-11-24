@@ -53,9 +53,12 @@ func TestScanProtectedContinueFindsLateEnv(t *testing.T) {
 	root, env := lateEnvTree(t)
 	var calls []recordedAsk
 
-	s, err := ScanProtected(profileWithReadRoots(1000, root), root, "", scriptedAsk(&calls, ScanContinue, ScanContinue))
+	s, err := ScanProtected(profileWithReadRoots(1000, root), root, "/p/default.json", scriptedAsk(&calls, ScanContinue, ScanContinue))
 	if err != nil {
 		t.Fatalf("ScanProtected: %v", err)
+	}
+	if notes := strings.Join(s.SessionEndNotes(), "\n"); !strings.Contains(notes, "in /p/default.json") {
+		t.Errorf("SessionEndNotes = %q, want the profile path given to ScanProtected", notes)
 	}
 	if len(calls) != 2 {
 		t.Fatalf("ask called %d times, want 2: %+v", len(calls), calls)
@@ -112,7 +115,7 @@ func TestScanProtectedStartIncomplete(t *testing.T) {
 			t.Errorf("SandboxFlags() = %q, missing %q", flags, want)
 		}
 	}
-	notes := strings.Join(s.SessionEndNotes(""), "\n")
+	notes := strings.Join(s.SessionEndNotes(), "\n")
 	if !strings.Contains(notes, "these folders were not fully protected this session: "+root) {
 		t.Errorf("SessionEndNotes = %q, want the incomplete-protection reminder", notes)
 	}
@@ -163,7 +166,8 @@ func TestScanProtectedMultipleRoots(t *testing.T) {
 	writeFiles(t, b, 1500)
 	var calls []recordedAsk
 
-	if _, err := ScanProtected(profileWithReadRoots(1000, a, b), a, "", scriptedAsk(&calls, ScanStartIncomplete)); err != nil {
+	s, err := ScanProtected(profileWithReadRoots(1000, a, b), a, "", scriptedAsk(&calls, ScanStartIncomplete))
+	if err != nil {
 		t.Fatalf("ScanProtected: %v", err)
 	}
 	if len(calls) != 1 {
@@ -173,6 +177,34 @@ func TestScanProtectedMultipleRoots(t *testing.T) {
 	want := slices.Sorted(slices.Values([]string{a, b}))
 	if !slices.Equal(got, want) {
 		t.Errorf("ask roots = %v, want %v", got, want)
+	}
+	if accepted := slices.Sorted(slices.Values(s.Accepted)); !slices.Equal(accepted, want) {
+		t.Errorf("Accepted = %v, want %v", accepted, want)
+	}
+}
+
+func TestScanProtectedMultipleRootsContinue(t *testing.T) {
+	setDenyByName(t, false)
+	a := canonicalPath(t.TempDir())
+	b := canonicalPath(t.TempDir())
+	writeFiles(t, a, 1500)
+	writeFiles(t, b, 1500)
+	var calls []recordedAsk
+
+	s, err := ScanProtected(profileWithReadRoots(1000, a, b), a, "", scriptedAsk(&calls, ScanContinue))
+	if err != nil {
+		t.Fatalf("ScanProtected: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("ask called %d times, want both roots finished after one continue", len(calls))
+	}
+	if s.Limit != 2000 || len(s.Accepted) != 0 {
+		t.Errorf("Limit = %d, Accepted = %v; want 2000 and none", s.Limit, s.Accepted)
+	}
+	for _, root := range []string{a, b} {
+		if got := s.Entries[root]; got <= 1000 || got > 2000 {
+			t.Errorf("Entries[%s] = %d, want a finished count between 1000 and 2000", root, got)
+		}
 	}
 }
 
@@ -215,7 +247,7 @@ func TestScanProtectedNoPromptUnderLimit(t *testing.T) {
 	if !slices.Contains(s.Matches, env) {
 		t.Errorf("%s not in Matches %v", env, s.Matches)
 	}
-	if notes := s.SessionEndNotes(""); len(notes) != 0 {
+	if notes := s.SessionEndNotes(); len(notes) != 0 {
 		t.Errorf("SessionEndNotes = %q, want none", notes)
 	}
 	if flags := s.SandboxFlags(); !slices.Equal(flags, []string{"--deny-scan-limit", "1000"}) {
@@ -225,9 +257,9 @@ func TestScanProtectedNoPromptUnderLimit(t *testing.T) {
 
 func TestSessionEndNotesRounding(t *testing.T) {
 	root := "/home/x/monorepo"
-	s := &ProtectedScan{Continued: true, Entries: map[string]int64{root: 2_400_000}, asked: []string{root}}
+	s := &ProtectedScan{Continued: true, Entries: map[string]int64{root: 2_400_000}, asked: []string{root}, profilePath: "/p/default.json"}
 
-	notes := strings.Join(s.SessionEndNotes("/p/default.json"), "\n")
+	notes := strings.Join(s.SessionEndNotes(), "\n")
 	want := "note: the .env scan of /home/x/monorepo needed 2,400,000 entries.\n" +
 		"Set filesystem.deny_scan.max_entries to 3000000 in /p/default.json to skip the question next time."
 	if notes != want {
@@ -235,16 +267,16 @@ func TestSessionEndNotesRounding(t *testing.T) {
 	}
 
 	exact := &ProtectedScan{Continued: true, Entries: map[string]int64{root: 2_000_000}, asked: []string{root}}
-	if notes := strings.Join(exact.SessionEndNotes(""), "\n"); !strings.Contains(notes, "max_entries to 2000000 in your sandbox profile") {
+	if notes := strings.Join(exact.SessionEndNotes(), "\n"); !strings.Contains(notes, "max_entries to 2000000 in your sandbox profile") {
 		t.Errorf("notes = %q, want an exact million kept and the generic profile name", notes)
 	}
 }
 
 func TestSessionEndNotesTwoRootsSuggestOneValue(t *testing.T) {
 	a, b := "/home/x/a", "/home/x/b"
-	s := &ProtectedScan{Continued: true, Entries: map[string]int64{a: 1_200_000, b: 4_100_000}, asked: []string{a, b}}
+	s := &ProtectedScan{Continued: true, Entries: map[string]int64{a: 1_200_000, b: 4_100_000}, asked: []string{a, b}, profilePath: "/p/default.json"}
 
-	notes := strings.Join(s.SessionEndNotes("/p/default.json"), "\n")
+	notes := strings.Join(s.SessionEndNotes(), "\n")
 	want := "note: the .env scan of /home/x/a needed 1,200,000 entries.\n" +
 		"note: the .env scan of /home/x/b needed 4,100,000 entries.\n" +
 		"Set filesystem.deny_scan.max_entries to 5000000 in /p/default.json to skip the question next time."

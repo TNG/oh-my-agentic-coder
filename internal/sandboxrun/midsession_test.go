@@ -28,12 +28,13 @@ func TestWatchNewProtected(t *testing.T) {
 
 	p := &sandboxprofile.Profile{}
 	p.Workdir.Access = sandboxprofile.AccessReadWrite
+	scan := launchScan(t, p, dir)
 
 	stop := make(chan struct{})
 	defer close(stop)
 	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(launchScan(t, p, dir), p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(scan, p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
@@ -75,17 +76,17 @@ func TestWatchNewProtectedFullPassOff(t *testing.T) {
 	dir := t.TempDir()
 	p := &sandboxprofile.Profile{}
 	p.Workdir.Access = sandboxprofile.AccessReadWrite
+	scan := launchScan(t, p, dir)
 
 	stop := make(chan struct{})
 	defer close(stop)
 	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(launchScan(t, p, dir), p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(scan, p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
 
-	// First tick = snapshot done.
 	select {
 	case paths := <-got:
 		t.Fatalf("alerted on empty dir: %v", paths)
@@ -136,18 +137,17 @@ func TestWatchNewProtectedOverrideDeny(t *testing.T) {
 	p := &sandboxprofile.Profile{}
 	p.Workdir.Access = sandboxprofile.AccessReadWrite
 	p.Filesystem.OverrideDeny = []string{".env"}
+	scan := launchScan(t, p, dir)
 
 	stop := make(chan struct{})
 	defer close(stop)
 	got := make(chan []string, 8)
 	go func() {
-		if err := WatchNewProtected(launchScan(t, p, dir), p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
+		if err := WatchNewProtected(scan, p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{}); err != nil {
 			t.Errorf("WatchNewProtected: %v", err)
 		}
 	}()
 
-	// A first tick fired means the launch-time snapshot is done; only
-	// files created afterwards count as mid-session.
 	select {
 	case paths := <-got:
 		t.Fatalf("alerted on empty dir: %v", paths)
@@ -224,6 +224,39 @@ func TestWatchSkipsAcceptedRoots(t *testing.T) {
 	select {
 	case paths := <-got:
 		t.Fatalf("alerted inside an accepted root: %v", paths)
+	case err := <-done:
+		t.Fatalf("watch stopped: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Errorf("WatchNewProtected: %v", err)
+	}
+}
+
+func TestWatchSkipsNameRuleRoots(t *testing.T) {
+	setDenyByName(t, true)
+	root := canonicalPath(t.TempDir())
+	writeFiles(t, root, 1500)
+	p := profileWithReadRoots(1000, root)
+	scan, err := ScanProtected(p, root, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(scan.ByNameRoots, []string{root}) {
+		t.Fatalf("ByNameRoots = %v, want [%s]", scan.ByNameRoots, root)
+	}
+	writeEnv(t, root)
+
+	stop := make(chan struct{})
+	got := make(chan []string, 8)
+	done := make(chan error, 1)
+	go func() {
+		done <- WatchNewProtected(scan, p, 10*time.Millisecond, func(paths []string) { got <- paths }, stop, WatchTuning{})
+	}()
+	select {
+	case paths := <-got:
+		t.Fatalf("alerted inside a name-rule root: %v", paths)
 	case err := <-done:
 		t.Fatalf("watch stopped: %v", err)
 	case <-time.After(300 * time.Millisecond):

@@ -489,17 +489,14 @@ func (p *Profile) Validate() error {
 	}
 	if d := p.Filesystem.DenyScan; d != nil {
 		if d.MaxEntries != nil && *d.MaxEntries <= 0 {
-			if *d.MaxEntries == 0 {
-				return fmt.Errorf("sandbox profile: filesystem.deny_scan.max_entries is 0, but it must be a positive number such as 2000000. Remove the field to use the default of 1,000,000.")
-			}
-			return fmt.Errorf("sandbox profile: filesystem.deny_scan.max_entries is %d, but it must be a positive number such as 2000000. Remove the field to use the default of 1,000,000.", *d.MaxEntries)
+			return fmt.Errorf("sandbox profile: filesystem.deny_scan.max_entries is %d, but it must be a positive number such as 2000000. Remove the field to use the default of 1,000,000", *d.MaxEntries)
 		}
 		for i, name := range d.SkipDirNames {
 			if name == "" {
-				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is empty. Remove it or enter a folder name such as \"build-gradle\".", i)
+				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is empty. Remove it or enter a folder name such as \"build-gradle\"", i)
 			}
 			if strings.Contains(name, "/") {
-				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is %q, but each entry must be a single folder name without \"/\", such as \"build-gradle\". omac skips that name at any depth.", i, name)
+				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is %q, but each entry must be a single folder name without \"/\", such as \"build-gradle\". omac skips that name at any depth", i, name)
 			}
 		}
 	}

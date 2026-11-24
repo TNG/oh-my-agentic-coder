@@ -22,10 +22,7 @@ type IncompleteScanError struct {
 
 func (e *IncompleteScanError) Error() string {
 	roots := strings.Join(e.Roots, ", ")
-	profile := e.ProfilePath
-	if profile == "" {
-		profile = "your sandbox profile"
-	}
+	profile := profileName(e.ProfilePath)
 	limit := formatCount(e.Limit)
 	if e.GrewDuringStart {
 		return fmt.Sprintf(`%s grew past %s entries while omac was starting
@@ -42,6 +39,13 @@ Fix it in %s, then start again:
 To find the right limit, run `+"`omac start`"+` in a terminal once and choose "continue";
 omac prints the value it needed when the session ends.`,
 		roots, limit, e.NameRuleNote, profile, strconv.FormatInt(2*e.Limit, 10))
+}
+
+func profileName(path string) string {
+	if path == "" {
+		return "your sandbox profile"
+	}
+	return path
 }
 
 func formatCount(n int64) string {

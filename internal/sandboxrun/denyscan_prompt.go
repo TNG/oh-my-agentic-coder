@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 
 	"golang.org/x/term"
@@ -18,13 +19,32 @@ func TerminalScanAsk(in *os.File, out io.Writer, profilePath string) ScanAsk {
 	if !ok || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(outFile.Fd())) {
 		return nil
 	}
-	return scanAskFrom(in, out, profilePath)
+	return abortOnInterrupt(scanAskFrom(in, out, profilePath), out)
+}
+
+// abortOnInterrupt turns Ctrl-C while ask waits for an answer into an abort,
+// so the caller's cleanup runs instead of the process dying on SIGINT. An
+// interrupted read keeps waiting in the background; nothing asks again after
+// an abort.
+func abortOnInterrupt(ask ScanAsk, w io.Writer) ScanAsk {
+	return func(roots []string, limit int64) ScanChoice {
+		interrupted := make(chan os.Signal, 1)
+		signal.Notify(interrupted, os.Interrupt)
+		defer signal.Stop(interrupted)
+		answer := make(chan ScanChoice, 1)
+		go func() { answer <- ask(roots, limit) }()
+		select {
+		case choice := <-answer:
+			return choice
+		case <-interrupted:
+			fmt.Fprintln(w)
+			return ScanAbort
+		}
+	}
 }
 
 func scanAskFrom(r io.Reader, w io.Writer, profilePath string) ScanAsk {
-	if profilePath == "" {
-		profilePath = "your sandbox profile"
-	}
+	profile := profileName(profilePath)
 	lines := bufio.NewReader(r)
 	// The first question comes at the base limit, and each continue adds
 	// that base limit again.
@@ -39,7 +59,7 @@ func scanAskFrom(r io.Reader, w io.Writer, profilePath string) ScanAsk {
   [A] abort (default)
 Tip: raise the limit or skip folders with filesystem.deny_scan in
      %s
-`, strings.Join(roots, ", "), formatCount(limit), formatCount(step), profilePath)
+`, strings.Join(roots, ", "), formatCount(limit), formatCount(step), profile)
 		answer, _ := lines.ReadString('\n')
 		switch strings.ToLower(strings.TrimSpace(answer)) {
 		case "c", "continue":

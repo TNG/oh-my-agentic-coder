@@ -870,9 +870,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
 			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
 		}
-		// The kernel mask cannot grow mid-session, so detect
-		// protected-pattern files (e.g. .env) created after launch and
-		// warn the user.
 		watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
 			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,

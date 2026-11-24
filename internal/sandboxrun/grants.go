@@ -46,7 +46,7 @@ type Grants struct {
 	// launch-time scan (the deny scan limit). Instead of listing their
 	// secret files, the macOS profile hides every file or folder below
 	// them whose name matches one of NameDenyGlobs (see sbplNameDenies).
-	// Always empty on Linux, where such a folder still refuses launch.
+	// Always empty on Linux, which cannot hide files by name.
 	NameDenyRoots []string
 	NameDenyGlobs []string
 
@@ -650,17 +650,17 @@ type nameDeny struct {
 // denyByName reports whether the sandbox can hide files by name below a
 // folder: Seatbelt on macOS matches paths with regular expressions. The
 // Linux backends can only hide paths that exist at launch, so there a
-// folder too large to scan still needs a decision from the user. Tests on Linux switch it
-// on to cover the shared code.
+// folder too large to scan still needs a decision from the user. Tests on
+// Linux switch it on to cover the shared code.
 var denyByName atomic.Bool
 
 func init() { denyByName.Store(runtime.GOOS == "darwin") }
 
 // canDenyByName reports whether root can be covered by a name rule; if
-// not, reason (possibly empty) is appended to the refusal. An absolute
-// override_deny path inside root would be hidden by the rule although
-// the user lifted it, and a path or pattern the rule cannot spell is not
-// covered, so those setups keep refusing launch, as before name rules.
+// not, reason (possibly empty) tells the user why the folder needs a
+// decision. An absolute override_deny path inside root would be hidden by
+// the rule although the user lifted it, and a path or pattern the rule
+// cannot spell is not covered, so such a root counts as incomplete.
 func canDenyByName(root string, globs, overrideDeny []string) (ok bool, reason string) {
 	if !denyByName.Load() {
 		return false, ""
@@ -766,8 +766,8 @@ func clampInt(v, lo, hi int) int {
 // If a root hits the entry cap its walk is incomplete: files the
 // configuration promises are blocked may never be visited and would be
 // left unmasked. Such a root has hitCap set (its matches up to the cap
-// are still listed), and resolveDenyPaths decides between refusing launch
-// and hiding files there by name.
+// are still listed), and resolveDenyPaths sorts it into the roots hidden
+// by name or the incomplete ones its caller decides about.
 //
 // protectedDirs are already-denied paths the walk prunes without
 // descending (any match inside is masked by the ancestor rule),

@@ -3,7 +3,9 @@ package sandboxrun
 import (
 	"os"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestTerminalScanAskAnswers(t *testing.T) {
@@ -62,6 +64,39 @@ func TestTerminalScanAskRepeatedQuestion(t *testing.T) {
 	}
 	if strings.Contains(text, "(next 2,000)") {
 		t.Errorf("prompt %q: continue must add the base limit, not the current one", text)
+	}
+}
+
+func TestAbortOnInterrupt(t *testing.T) {
+	waiting := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	blocked := func([]string, int64) ScanChoice {
+		close(waiting)
+		<-release
+		return ScanContinue
+	}
+	var out strings.Builder
+	ask := abortOnInterrupt(blocked, &out)
+
+	got := make(chan ScanChoice, 1)
+	go func() { got <- ask([]string{"/a"}, 1000) }()
+	<-waiting
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case choice := <-got:
+		if choice != ScanAbort {
+			t.Errorf("choice after Ctrl-C = %v, want abort", choice)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ctrl-C did not end the question")
+	}
+
+	answered := abortOnInterrupt(func([]string, int64) ScanChoice { return ScanStartIncomplete }, &out)
+	if choice := answered([]string{"/a"}, 1000); choice != ScanStartIncomplete {
+		t.Errorf("choice = %v, want the answer passed through", choice)
 	}
 }
 

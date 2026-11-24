@@ -681,9 +681,6 @@ func runServe(args []string, env *Env) int {
 			warnOpenCodeMajorOnlySpec(env, ocClass)
 			warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
 		}
-		// The kernel mask cannot grow mid-session, so detect
-		// protected-pattern files (e.g. .env) created after launch and
-		// warn the user.
 		if !noInner && !learn {
 			watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
 				FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
