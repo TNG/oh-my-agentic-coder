@@ -239,8 +239,16 @@ func ResolveGrants(p *sandboxprofile.Profile, workdir string, notices io.Writer)
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseIncompleteScan(incomplete, denyGlobs(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny), p.Filesystem.OverrideDeny, scanParams.limit); err != nil {
-		return nil, err
+	approved, refused := splitAcceptedRoots(incomplete, p.DenyScanAcceptIncomplete())
+	if len(refused) > 0 {
+		return nil, newIncompleteScanError(refused, scanParams.limit, p.DenyScanDecided(),
+			denyGlobs(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny), p.Filesystem.OverrideDeny)
+	}
+	if notices != nil {
+		for _, scan := range approved {
+			fmt.Fprintf(notices, "omac sandbox: notice: %s has more than %s entries and is not fully protected this session: .env files omac did not reach stay readable\n",
+				scan.root, formatCount(scanParams.limit))
+		}
 	}
 	protected = append(protected, denyResolved...)
 	if notices != nil && len(byName.roots) > 0 {

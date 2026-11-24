@@ -1,9 +1,13 @@
 package sandboxrun
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -68,6 +72,117 @@ func TestSecurityDenyScanCapFailsClosed(t *testing.T) {
 			}
 		}
 		t.Fatalf("launch proceeded after an incomplete protection scan (%s unmasked); expected refusal", protectedFile)
+	}
+	var scanErr *IncompleteScanError
+	if !errors.As(err, &scanErr) {
+		t.Fatalf("want *IncompleteScanError, got %T: %v", err, err)
+	}
+	for _, want := range []string{"stopped after 20,000 entries", "no terminal"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
+	}
+}
+
+func flaggedProfile(t *testing.T, args ...string) *sandboxprofile.Profile {
+	t.Helper()
+	flags, err := sandboxprofile.ParseFlags(append(args, "--block-net", "--", "true"))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	base := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	merged, _ := sandboxprofile.Merge(base, flags)
+	return merged
+}
+
+// writeEnvPair puts one .env where the scan reads it first (the root) and
+// one where it never gets to: the walk takes folders from a stack, so g0000,
+// created first and pushed first, is read last.
+func writeEnvPair(t *testing.T, workdir string) (first, late string) {
+	t.Helper()
+	first = filepath.Join(workdir, ".env")
+	if err := os.WriteFile(first, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	populateLargeTree(t, workdir)
+	lateDir := filepath.Join(workdir, "g0000", "late")
+	if err := os.Mkdir(lateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	late = filepath.Join(lateDir, ".env")
+	if err := os.WriteFile(late, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return first, late
+}
+
+func TestSecurityDenyScanAcceptedRootStarts(t *testing.T) {
+	setDenyByName(t, false)
+	workdir := t.TempDir()
+	first, late := writeEnvPair(t, workdir)
+	prof := flaggedProfile(t, "--deny-scan-limit", "1000", "--deny-scan-accept-incomplete", workdir)
+
+	var notices bytes.Buffer
+	g, err := ResolveGrants(prof, workdir, &notices)
+	if err != nil {
+		t.Fatalf("accepted incomplete root must start: %v", err)
+	}
+	if !slices.Contains(g.ProtectedPaths, first) {
+		t.Errorf("%s found before the limit must stay protected", first)
+	}
+	if slices.Contains(g.ProtectedPaths, late) {
+		t.Errorf("%s is past the limit and cannot be protected", late)
+	}
+	if !strings.Contains(notices.String(), workdir) || !strings.Contains(notices.String(), "not fully protected") {
+		t.Errorf("notices must name the accepted root, got %q", notices.String())
+	}
+}
+
+func TestSecurityDenyScanGrewDuringStart(t *testing.T) {
+	setDenyByName(t, false)
+	workdir := t.TempDir()
+	writeEnvPair(t, workdir)
+	prof := flaggedProfile(t, "--deny-scan-limit", "1000")
+
+	_, err := ResolveGrants(prof, workdir, nil)
+	var scanErr *IncompleteScanError
+	if !errors.As(err, &scanErr) {
+		t.Fatalf("want *IncompleteScanError, got %T: %v", err, err)
+	}
+	if !scanErr.GrewDuringStart {
+		t.Error("a decided scan that is still incomplete must report that the folder grew")
+	}
+	if !strings.Contains(err.Error(), "grew past 1,000 entries while omac was starting") {
+		t.Errorf("unexpected text: %v", err)
+	}
+}
+
+func TestIncompleteScanErrorText(t *testing.T) {
+	noTerminal := &IncompleteScanError{Roots: []string{"/home/x/monorepo"}, Limit: 1000000, ProfilePath: "/p/default.json"}
+	wantNoTerminal := `the .env scan of /home/x/monorepo stopped after 1,000,000 entries.
+omac cannot ask whether to continue because there is no terminal, so nothing was started.
+Fix it in /p/default.json, then start again:
+  - raise the limit:            "filesystem": {"deny_scan": {"max_entries": 2000000}}
+  - or skip folders that hold no secrets, such as build output:
+                                "filesystem": {"deny_scan": {"skip_dir_names": ["build-gradle"]}}
+To find the right limit, run ` + "`omac start`" + ` in a terminal once and choose "continue";
+omac prints the value it needed when the session ends.`
+	if got := noTerminal.Error(); got != wantNoTerminal {
+		t.Errorf("no-terminal text:\n%s\nwant:\n%s", got, wantNoTerminal)
+	}
+
+	grew := &IncompleteScanError{Roots: []string{"/home/x/monorepo", "/home/x/other"}, Limit: 2000000, ProfilePath: "/p/default.json", GrewDuringStart: true}
+	wantGrew := `/home/x/monorepo, /home/x/other grew past 2,000,000 entries while omac was starting
+(files were added during the .env scan), so nothing was started.
+Start again. If this keeps happening, raise "filesystem.deny_scan.max_entries"
+in /p/default.json.`
+	if got := grew.Error(); got != wantGrew {
+		t.Errorf("grew text:\n%s\nwant:\n%s", got, wantGrew)
+	}
+
+	noPath := &IncompleteScanError{Roots: []string{"/r"}, Limit: 5, GrewDuringStart: true}
+	if !strings.Contains(noPath.Error(), "in your sandbox profile.") {
+		t.Errorf("empty ProfilePath must read \"your sandbox profile\": %v", noPath)
 	}
 }
 

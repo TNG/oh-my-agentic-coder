@@ -46,8 +46,8 @@ func TestDenyScanLimitFromProfile(t *testing.T) {
 	env := writeEnv(t, filepath.Join(workdir, "zzz"))
 
 	_, err := ResolveGrants(profileWithScan(workdir, &sandboxprofile.DenyScan{MaxEntries: int64Ptr(1000)}), workdir, nil)
-	if err == nil || !strings.Contains(err.Error(), "1000-entry limit") {
-		t.Fatalf("limit 1000: want the 1000-entry limit error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 1,000 entries") {
+		t.Fatalf("limit 1000: want the 1,000-entry limit error, got %v", err)
 	}
 
 	g, err := ResolveGrants(profileWithScan(workdir, &sandboxprofile.DenyScan{MaxEntries: int64Ptr(5000)}), workdir, nil)
