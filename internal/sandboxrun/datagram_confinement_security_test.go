@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -354,11 +355,40 @@ func runIoUringProbe() int {
 	return failed
 }
 
-// seccompData builds a little-endian seccomp_data buffer carrying the given
-// syscall number and socket(2) arguments. Only the fields the filter reads
-// (nr, args[0..2]) are populated; the rest is zero.
-func seccompData(nr, domain, typ, proto uint32) []byte {
+// seccompArchOffset is seccomp_data.arch. Keep the test-side offset separate
+// from the production constants so both can name the same field.
+const seccompArchOffset = 4
+
+// testNativeSeccompArch returns the audit architecture matching the host's
+// syscall ABI, mirroring the value the production filter must accept.
+func testNativeSeccompArch() uint32 {
+	switch runtime.GOARCH {
+	case "386":
+		return unix.AUDIT_ARCH_I386
+	case "arm":
+		return unix.AUDIT_ARCH_ARM
+	case "arm64":
+		return unix.AUDIT_ARCH_AARCH64
+	case "riscv64":
+		return unix.AUDIT_ARCH_RISCV64
+	case "ppc64":
+		return unix.AUDIT_ARCH_PPC64
+	case "ppc64le":
+		return unix.AUDIT_ARCH_PPC64LE
+	case "s390x":
+		return unix.AUDIT_ARCH_S390X
+	case "loong64":
+		return unix.AUDIT_ARCH_LOONGARCH64
+	default:
+		return unix.AUDIT_ARCH_X86_64
+	}
+}
+
+// seccompDataForArch builds a little-endian seccomp_data buffer carrying the
+// given syscall ABI, number and socket(2) arguments.
+func seccompDataForArch(arch, nr, domain, typ, proto uint32) []byte {
 	b := make([]byte, 64)
+	binary.LittleEndian.PutUint32(b[seccompArchOffset:], arch)
 	binary.LittleEndian.PutUint32(b[offNR:], nr)
 	binary.LittleEndian.PutUint32(b[offArg0:], domain)
 	binary.LittleEndian.PutUint32(b[offArg1:], typ)
@@ -366,11 +396,16 @@ func seccompData(nr, domain, typ, proto uint32) []byte {
 	return b
 }
 
+// seccompData builds native-ABI seccomp_data for the existing matrix.
+func seccompData(nr, domain, typ, proto uint32) []byte {
+	return seccompDataForArch(testNativeSeccompArch(), nr, domain, typ, proto)
+}
+
 // evalDatagramFilter walks the production seccomp-BPF program with a
 // userspace interpreter over the supplied seccomp_data and returns the
-// action the kernel would apply. It implements exactly the instruction
-// classes the filter uses (LD|W|ABS, JMP|JEQ|K, ALU|AND|K, RET|K) so it is
-// a faithful trace of the kernel's classic-BPF evaluation for this program.
+// action the kernel would apply. It implements the classic-BPF load, jump,
+// ALU and return instruction classes the filter may use, so it is a faithful
+// trace of the kernel's evaluation for this program.
 func evalDatagramFilter(t *testing.T, data []byte) uint32 {
 	t.Helper()
 	filter := datagramSeccompFilter()
@@ -391,8 +426,44 @@ func evalDatagramFilter(t *testing.T, data []byte) uint32 {
 			} else {
 				pc += 1 + int(ins.Jf)
 			}
+		case unix.BPF_JMP | unix.BPF_JNE | unix.BPF_K:
+			if a != ins.K {
+				pc += 1 + int(ins.Jt)
+			} else {
+				pc += 1 + int(ins.Jf)
+			}
+		case unix.BPF_JMP | unix.BPF_JGT | unix.BPF_K:
+			if a > ins.K {
+				pc += 1 + int(ins.Jt)
+			} else {
+				pc += 1 + int(ins.Jf)
+			}
+		case unix.BPF_JMP | unix.BPF_JGE | unix.BPF_K:
+			if a >= ins.K {
+				pc += 1 + int(ins.Jt)
+			} else {
+				pc += 1 + int(ins.Jf)
+			}
+		case unix.BPF_JMP | unix.BPF_JSET | unix.BPF_K:
+			if a&ins.K != 0 {
+				pc += 1 + int(ins.Jt)
+			} else {
+				pc += 1 + int(ins.Jf)
+			}
 		case unix.BPF_ALU | unix.BPF_AND | unix.BPF_K:
 			a &= ins.K
+			pc++
+		case unix.BPF_ALU | unix.BPF_OR | unix.BPF_K:
+			a |= ins.K
+			pc++
+		case unix.BPF_ALU | unix.BPF_XOR | unix.BPF_K:
+			a ^= ins.K
+			pc++
+		case unix.BPF_ALU | unix.BPF_LSH | unix.BPF_K:
+			a <<= ins.K
+			pc++
+		case unix.BPF_ALU | unix.BPF_RSH | unix.BPF_K:
+			a >>= ins.K
 			pc++
 		case bpfRET:
 			return ins.K
@@ -479,5 +550,114 @@ func TestSecurityDatagramSeccompFilterMatrix(t *testing.T) {
 		case !gotAllow && k.wantAllow:
 			t.Errorf("%s: filter returned action=0x%x, want ALLOW", k.name, got)
 		}
+	}
+}
+
+// TestSecuritySeccompRejectsNonNativeSyscallABI asserts the filter only
+// evaluates syscall numbers for the ABI the binary actually uses. The same
+// number can name a different call under another ABI, so an otherwise
+// permitted number arriving with a foreign arch value must not be allowed.
+func TestSecuritySeccompRejectsNonNativeSyscallABI(t *testing.T) {
+	native := testNativeSeccompArch()
+	socket := uint32(unix.SYS_SOCKET)
+	operations := []struct {
+		name                   string
+		nr, domain, typ, proto uint32
+	}{
+		{"unix-dgram", socket, syscall.AF_UNIX, syscall.SOCK_DGRAM, 0},
+		{"read", uint32(unix.SYS_READ), 0, 0, 0},
+	}
+	for _, op := range operations {
+		data := seccompDataForArch(native, op.nr, op.domain, op.typ, op.proto)
+		if got := evalDatagramFilter(t, data); got != retAllow {
+			t.Errorf("%s under the native ABI: filter returned action=0x%x, want ALLOW", op.name, got)
+		}
+	}
+	foreignArchs := []uint32{
+		0,
+		unix.AUDIT_ARCH_I386,
+		unix.AUDIT_ARCH_X86_64,
+		unix.AUDIT_ARCH_AARCH64,
+		unix.AUDIT_ARCH_PPC64,
+	}
+	for _, arch := range foreignArchs {
+		if arch == native {
+			continue
+		}
+		for _, op := range operations {
+			data := seccompDataForArch(arch, op.nr, op.domain, op.typ, op.proto)
+			if got := evalDatagramFilter(t, data); got == retAllow {
+				t.Errorf("%s with seccomp arch 0x%x: filter allowed, want rejection", op.name, arch)
+			}
+		}
+	}
+}
+
+// TestSecuritySeccompRejectsX32SyscallBit asserts numbers in the x32 range are
+// rejected on amd64 even when the arch field claims the native ABI.
+func TestSecuritySeccompRejectsX32SyscallBit(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("the x32 syscall-number range is specific to amd64")
+	}
+	const x32SyscallBit = uint32(0x40000000)
+	native := testNativeSeccompArch()
+	socket := uint32(unix.SYS_SOCKET)
+	operations := []struct {
+		name                   string
+		nr, domain, typ, proto uint32
+	}{
+		{"unix-dgram", socket, syscall.AF_UNIX, syscall.SOCK_DGRAM, 0},
+		{"read", uint32(unix.SYS_READ), 0, 0, 0},
+	}
+	for _, op := range operations {
+		nativeData := seccompDataForArch(native, op.nr, op.domain, op.typ, op.proto)
+		if got := evalDatagramFilter(t, nativeData); got != retAllow {
+			t.Fatalf("%s baseline: filter returned action=0x%x, want ALLOW", op.name, got)
+		}
+		data := seccompDataForArch(native, op.nr|x32SyscallBit, op.domain, op.typ, op.proto)
+		if got := evalDatagramFilter(t, data); got == retAllow {
+			t.Errorf("%s with the x32 syscall bit: filter allowed, want rejection", op.name)
+		}
+	}
+}
+
+// TestSecuritySeccompAllowsNativeDatagramDenial asserts the native-ABI
+// datagram allow/deny behavior is unchanged, and that the ABI guard does not
+// let an otherwise permitted operation through under a foreign arch value.
+func TestSecuritySeccompAllowsNativeDatagramDenial(t *testing.T) {
+	native := testNativeSeccompArch()
+	socket := uint32(unix.SYS_SOCKET)
+	cases := []struct {
+		name                   string
+		nr, domain, typ, proto uint32
+		wantAllow              bool
+	}{
+		{"unix-dgram", socket, syscall.AF_UNIX, syscall.SOCK_DGRAM, 0, true},
+		{"read", uint32(unix.SYS_READ), 0, 0, 0, true},
+		{"inet-dgram", socket, syscall.AF_INET, syscall.SOCK_DGRAM, 0, false},
+		{"inet6-dgram", socket, syscall.AF_INET6, syscall.SOCK_DGRAM, 0, false},
+		{"inet-raw", socket, syscall.AF_INET, syscall.SOCK_RAW, 0, false},
+		{"iouring-setup", uint32(unix.SYS_IO_URING_SETUP), 0, 0, 0, false},
+		{"iouring-enter", uint32(unix.SYS_IO_URING_ENTER), 0, 0, 0, false},
+		{"iouring-register", uint32(unix.SYS_IO_URING_REGISTER), 0, 0, 0, false},
+	}
+	for _, k := range cases {
+		data := seccompDataForArch(native, k.nr, k.domain, k.typ, k.proto)
+		got := evalDatagramFilter(t, data)
+		gotAllow := got == retAllow
+		switch {
+		case gotAllow && !k.wantAllow:
+			t.Errorf("%s: filter allowed (action=0x%x), want EPERM", k.name, got)
+		case !gotAllow && k.wantAllow:
+			t.Errorf("%s: filter returned action=0x%x, want ALLOW", k.name, got)
+		}
+	}
+	foreign := uint32(unix.AUDIT_ARCH_I386)
+	if foreign == native {
+		foreign = uint32(unix.AUDIT_ARCH_PPC64)
+	}
+	data := seccompDataForArch(foreign, socket, syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if got := evalDatagramFilter(t, data); got == retAllow {
+		t.Errorf("unix-dgram with seccomp arch 0x%x: filter allowed, want rejection", foreign)
 	}
 }

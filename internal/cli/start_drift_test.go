@@ -21,13 +21,22 @@ import (
 // skills installed under the developer's actual ~/.config/opencode, and so
 // commands that resolve the audit trail via XDG_STATE_HOME (see
 // internal/audit.DefaultDir) don't read a real host-level audit.jsonl.
-// All tests that don't deliberately stage user-global content should call
-// this; otherwise their assertions become machine-dependent.
+// XDG_RUNTIME_DIR is a short temp dir because the bridge socket lives beneath
+// it on Linux and long test names would push the socket path past the kernel's
+// Unix socket limit. All tests that don't deliberately stage user-global
+// content should call this; otherwise their assertions become
+// machine-dependent.
 func isolateHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	runtimeDir, err := os.MkdirTemp("/tmp", "omac-runtime-")
+	if err != nil {
+		t.Fatalf("MkdirTemp for XDG_RUNTIME_DIR: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(runtimeDir) })
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 }
 
 // stageWorkdir creates a workdir layout suitable for the drift
