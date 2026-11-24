@@ -571,8 +571,7 @@ func denyScanRoots(p *sandboxprofile.Profile, workdir string) ([]string, error) 
 // byName when the sandbox can hide files there by name (macOS, see
 // denyByName): the profile then covers every match, listed or not.
 // Other incomplete roots are returned in incomplete; the caller decides
-// whether to refuse (refuseIncompleteScan) instead of proceeding with a
-// partial protected set.
+// whether to ask, refuse or proceed with a partial protected set.
 //
 // A non-nil cache carries state between passes (see denyScanCache): with
 // one, out lists only the matches from directories actually re-read this
@@ -642,16 +641,6 @@ func denyGlobs(userDeny, baselineBasenames, overrideDeny []string) []string {
 	return globs
 }
 
-// refuseIncompleteScan is the error for the first root whose scan did not
-// finish and cannot be hidden by name.
-func refuseIncompleteScan(incomplete []rootScan, globs, overrideDeny []string, limit int64) error {
-	for _, scan := range incomplete {
-		_, reason := canDenyByName(scan.root, globs, overrideDeny)
-		return fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit; refusing to launch with an incomplete protected set%s", scan.root, limit, reason)
-	}
-	return nil
-}
-
 // nameDeny hides, below each of roots, every file or folder whose name
 // matches one of globs, without listing them first.
 type nameDeny struct {
@@ -661,7 +650,7 @@ type nameDeny struct {
 // denyByName reports whether the sandbox can hide files by name below a
 // folder: Seatbelt on macOS matches paths with regular expressions. The
 // Linux backends can only hide paths that exist at launch, so there a
-// folder too large to scan still refuses launch. Tests on Linux switch it
+// folder too large to scan still needs a decision from the user. Tests on Linux switch it
 // on to cover the shared code.
 var denyByName atomic.Bool
 

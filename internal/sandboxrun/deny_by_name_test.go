@@ -103,9 +103,13 @@ func TestResolveGrantsHidesByNameWhenScanIsIncomplete(t *testing.T) {
 		t.Errorf("profile lacks the name rule for %s", workdir)
 	}
 
+	scan, err := ScanProtected(prof, workdir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stop := make(chan struct{})
 	close(stop)
-	if err := WatchNewProtected(prof, workdir, time.Hour, func([]string) {}, stop, WatchTuning{}); err != nil {
+	if err := WatchNewProtected(scan, prof, time.Hour, func([]string) {}, stop, WatchTuning{}); err != nil {
 		t.Errorf("the mid-session watch must start too: %v", err)
 	}
 
@@ -142,11 +146,15 @@ func TestWatchNewProtectedStopsWhenFolderOutgrowsCap(t *testing.T) {
 		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
 		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
 	}
+	scan, err := ScanProtected(prof, workdir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stop := make(chan struct{})
 	defer close(stop)
 	done := make(chan error, 1)
 	go func() {
-		done <- WatchNewProtected(prof, workdir, 10*time.Millisecond, func([]string) {}, stop, WatchTuning{})
+		done <- WatchNewProtected(scan, prof, 10*time.Millisecond, func([]string) {}, stop, WatchTuning{})
 	}()
 
 	populateLargeTree(t, workdir)

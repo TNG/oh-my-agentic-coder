@@ -131,9 +131,13 @@ func startProtectedWatch(a audit.Auditor, checker *sandboxrun.ProtectedPathSet, 
 	}
 	go func() {
 		defer close(w.exited)
-		if err := sandboxrun.WatchNewProtected(profile, workdir, midsessionProtectedWatchInterval, func(paths []string) {
-			w.handle(paths, checker, a)
-		}, w.stop, tuning); err != nil {
+		scan, err := sandboxrun.ScanProtected(profile, workdir, plan.PolicyPath, nil)
+		if err == nil {
+			err = sandboxrun.WatchNewProtected(scan, profile, midsessionProtectedWatchInterval, func(paths []string) {
+				w.handle(paths, checker, a)
+			}, w.stop, tuning)
+		}
+		if err != nil {
 			w.recordNotice(fmt.Sprintf("protected-file watch not started: %v", err))
 		}
 	}()
