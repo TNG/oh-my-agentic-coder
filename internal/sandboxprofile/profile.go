@@ -89,6 +89,59 @@ type Workdir struct {
 	Access string `json:"access,omitempty"`
 }
 
+// DefaultDenyScanMaxEntries is the per-root entry limit of the .env scan
+// when the profile sets none.
+const DefaultDenyScanMaxEntries int64 = 1_000_000
+
+// DenyScan configures the .env scan. The two json:"-" fields carry the
+// decision the parent process made, passed in through internal flags.
+type DenyScan struct {
+	MaxEntries       *int64   `json:"max_entries,omitempty"`
+	SkipDirNames     []string `json:"skip_dir_names,omitempty"`
+	AcceptIncomplete []string `json:"-"`
+	Decided          bool     `json:"-"`
+
+	baseLimit int64
+}
+
+// DenyScanLimit is the entry limit per scan root: the --deny-scan-limit
+// override if one was merged, else the profile value, else the default.
+func (p *Profile) DenyScanLimit() int64 {
+	if d := p.Filesystem.DenyScan; d != nil && d.MaxEntries != nil {
+		return *d.MaxEntries
+	}
+	return DefaultDenyScanMaxEntries
+}
+
+// DenyScanBaseLimit is the profile's limit ignoring any --deny-scan-limit override.
+func (p *Profile) DenyScanBaseLimit() int64 {
+	if d := p.Filesystem.DenyScan; d != nil && d.baseLimit > 0 {
+		return d.baseLimit
+	}
+	return p.DenyScanLimit()
+}
+
+func (p *Profile) DenyScanSkipDirNames() []string {
+	if d := p.Filesystem.DenyScan; d != nil {
+		return d.SkipDirNames
+	}
+	return nil
+}
+
+func (p *Profile) DenyScanAcceptIncomplete() []string {
+	if d := p.Filesystem.DenyScan; d != nil {
+		return d.AcceptIncomplete
+	}
+	return nil
+}
+
+// DenyScanDecided reports whether the parent process already made the scan
+// decision, so the scan must not ask again.
+func (p *Profile) DenyScanDecided() bool {
+	d := p.Filesystem.DenyScan
+	return d != nil && d.Decided
+}
+
 // Filesystem lists path grants. Entries may be directories or files and
 // support ~ and $VAR expansion (see Expand).
 type Filesystem struct {
@@ -110,6 +163,8 @@ type Filesystem struct {
 	//     denied wherever that filename appears inside a granted tree,
 	//     the current working directory included.
 	Deny []string `json:"deny,omitempty"`
+	// DenyScan tunes the scan that finds .env files to mask.
+	DenyScan *DenyScan `json:"deny_scan,omitempty"`
 	// DenyLiteral holds absolute paths denied exactly as written: no ~ or
 	// $VAR expansion and no glob matching. omac fills it from the
 	// --deny-literal flag for paths it found on disk, whose names may
@@ -429,6 +484,22 @@ func (p *Profile) Validate() error {
 		if IsBasenameGlob(d) {
 			if _, err := filepath.Match(d, "probe"); err != nil {
 				return fmt.Errorf("sandbox profile: filesystem.deny %q is not a valid glob: %w", d, err)
+			}
+		}
+	}
+	if d := p.Filesystem.DenyScan; d != nil {
+		if d.MaxEntries != nil && *d.MaxEntries <= 0 {
+			if *d.MaxEntries == 0 {
+				return fmt.Errorf("sandbox profile: filesystem.deny_scan.max_entries is 0, but it must be a positive number such as 2000000. Remove the field to use the default of 1,000,000.")
+			}
+			return fmt.Errorf("sandbox profile: filesystem.deny_scan.max_entries is %d, but it must be a positive number such as 2000000. Remove the field to use the default of 1,000,000.", *d.MaxEntries)
+		}
+		for i, name := range d.SkipDirNames {
+			if name == "" {
+				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is empty. Remove it or enter a folder name such as \"build-gradle\".", i)
+			}
+			if strings.Contains(name, "/") {
+				return fmt.Errorf("sandbox profile: filesystem.deny_scan.skip_dir_names[%d] is %q, but each entry must be a single folder name without \"/\", such as \"build-gradle\". omac skips that name at any depth.", i, name)
 			}
 		}
 	}
