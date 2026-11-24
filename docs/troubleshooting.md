@@ -215,6 +215,17 @@ Fix: run Gradle without the daemon — `./gradlew --no-daemon` (or set `org.grad
 
 On macOS only, if you must keep the daemon, you can grant loopback with `"network": { "open_port": [0] }` in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`) — `0` means "any loopback port" and external TCP egress stays kernel-blocked. On Linux there is no equivalent that keeps kernel enforcement, so use `--no-daemon`.
 
+### The .env scan of a folder stopped after N entries
+
+omac looks for `.env` files in every folder it grants, to hide them from the agent. A folder with more files than the limit (1,000,000 by default) cannot be fully checked. In a terminal, omac asks whether to continue scanning, start with incomplete protection, or abort. Without a terminal it does not start.
+
+Fix it in the sandbox grants file (`~/.config/omac/sandbox-profiles/default.json`), then start again:
+
+- Raise the limit: `{"filesystem": {"deny_scan": {"max_entries": 2000000}}}`
+- Or skip folders that hold no secrets, such as build output: `{"filesystem": {"deny_scan": {"skip_dir_names": ["build-gradle"]}}}`
+
+To find the right limit, run `omac start` in a terminal once and choose "continue". When the session ends, omac prints the value it needed. See [Security model](./security.md#filesystem) for what "start with incomplete protection" leaves readable.
+
 ### Undo a network allow/deny decision
 
 When you answer the network prompt, "session" decisions are held in memory only, while "permanent" decisions are written to `sandbox-profiles/default.pages.json`.

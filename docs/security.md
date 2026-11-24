@@ -144,26 +144,43 @@ granting it is how the agent gets to run them, and it is far too large to
 list at launch. Nix makes everything in the store readable by every user on
 the machine, so a secret there is not protected by hiding it.
 
-Some directories have more files and folders than omac lists at launch.
+Some directories have more files and folders than omac lists at launch
+(1,000,000 per directory by default; `filesystem.deny_scan.max_entries` in
+the [sandbox grants file](./configuration.md#sandbox-grants) changes it).
 What happens then depends on the system:
 
-- **Linux:** launch stops rather than run with a partially protected set.
+- **Linux:** omac asks what to do, see below.
 - **macOS:** launch goes ahead. Instead of listing the directory, a sandbox
   rule hides every file or folder in it whose name matches (for example any
   `.env`, however deep). This rule also covers the skipped trees above and
   files created during the session. omac notes the directory in the sandbox
   log. Upper and lower case count as the same, as on the macOS disk.
 
-  Launch still stops in two cases the rule cannot express: you made one such
-  file readable with an absolute `override_deny` path inside that directory
-  (the rule would hide it too), or a `filesystem.deny` pattern uses `[...]`
-  or `\` (for example `*.[pk]em`).
+  The rule cannot be used in two cases, so omac asks what to do there as
+  well: you made one such file readable with an absolute `override_deny` path
+  inside that directory (the rule would hide it too), or a `filesystem.deny`
+  pattern uses `[...]` or `\` (for example `*.[pk]em`).
+
+When omac asks, you can choose:
+
+- **continue scanning:** omac lists another 1,000,000 entries (or your
+  `max_entries`) and asks again if that is still not enough.
+- **start with incomplete protection:** the session starts, but a `.env` in
+  the part omac did not list stays readable for the agent. Use this only if
+  you know that part holds no secrets.
+- **abort:** nothing starts. This is the default, also for an empty answer.
+
+Without a terminal, omac cannot ask and does not start; it prints how to
+raise the limit or skip folders.
 
   **During the session:** the masking above is fixed at launch — a `.env`
   file created later is *not* masked, because the sandbox rules cannot be
   changed while the session runs. The omac parent therefore re-scans the
   same roots every 10 seconds and warns you when a new protected file
   appears; the warning tells you that only a restart restores protection.
+  The watch does not re-scan a directory you started with incomplete
+  protection. If a directory outgrows the limit during the session, the
+  watch stops and says so; raise `max_entries` to keep it running.
   The watch warns, it does not block or mask. Detections from one scan
   arrive as one decision dialog, not one popup per file. It lists up to
   eight paths and offers "Suppress warnings for this path" by exact path,
