@@ -122,21 +122,40 @@ omac gives the agent access only to what it needs:
 
 Even when you grant broader access, certain paths are always blocked:
 `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, and `.env` /
-`.envrc` files anywhere in the project. Blocked also means the agent cannot
-connect to a Unix socket inside such a path, for example Docker Desktop's
-`~/.docker/run/docker.sock` or the GnuPG agent in `~/.gnupg`, whatever the
-network mode. On macOS this holds even if you grant a folder inside the
-protected path; to let the agent reach such a socket, add the protected
-folder to `filesystem.override_deny` and grant only the socket's folder, for
-example `"allow_unix_dir": ["~/.docker/run"]`. The protected folder's other
-files, such as the registry credentials in `~/.docker/config.json`, then
-lose their protection if another grant covers them. On Linux, a grant for a
-folder inside a protected path makes that folder reachable.
+`.envrc` files anywhere in the project. Blocked means the agent can neither
+read nor change anything there, nor run a program stored there, nor connect
+to a Unix socket there, such as the GnuPG agent in `~/.gnupg`. This holds in
+every network mode.
+
 You can block additional file patterns by adding glob entries to
 `filesystem.deny` in `~/.config/omac/sandbox-profiles/default.json` — for
 example, `"*.key"` blocks all files ending in `.key` inside any directory the
 agent can access. See [Configuration](./configuration.md) for how to edit the
 sandbox profile.
+
+On macOS, a grant does not open a Unix socket that lies in a protected path.
+To let the agent connect, also list each protected path that covers the socket
+in `filesystem.override_deny`. Docker Desktop is the common case: its socket
+is `~/.docker/run/docker.sock`, and `/var/run/docker.sock` is a link to it.
+Both `~/.docker` and `/var/run/docker.sock` are protected, so the profile
+needs both:
+
+```json
+"filesystem": {
+  "override_deny": ["~/.docker", "/var/run/docker.sock"],
+  "allow_unix_dir": ["~/.docker/run"]
+}
+```
+
+`override_deny` removes the protection from the whole folder, not only from
+the socket. Here the registry credentials in `~/.docker/config.json` become
+readable as soon as another grant covers them, for example a grant for your
+home folder. Grant only the socket's folder, as above. Keep in mind that the
+Docker socket lets the agent start containers that mount any host folder
+Docker can reach.
+
+On Linux, a grant for a folder inside a protected path makes that folder
+reachable without `override_deny`.
 
 The `.env` / `.envrc` scan covers your working directory and every directory
 you grant explicitly, but it skips large dependency, build, and cache trees:
