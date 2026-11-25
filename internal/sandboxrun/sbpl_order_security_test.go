@@ -41,10 +41,15 @@ func TestSecurityNoAllowAfterProtectedDenies(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if len(res) != len(g.NameDenyGlobs) {
+					t.Fatalf("want one regex per glob %v, got %v", g.NameDenyGlobs, res)
+				}
 				filters := map[string]int{
 					fmt.Sprintf("(subpath %q)", protected):                lastAllow,
-					fmt.Sprintf("(regex #\"%s\")", res[0]):                lastAllow,
 					fmt.Sprintf("(regex #\"%s\")", sbplKeychainNameRegex): lastOtherAllow,
+				}
+				for _, re := range res {
+					filters[fmt.Sprintf("(regex #\"%s\")", re)] = lastAllow
 				}
 				for filter, last := range filters {
 					for _, op := range sbplDeniedOps {
@@ -114,7 +119,7 @@ func securityTestGrants(home, protected, mode, enforcement string) *Grants {
 		AllowPaths:      []string{home, protected + "/run/docker.sock"},
 		ProtectedPaths:  []string{protected},
 		NameDenyRoots:   []string{home},
-		NameDenyGlobs:   []string{".env"},
+		NameDenyGlobs:   []string{".env", "*.pem"},
 		NetworkMode:     mode,
 		Enforcement:     enforcement,
 		ProxyPort:       54321,

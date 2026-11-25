@@ -214,14 +214,7 @@ func TestIntegrationAllowUnixDirGrantsSocketAccess(t *testing.T) {
 	}
 	defer os.RemoveAll(sockDir)
 	sock := filepath.Join(sockDir, "daemon.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "unixdir-ok")
-	}))
+	serveUnixSocket(t, sock, "unixdir-ok")
 
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -258,14 +251,7 @@ func TestIntegrationProtectedFolderRefusesSocketConnect(t *testing.T) {
 	}
 	defer os.RemoveAll(sockDir)
 	sock := filepath.Join(sockDir, "daemon.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "protected-socket-reached")
-	}))
+	serveUnixSocket(t, sock, "protected-socket-reached")
 
 	for _, tc := range []struct {
 		name        string
@@ -438,14 +424,7 @@ func TestIntegrationUnixSocketUnderNetworkDeny(t *testing.T) {
 	}
 	defer os.RemoveAll(sockDir)
 	sock := filepath.Join(sockDir, "bridge.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "unix-ok")
-	}))
+	serveUnixSocket(t, sock, "unix-ok")
 
 	wd := t.TempDir()
 	p := &sandboxprofile.Profile{
@@ -551,4 +530,18 @@ func TestIntegrationDeniedFileInGrantedDir(t *testing.T) {
 			fx.check(t, out, withFile)
 		})
 	}
+}
+
+// serveUnixSocket answers every HTTP request on the Unix socket at sock
+// with body, until the test ends.
+func serveUnixSocket(t *testing.T, sock, body string) {
+	t.Helper()
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
 }

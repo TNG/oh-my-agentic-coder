@@ -19,14 +19,10 @@ import (
 )
 
 // TestIntegrationUsabilityMatrix runs what a session typically does under
-// every network mode and enforcement the profile generator supports, and
-// prints one line per probe:
-//
-//	MATRIX filtered+proxy/kernel/unix-connect-unixdir allowed
-//
-// Comparing these lines between two commits shows every access a change
-// opens or closes. Each probe also has an expected result per scenario (see
-// usabilityProbe), and the test fails where the result differs.
+// every network mode and enforcement the profile generator supports. Each
+// probe has an expected result per scenario (see usabilityProbe), and the
+// test fails where the result differs. It also logs one MATRIX line per
+// probe; docs/contributing/testing.md says how to compare them.
 func TestIntegrationUsabilityMatrix(t *testing.T) {
 	fx := newUsabilityFixture(t)
 	// Every probe must succeed outside the sandbox, so a "denied" row can
@@ -46,7 +42,7 @@ func TestIntegrationUsabilityMatrix(t *testing.T) {
 					result = usabilityDenied
 					t.Logf("%s denied: %v: %s", pr.name, err, out)
 				}
-				fmt.Printf("MATRIX %s/%s/%s %s\n", sc.name, sc.enforcement, pr.name, result)
+				t.Logf("MATRIX %s/%s/%s %s", sc.name, sc.enforcement, pr.name, result)
 				if want := pr.expect(sc); result != want {
 					t.Errorf("%s: got %s, want %s", pr.name, result, want)
 				}
@@ -86,6 +82,7 @@ func usabilityScenarios() []usabilityScenario {
 const (
 	usabilityAllowed = "allowed"
 	usabilityDenied  = "denied"
+	usabilityBody    = "usability-ok"
 )
 
 type usabilityProbe struct {
@@ -170,7 +167,7 @@ func newUsabilityFixture(t *testing.T) *usabilityFixture {
 		}
 	}
 	for _, sock := range []string{fx.unixSock(), fx.grantedSock(), fx.protSock()} {
-		usabilityServeUnix(t, sock)
+		serveUnixSocket(t, sock, usabilityBody)
 	}
 	if err := os.Symlink(fx.protSock(), filepath.Join(fx.workdir, "p.sock")); err != nil {
 		t.Fatal(err)
@@ -301,16 +298,6 @@ func (fx *usabilityFixture) run(t *testing.T, g *Grants, pr usabilityProbe) (str
 	return string(out), err
 }
 
-func usabilityServeUnix(t *testing.T, sock string) {
-	t.Helper()
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { l.Close() })
-	go http.Serve(l, usabilityHandler())
-}
-
 func usabilityServeTCP(t *testing.T) int {
 	t.Helper()
 	srv := httptest.NewServer(usabilityHandler())
@@ -319,7 +306,7 @@ func usabilityServeTCP(t *testing.T) int {
 }
 
 func usabilityHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "usability-ok") })
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, usabilityBody) })
 }
 
 func usabilityFreePort(t *testing.T) int {

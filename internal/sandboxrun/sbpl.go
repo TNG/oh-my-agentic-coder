@@ -21,7 +21,10 @@ const sbplKeychainNameRegex = `\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$`
 // Seatbelt is last-match-wins, so the denies come after every allow:
 // allows (files, devices, network) -> keychain name-deny -> read-only
 // root-store re-allow -> secret-name denies (.env, ...) -> protected-path
-// denies. The root-store re-allow is the one rule allowed to undo a deny.
+// denies. The root-store re-allow is the one allow that follows a deny. It
+// undoes only the keychain name-deny before it: the secret-name and
+// protected-path denies come later, so a user's deny that covers the root
+// store wins.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -119,6 +122,7 @@ func GenerateSBPL(g *Grants) string {
 	b.WriteString(generateSBPLNetwork(g))
 	b.WriteString("\n")
 
+	// --- Denies (last, so no allow can reopen them) ---
 	// securityd is reachable (see the mach section), so it decrypts any
 	// unlocked keychain whose file the process can read. Keychains outside
 	// the protected folders (e.g. a CI signing keychain in /tmp) must be
