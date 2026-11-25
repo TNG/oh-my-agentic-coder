@@ -7,7 +7,7 @@
 
 [![Platforms](https://img.shields.io/badge/platforms-Ubuntu%2024.04%20%7C%20macOS%2015%20%7C%20WSL2-blue)](#supported-osharnesses)
 [![Harnesses](https://img.shields.io/badge/harnesses-opencode%20v1%20%7C%20claude--code%20%7C%20copilot-blue)](#supported-osharnesses)
-[![Experimental harnesses](https://img.shields.io/badge/experimental-opencode%20v2%20%7C%20codex%20%7C%20pi%20%7C%20codewhale-orange)](#supported-osharnesses)
+[![Experimental harnesses](https://img.shields.io/badge/experimental-opencode%20v2%20%7C%20pi%20%7C%20codewhale-orange)](#supported-osharnesses)
 
 ## What it is
 
@@ -32,11 +32,13 @@ Please use the internal [omac-tng-installer repo](https://bitbucket.int.tngtech.
 |--------------------------------|------------------------------|
 | **OpenCode v1 CLI** and **Desktop** | Linux Ubuntu 24.04, macOS 15 |
 | **Claude Code**                | Linux Ubuntu 24.04, macOS 15 |
+| **Codex**                      | Linux Ubuntu 24.04           |
 | **Copilot**                    | Linux Ubuntu 24.04, macOS 15 |
 | **OpenCode v2** (experimental) | Linux Ubuntu 24.04, macOS 15 |
-| **Codex** (experimental)       | Linux Ubuntu 24.04           |
 | **Pi** (experimental)          | Linux Ubuntu 24.04, macOS 15 |
 | **CodeWhale** (experimental)   | Linux Ubuntu 24.04, macOS 15 |
+
+OpenCode, Claude Code, Codex and Copilot are the priority harnesses. Experimental harnesses may lack features, and where a feature is missing omac degrades gracefully and securely (a warning, or a refusal to start when it cannot be made safe).
 
 Windows is supported only via WSL2 (Ubuntu 24.04).
 

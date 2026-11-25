@@ -33,6 +33,33 @@ API documentation or licensing.
 In every fix round, check documentation accuracy and comment placement.
 Put usage guidance in documentation and fix history in the PR.
 
+## Harness support and degradation
+
+omac supports four harnesses with priority: OpenCode (v1 CLI and Desktop),
+Claude Code, Codex and GitHub Copilot CLI. Every feature is designed, built
+and tested for these four first. Everything else (OpenCode v2, Pi, CodeWhale)
+is experimental: it may lag behind, and a feature that does not work there
+must not hold up or complicate a change for the priority four. Keep README
+and `docs/README.md` in line when the set changes.
+
+When a feature is not implemented for a harness, or the harness cannot do
+what the feature needs, degrade gracefully and securely:
+- Keep the rest of the session working where that is safe. Never silently
+  skip a protection: say what is missing, in a warning the user will see.
+- Secure means the protection is never weaker than documented. Prefer, in
+  this order: (1) turn the harness's own unsafe capability off, with an
+  override or disable flag in the launch command or a config omac passes,
+  and print a warning; (2) if the harness offers no reliable way to turn it
+  off, refuse to start and name what the user has to resolve, together with
+  the flag or setting that lets them accept the risk on purpose; (3) never
+  fall back to a quiet "allow".
+- Example (MCP): a harness that cannot suppress its own MCP config must not
+  load unreviewed servers next to the registered ones. Disable them with the
+  harness's flag or override and warn; if that is not possible, refuse to
+  start until the user removes the entry or passes
+  `--mcp-unregistered=allow`.
+- Document the degradation in the user docs of the feature, per harness.
+
 ## Communication
 
 In communication with the user, as well as when adding comments to the code

@@ -306,7 +306,7 @@ For a server that needs a credential, the better way is to register it, so its s
 
 ## Other harnesses
 
-omac supports six harnesses. OpenCode and Claude Code are described above. Codex, Copilot CLI, pi and CodeWhale can receive registered servers too (see [What omac does at launch](#what-omac-does-at-launch)), but none of them has a documented way to turn off its own MCP config completely, so for these four `ignore` is not available: it falls back to `refuse` with `ignore is not available for <harness>, which cannot suppress its own MCP config; using refuse`, and `refuse` is the default. Only Claude Code supports `ignore`. omac never edits the harness's own config files.
+omac supports six harnesses. OpenCode, Claude Code, Codex and Copilot CLI are the priority harnesses; pi and CodeWhale are experimental and may lag behind. For a harness that cannot suppress its own MCP config omac does not load those entries silently: it refuses to start (the default `refuse`) until you remove them or accept them with `--mcp-unregistered`. OpenCode and Claude Code are described above. Codex, Copilot CLI, pi and CodeWhale can receive registered servers too (see [What omac does at launch](#what-omac-does-at-launch)), but none of them has a documented way to turn off its own MCP config completely, so for these four `ignore` is not available: it falls back to `refuse` with `ignore is not available for <harness>, which cannot suppress its own MCP config; using refuse`, and `refuse` is the default. Only Claude Code supports `ignore`. omac never edits the harness's own config files.
 
 | Harness | How the registered servers arrive | Why `ignore` is not available |
 |---|---|---|
