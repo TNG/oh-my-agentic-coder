@@ -5,7 +5,10 @@ description: The WHY behind omac's architecture
 
 ## Key decisions
 
-Larger decisions with the options that were considered are recorded as ADRs (architecture decision records) in [`docs/adr/`](../adr/0001-optional-route-consent.md).
+Larger decisions with the options that were considered are recorded as ADRs (architecture decision records):
+
+- [ADR 0001: Optional consent per sidecar route](../adr/0001-optional-route-consent.md)
+- [ADR 0002: External execution through skill sidecars](../adr/0002-external-execution-through-skill-sidecars.md)
 
 ### OS sandbox primitives, not a custom layer
 
