@@ -50,12 +50,16 @@ func TestProfileFixturesParseAndResolve(t *testing.T) {
 		{
 			file: "docker_socket_recipe.json",
 			check: func(t *testing.T, p *sandboxprofile.Profile, g *Grants) {
-				if !slices.Contains(g.UnixSocketDirs, "/var/run") {
+				dotDocker, err := sandboxprofile.ExpandPath("~/.docker")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Contains(g.UnixSocketDirs, filepath.Join(dotDocker, "run")) {
 					t.Errorf("allow_unix_dir not resolved into UnixSocketDirs: %v", g.UnixSocketDirs)
 				}
-				for _, p := range g.ProtectedPaths {
-					if p == "/var/run/docker.sock" {
-						t.Errorf("override_deny should have punched a hole for docker.sock: %v", g.ProtectedPaths)
+				for _, lifted := range []string{dotDocker, "/var/run/docker.sock"} {
+					if slices.Contains(g.ProtectedPaths, lifted) {
+						t.Errorf("override_deny should have lifted the protection of %s: %v", lifted, g.ProtectedPaths)
 					}
 				}
 			},

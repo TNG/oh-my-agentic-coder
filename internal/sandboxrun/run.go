@@ -105,9 +105,6 @@ func Run(opts Options) int {
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}
-	if runtime.GOOS == "darwin" {
-		warnSocketsClosedByProtection(stderr, grants)
-	}
 	den := resolvedDenial(merged.Denial)
 	grants.DenialText = den.MarkerFile
 	grants.DenialDirName = den.MarkerDirName
@@ -138,6 +135,10 @@ func Run(opts Options) int {
 		fmt.Fprintln(stderr, "omac sandbox: LEARN MODE — filesystem access is unrestricted this session; folders used will be offered for the profile at exit")
 		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
+	}
+	if runtime.GOOS == "darwin" {
+		builtInProtected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
+		warnSocketsClosedByProtection(stderr, grants, builtInProtected)
 	}
 
 	// Injected child env. The validated cache redirect is recreated here
