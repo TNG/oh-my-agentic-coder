@@ -32,6 +32,7 @@ const (
 	shellCallLimit       = 5 * time.Second
 	shellCallCount       = 3
 	ptyDaemonWarning     = "process daemon unavailable"
+	openCodeLogProof     = "cli starting"
 	opencodeServeTimeout = 90 * time.Second
 )
 
@@ -41,6 +42,9 @@ const (
 // falls back after 0.2 s with a warning in OpenCode's log, so both the
 // duration and the log are checked. Model-free and secret-free.
 func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
+	if name := os.Getenv("E2E_HARNESS"); name != "" && name != "opencode" {
+		t.Skipf("E2E_HARNESS=%s: this test drives OpenCode only", name)
+	}
 	if nestedInOmacSandbox() {
 		t.Skip("nested runs use --no-sandbox, which would not exercise the sandbox's socket rules")
 	}
@@ -100,7 +104,7 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 	})
 
 	serverLogs := func() string {
-		return stdout.String() + stderr.String() + openCodeLogFiles(home)
+		return stdout.String() + stderr.String() + openCodeLogFiles(openCodeLogDir(home))
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
@@ -122,7 +126,12 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 		}
 	}
 
-	if logs := serverLogs(); strings.Contains(logs, ptyDaemonWarning) {
+	logDir := openCodeLogDir(home)
+	openCodeLog := openCodeLogFiles(logDir)
+	if !strings.Contains(openCodeLog, openCodeLogProof) {
+		t.Fatalf("could not observe OpenCode's log at %s: it is empty or lacks %q\n%s", logDir, openCodeLogProof, listDir(logDir))
+	}
+	if logs := stdout.String() + stderr.String() + openCodeLog; strings.Contains(logs, ptyDaemonWarning) {
 		t.Errorf("OpenCode logged %q: its shell helper socket is blocked by the sandbox\n%s", ptyDaemonWarning, tailLines(logs, 40))
 	}
 }
@@ -174,9 +183,25 @@ func waitForOpenCodeHTTP(client *http.Client, baseURL, password string, waitCh <
 	}
 }
 
-func openCodeLogFiles(home string) string {
+func openCodeLogDir(home string) string {
+	return filepath.Join(home, ".local", "share", "opencode", "log")
+}
+
+func listDir(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Sprintf("listing %s: %v", dir, err)
+	}
 	var b strings.Builder
-	logDir := filepath.Join(home, ".local", "share", "opencode", "log")
+	fmt.Fprintf(&b, "contents of %s:\n", dir)
+	for _, e := range entries {
+		fmt.Fprintf(&b, "  %s\n", e.Name())
+	}
+	return b.String()
+}
+
+func openCodeLogFiles(logDir string) string {
+	var b strings.Builder
 	_ = filepath.WalkDir(logDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
