@@ -40,6 +40,6 @@ omac redirects tool caches (`npm`, `pip`, `cargo`, …) to an isolated directory
 
 This only affects users who write their own nono sandbox profile. When authoring one, make sure it does not broad-grant `~/.cache`. See [Cache](./cache.md) for context on what omac's cache isolation does.
 
-## OpenCode shell helper
+## Shell commands in OpenCode
 
-With nono, omac does not set up a socket folder for OpenCode's shell helper; grant the helper's folder in your nono profile.
+With nono, omac does not set up a folder for the helper that OpenCode uses to run shell commands. Set `OPENCODE_PTY_SOCKET_DIR` to a folder of your own and grant that folder in your nono profile, rather than OpenCode's shared default folder `/tmp/opencode-pty-<uid>` (see [Security model](../security.md#filesystem) for why).
