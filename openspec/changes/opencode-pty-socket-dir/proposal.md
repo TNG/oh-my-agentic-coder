@@ -134,15 +134,19 @@ All decisions below were made with the maintainer.
   message. The host value points at a folder the session cannot connect to.
 - **A profile that blocks the variable stops the launch.** If the user's
   profile lists the variable in `environment.deny_vars`, for example through
-  `OPENCODE_*`, omac refuses to start with an error that names the variable.
-  Continuing would bring the stall back without a hint. The variable joins the
-  existing check `openCodePinDenied`
-  (`internal/cli/opencode_v2_service.go`), which already stops such profiles
+  `OPENCODE_*`, omac refuses to start with an error that names the matching
+  entry and the variable. Continuing would bring the stall back without a
+  hint. A separate check, `ptySocketDirDenied` in
+  `internal/cli/pty_socket_dir.go`, does this for every OpenCode launch in the
+  built-in sandbox. The existing check `openCodePinDenied`
+  (`internal/cli/opencode_v2_service.go`) is unchanged and still runs only
   for OpenCode 2.x.
-- **No cleanup of leftovers after a crash.** If omac is killed, the folder
-  stays until `/tmp` is emptied. It holds only socket files. The existing
-  session temp folder has the same gap; a sweep would have to cover both and
-  is not part of this change.
+- **No cleanup of leftovers after a crash.** Every exit that omac controls
+  removes the folder, including the abort after a failed write to a strict
+  audit log. If omac is killed or crashes, the folder stays until `/tmp` is
+  emptied. It holds only socket files. The existing session temp folder has
+  the same gap; a sweep would have to cover both and is not part of this
+  change.
 - **No change to the rule generators.** `--allow-unix-dir` writes only a
   connect rule. The helper may listen in the folder because every built-in
   launch passes `--open-port` for omac's own port, and one port grant
@@ -178,7 +182,7 @@ chosen design costs.
 | Reuse #513 for the generator gap | Fix protected-path socket connects here | It would have duplicated a pull request that was open at the time | None since #513 is merged |
 | One pull request | Split the stall fix from the protected path | Decided by the maintainer: fix and hardening ship together | None since #513 is merged |
 | Generic launch warning for a leftover workaround grant | Own wording that tells the user to delete the grant and does not mention `override_deny` | A special case for the few users who copied the #520 workaround. Reopening the folder still takes a deliberate second step | The warning from #513 names `override_deny` as the way to open the folder. The release notes tell these users to delete the grant |
-| No sweep of leftover folders | Remove stale `/tmp/omac-pty-*` at launch | A wrong liveness check would delete a running session's folder | Empty folders remain after a crash until `/tmp` is emptied |
+| No sweep of leftover folders | Remove stale `/tmp/omac-pty-*` at launch | A wrong liveness check would delete a running session's folder | Empty folders remain after omac is killed or crashes, until `/tmp` is emptied |
 
 ## Capabilities
 
@@ -195,26 +199,28 @@ must be archived before this change is archived.
 
 ## Impact
 
-- **`internal/config/harness.go`**: the OpenCode harness declares that it needs
-  a socket folder and under which variable. `OPENCODE_PTY_SOCKET_DIR` joins its
-  `SandboxEnvAllow`, the list of variables omac forwards into the sandbox. The
-  existing hook `LaunchEnvFunc(configHome, tmpDir)` cannot be reused as is,
-  because it only knows the long temp folder.
-- **`internal/cli/start.go` and `internal/cli/serve.go`**: create the folder
-  next to the existing session temp folder, remove it on exit, pass
-  `--allow-unix-dir <folder>` to `omac sandbox run`, and export the variable.
-  Both files do these steps separately today; the new code should be shared.
-- **`internal/cli/opencode_v2_service.go`**: the `deny_vars` check covers the
-  new variable. Today the check runs only for OpenCode 2.x; it must run for
-  every OpenCode launch that sets the variable.
+- **`internal/config/harness.go`**: the OpenCode harness names the variable in
+  a new field, `PTYSocketDirEnv`. The variable is not added to the harness's
+  `SandboxEnvAllow`, because harness variables are not forwarded when the
+  profile's `allow_vars` is empty. The existing hook
+  `LaunchEnvFunc(configHome, tmpDir)` cannot be reused as is, because it only
+  knows the long temp folder.
+- **`internal/cli/pty_socket_dir.go`** (new): the shared launch steps. It
+  stops a launch whose `deny_vars` covers the variable (`ptySocketDirDenied`),
+  creates the folder, passes `--allow-unix-dir <folder>` and
+  `--allow-env OPENCODE_PTY_SOCKET_DIR` to `omac sandbox run`, exports the
+  variable, and removes the folder.
+- **`internal/cli/start.go` and `internal/cli/serve.go`**: call these steps
+  next to the existing session temp folder, and remove the folder on exit,
+  also when a strict audit write fails.
 - **`internal/sandboxprofile/baseline.go`**: the protected-path lists for
   macOS and Linux gain `/tmp/opencode-pty-<uid>`, computed from the current
   uid. The profile audit (`internal/profileaudit`) reports grants that cover a
   protected path already; no new audit rule is needed.
 - **Tests**: see `tasks.md`. This change adds the first end-to-end test that
   runs a real OpenCode 2.x.
-- **Docs**: two rows in the access table of `docs/security.md` and one
-  sentence in `docs/advanced/nono.md`. No troubleshooting entry, because a
+- **Docs**: two rows in the access table of `docs/security.md` and a short
+  section in `docs/advanced/nono.md`. No troubleshooting entry, because a
   user on a current omac has nothing to do.
 
 ## Risks
@@ -240,6 +246,27 @@ must be archived before this change is archived.
 - **Users of the #520 workaround see a new `omac doctor` finding.** The finding
   is correct and their sessions keep working, but it is a visible change that
   belongs in the release notes.
+- **`omac doctor` also reports broad `/tmp` grants.** A profile that grants
+  `/tmp` in any filesystem field (`allow`, `read`, `write`,
+  `allow_unix_dir`) now gets a high-severity finding for the shared folder, as
+  it does for every protected path under a broad grant. The release notes
+  mention it.
+- **One sandboxed session can reach another's helper.** Only OpenCode's
+  shared default folder is protected. With a profile that grants all of
+  `/tmp` for socket connections (`allow_unix_dir: ["/tmp"]`) or with network
+  mode open, one sandboxed session can connect to another sandboxed session's
+  helper in `/tmp/omac-pty-*`. Both are sandboxed, so this is not a way out of
+  the sandbox, but it reaches a session of another project. Closing it needs
+  a deny rule in the rule generator and is left to a follow-up.
+- **Network mode blocked on macOS is untested.** The generated rules allow
+  listening on a Unix socket only in filtered mode with an open port, so the
+  helper probably cannot start and shell calls keep the 0.2 s fallback. Not
+  tested: `omac serve` cannot run in blocked mode and `omac start` needs a
+  model. The change `macos-listen-all-ports` (#521) is where listening rules
+  are reworked.
+- **Under `sudo omac` the wrong folder is protected.** The protected folder is
+  computed from the real user id of the omac process, so under sudo it is
+  root's folder, not the invoking user's.
 
 ## Out of Scope
 

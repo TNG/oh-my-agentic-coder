@@ -42,4 +42,12 @@ This only affects users who write their own nono sandbox profile. When authoring
 
 ## Shell commands in OpenCode
 
-With nono, omac does not set up a folder for the helper that OpenCode uses to run shell commands. Set `OPENCODE_PTY_SOCKET_DIR` to a folder of your own and grant that folder in your nono profile, rather than OpenCode's shared default folder `/tmp/opencode-pty-<uid>` (see [Security model](../security.md#filesystem) for why).
+OpenCode runs shell commands through a helper program that it reaches over a socket in a folder. With nono, omac does not set up a folder for this helper, so shell commands of OpenCode 2.3 and later are slow there.
+
+To fix it, give the sandboxed OpenCode a folder of its own:
+
+1. Pick a short folder directly under `/tmp`, for example `/tmp/my-opencode-pty`. macOS limits the length of a socket path, and a deeper folder can exceed it.
+2. Grant that folder in your nono profile.
+3. Set `OPENCODE_PTY_SOCKET_DIR` only for the sandboxed OpenCode, for example `OPENCODE_PTY_SOCKET_DIR=/tmp/my-opencode-pty omac start opencode`. Do not set it in your shell profile: an OpenCode outside the sandbox would then use the same folder, and its helper would be reachable from the sandbox.
+
+Do not grant OpenCode's shared default folder `/tmp/opencode-pty-<uid>` instead. [Security model](../security.md#sandbox-access-reference) explains why it stays blocked.

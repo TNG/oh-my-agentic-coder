@@ -12,8 +12,10 @@ import (
 )
 
 // Check statically lints a resolved sandbox profile against known secret
-// locations and network attack vectors. It performs no filesystem or
-// network I/O. The returned findings are sorted by severity
+// locations and network attack vectors. It reads the filesystem only to
+// resolve symlinks, so both spellings of a path (for example /tmp and
+// /private/tmp) are compared; findings can therefore depend on the host.
+// It performs no network I/O. The returned findings are sorted by severity
 // (high → medium → low), then by category, then by field.
 func Check(profile *sandboxprofile.Profile) []Finding {
 	if profile == nil {

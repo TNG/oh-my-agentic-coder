@@ -152,7 +152,9 @@ End to end:
   the #520 workaround (`allow_unix_dir` for `/tmp/opencode-pty-<uid>`) should
   delete that grant. It no longer has an effect, omac warns about it at
   launch, and `omac doctor` reports it. They should not follow the warning's
-  hint to add `override_deny`
+  hint to add `override_deny`. Also mention that `omac doctor` now reports a
+  high-severity finding for any profile that grants `/tmp` in a filesystem
+  field (`allow`, `read`, `write`, `allow_unix_dir`)
 - [ ] 8.3 After the implementation is done: the maintainer reviews the three
   follow-up issue drafts listed under "Out of Scope" in the proposal, and they
   are posted. They are drafted but not yet filed
