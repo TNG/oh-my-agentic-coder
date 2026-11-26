@@ -69,6 +69,9 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 	}
 
 	omacBin := buildOmac(t)
+	// bun skips the install script of @opencode/cli, which puts the platform
+	// binary in place, so the suite's recovery has to run that script.
+	t.Setenv("E2E_RECOVER_INSTALL", "1")
 	installHarness(t, h, home)
 	writeSandboxProfile(t, home, h, nil)
 
