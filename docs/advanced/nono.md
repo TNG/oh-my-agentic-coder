@@ -39,3 +39,7 @@ When `nono-netprofile` is active, nono routes all outbound traffic through its o
 omac redirects tool caches (`npm`, `pip`, `cargo`, …) to an isolated directory so the agent cannot read or write `~/.cache` — the directory where these tools normally store downloaded packages on your machine. However, with nono, the filesystem grants are controlled by your nono sandbox profile, not by omac. If your profile grants broad read/write access to `~/.cache`, the agent can bypass omac's redirect and reach it directly.
 
 This only affects users who write their own nono sandbox profile. When authoring one, make sure it does not broad-grant `~/.cache`. See [Cache](./cache.md) for context on what omac's cache isolation does.
+
+## OpenCode shell helper
+
+With nono, omac does not set up a socket folder for OpenCode's shell helper; grant the helper's folder in your nono profile.
