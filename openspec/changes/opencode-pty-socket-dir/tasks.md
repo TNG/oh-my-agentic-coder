@@ -143,8 +143,11 @@ End to end:
 
 - [ ] 8.1 Comment on #520 when the pull request is open: why the shared-folder
   workaround should not be used, and a link to the fix
-- [ ] 8.2 Mention in the pull request that the `omac doctor` finding for
-  workaround users belongs in the release notes
+- [ ] 8.2 Put a release-notes warning into the pull request: users who added
+  the #520 workaround (`allow_unix_dir` for `/tmp/opencode-pty-<uid>`) should
+  delete that grant. It no longer has an effect, omac warns about it at
+  launch, and `omac doctor` reports it. They should not follow the warning's
+  hint to add `override_deny`
 - [ ] 8.3 After the implementation is done: the maintainer reviews the three
   follow-up issue drafts listed under "Out of Scope" in the proposal, and they
   are posted. They are drafted but not yet filed

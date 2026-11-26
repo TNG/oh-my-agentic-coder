@@ -177,6 +177,7 @@ chosen design costs.
 | Host state folder stays readable | Hide `~/.local/state/opencode` in this change | Safe only where omac redirects OpenCode's state, which today is `omac start` with OpenCode 2.x. Elsewhere it would break the helper and bring the stall back | Helper tokens and prompt history of other OpenCode processes stay readable. The tokens are unusable, because the sockets are blocked twice |
 | Reuse #513 for the generator gap | Fix protected-path socket connects here | It would have duplicated a pull request that was open at the time | None since #513 is merged |
 | One pull request | Split the stall fix from the protected path | Decided by the maintainer: fix and hardening ship together | None since #513 is merged |
+| Generic launch warning for a leftover workaround grant | Own wording that tells the user to delete the grant and does not mention `override_deny` | A special case for the few users who copied the #520 workaround. Reopening the folder still takes a deliberate second step | The warning from #513 names `override_deny` as the way to open the folder. The release notes tell these users to delete the grant |
 | No sweep of leftover folders | Remove stale `/tmp/omac-pty-*` at launch | A wrong liveness check would delete a running session's folder | Empty folders remain after a crash until `/tmp` is emptied |
 
 ## Capabilities
