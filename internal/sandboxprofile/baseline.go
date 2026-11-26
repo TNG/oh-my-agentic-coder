@@ -1,6 +1,8 @@
 package sandboxprofile
 
 import (
+	"fmt"
+	"os"
 	"runtime"
 )
 
@@ -31,6 +33,12 @@ func PlatformBaseline() Baseline {
 		return darwinBaseline()
 	}
 	return linuxBaseline()
+}
+
+// SharedOpenCodePTYDir is the folder where every OpenCode process of the
+// current user puts the socket of its shell helper.
+func SharedOpenCodePTYDir() string {
+	return fmt.Sprintf("/tmp/opencode-pty-%d", os.Getuid())
 }
 
 // protectedCommon is the cross-platform protected-path set (nono's
@@ -133,6 +141,8 @@ func darwinBaseline() Baseline {
 		ProtectedPaths: append(protectedCommon(),
 			// container sockets: root-equivalent host access if reachable
 			"/var/run/docker.sock",
+			// helpers of OpenCode processes outside the sandbox listen here and run commands for any client holding a token the session can read
+			SharedOpenCodePTYDir(),
 			// keychains / password stores
 			"~/Library/Keychains",
 			"/Library/Keychains",
@@ -177,6 +187,8 @@ func linuxBaseline() Baseline {
 			// (no symlink resolution).
 			"/var/run/docker.sock",
 			"/run/docker.sock",
+			// helpers of OpenCode processes outside the sandbox listen here and run commands for any client holding a token the session can read
+			SharedOpenCodePTYDir(),
 			// keyring / password stores
 			"~/.password-store",
 			"~/.local/share/keyrings",

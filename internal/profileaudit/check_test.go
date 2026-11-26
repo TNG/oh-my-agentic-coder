@@ -488,3 +488,27 @@ func TestCheck_NetworkTableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestAuditFlagsGrantOfSharedOpenCodePTYDir(t *testing.T) {
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	grants := []string{dir, "/tmp"}
+	if runtime.GOOS == "darwin" {
+		grants = append(grants, "/private"+dir, "/private/tmp")
+	}
+	for _, grant := range grants {
+		t.Run(grant, func(t *testing.T) {
+			p := cleanProfile()
+			p.Filesystem.AllowUnixDir = []string{grant}
+			var got *Finding
+			for _, f := range Check(p) {
+				if f.Field == "filesystem.allow_unix_dir" && f.Severity == SeverityHigh &&
+					strings.Contains(f.Message, "OpenCode shell helper sockets of other sessions") {
+					got = &f
+				}
+			}
+			if got == nil {
+				t.Errorf("no high finding naming the OpenCode shell helper sockets for allow_unix_dir %s", grant)
+			}
+		})
+	}
+}

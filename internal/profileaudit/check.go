@@ -161,6 +161,8 @@ func secretDescription(path string) string {
 		return "git config (may embed tokens)"
 	case strings.Contains(path, ".config/hub"):
 		return "GitHub hub token"
+	case strings.HasPrefix(path, "/tmp/opencode-pty-"):
+		return "OpenCode shell helper sockets of other sessions"
 	case strings.Contains(path, ".cf"):
 		return "Cloud Foundry CLI"
 	default:
@@ -234,7 +236,7 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 		if err != nil {
 			continue
 		}
-		if exp == expandedSP || isParent(exp, expandedSP) {
+		if grantCovers(exp, expandedSP) {
 			findings = append(findings, Finding{
 				Severity: SeverityHigh,
 				Category: CatFSGrant,
@@ -249,7 +251,7 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 		if err != nil {
 			continue
 		}
-		if exp == expandedSP || isParent(exp, expandedSP) {
+		if grantCovers(exp, expandedSP) {
 			findings = append(findings, Finding{
 				Severity: SeverityMedium,
 				Category: CatFSGrant,
@@ -277,6 +279,37 @@ func checkBroadGrant(field, entry string) []Finding {
 		})
 	}
 	return findings
+}
+
+// grantCovers reports whether the grant equals or is a parent of the
+// secret path in any spelling of either, so that /private/tmp/x and
+// /tmp/x (the same folder on macOS) match each other.
+func grantCovers(grant, secret string) bool {
+	for _, g := range pathForms(grant) {
+		for _, s := range pathForms(secret) {
+			if isParent(g, s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pathForms returns p and, when it differs, p with symlinks resolved in
+// its deepest existing ancestor.
+func pathForms(p string) []string {
+	forms := []string{p}
+	dir, tail := p, ""
+	for dir != "/" && dir != "." {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			if r := filepath.Join(resolved, tail); r != p {
+				forms = append(forms, r)
+			}
+			break
+		}
+		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
+	}
+	return forms
 }
 
 // isParent reports whether parent == child or child is beneath parent.
