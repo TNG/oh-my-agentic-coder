@@ -1,6 +1,7 @@
 package profileaudit
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -544,5 +545,20 @@ func TestAuditFlagsGrantOfFilesystemRoot(t *testing.T) {
 			}
 			t.Errorf("a grant of / in %s covers every protected path but yields no high finding", field)
 		})
+	}
+}
+
+func TestSecretDescriptionOfSharedOpenCodePTYDir(t *testing.T) {
+	const label = "OpenCode shell helper sockets of other sessions"
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	for _, inside := range []string{dir, filepath.Join(dir, "a.sock")} {
+		if got := secretDescription(inside); got != label {
+			t.Errorf("secretDescription(%q) = %q, want %q", inside, got, label)
+		}
+	}
+	for _, outside := range []string{filepath.Dir(dir), dir + "0"} {
+		if got := secretDescription(outside); got == label {
+			t.Errorf("secretDescription(%q) = %q, but the path is not in the shared folder", outside, got)
+		}
 	}
 }
