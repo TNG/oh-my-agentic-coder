@@ -31,7 +31,7 @@ func needsPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) bool 
 // commands down, so the launch continues with a warning.
 func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySocketDir, int) {
 	if err := ptySocketDirDenied(h, plan, noSandbox); err != nil {
-		fmt.Fprintln(stderr, prefix+": pty socket folder:", err)
+		fmt.Fprintln(stderr, prefix+": "+h.Name+" shell helper:", err)
 		return nil, ExitConfigInvalid
 	}
 	dir, err := newPTYSocketDir(h, plan, noSandbox)
@@ -49,7 +49,7 @@ func ptySocketDirDenied(h config.Harness, plan sandboxPlan, noSandbox bool) erro
 	}
 	for _, entry := range plan.Policy.Environment.DenyVars {
 		if sandboxprofile.EnvVarMatches(h.PTYSocketDirEnv, []string{entry}) {
-			return fmt.Errorf("profile %q: deny_vars entry %q denies %s, which omac sets so that the harness can reach its shell helper inside the sandbox; remove or narrow that entry", plan.profileLabel(), entry, h.PTYSocketDirEnv)
+			return fmt.Errorf("profile %q: deny_vars entry %q denies %s, which omac sets so that shell commands of %s are not slow in the sandbox; nothing was started, remove or narrow that entry in the profile's environment.deny_vars", plan.profileLabel(), entry, h.PTYSocketDirEnv, h.Name)
 		}
 	}
 	return nil
@@ -73,7 +73,7 @@ func (p *ptySocketDir) install(argv []string, plan sandboxPlan, stderr io.Writer
 		return argv
 	}
 	if verbose {
-		fmt.Fprintf(stderr, "[verbose] pty socket folder: %s\n", p.Dir)
+		fmt.Fprintf(stderr, "[verbose] shell helper folder: %s\n", p.Dir)
 	}
 	argv = injectSandboxFlag(argv, "--allow-unix-dir", p.Dir)
 	return injectSandboxEnvAllow(argv, []string{p.EnvVar}, plan)

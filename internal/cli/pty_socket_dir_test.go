@@ -104,7 +104,7 @@ func TestPTYSocketDirInstallAndApply(t *testing.T) {
 
 	var verboseOut strings.Builder
 	got := dir.install(argv, ptyPlan(), &verboseOut, true)
-	if !strings.Contains(verboseOut.String(), "pty socket folder: "+dir.Dir) {
+	if !strings.Contains(verboseOut.String(), "shell helper folder: "+dir.Dir) {
 		t.Errorf("verbose output lacks the folder: %q", verboseOut.String())
 	}
 	for _, pair := range [][2]string{{"--allow-unix-dir", dir.Dir}, {"--allow-env", dir.EnvVar}} {
@@ -152,8 +152,8 @@ func TestPTYSocketDirDenied(t *testing.T) {
 	for _, deny := range []string{"OPENCODE_*", "OPENCODE_PTY_SOCKET_DIR"} {
 		err := ptySocketDirDenied(oc, ptyPlan("XDG_*", deny), false)
 		want := fmt.Sprintf(`profile "default": deny_vars entry %q denies OPENCODE_PTY_SOCKET_DIR`, deny)
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("deny %q: error must name the profile, the matching entry and the variable: %v", deny, err)
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "shell commands of opencode") || !strings.Contains(err.Error(), "nothing was started") {
+			t.Errorf("deny %q: error must name the profile, the matching entry, the variable and its purpose, and say that nothing was started: %v", deny, err)
 		}
 	}
 	for name, err := range map[string]error{
@@ -173,7 +173,7 @@ func TestOpenPTYSocketDir(t *testing.T) {
 
 	var stderr strings.Builder
 	dir, code := openPTYSocketDir(&stderr, "omac serve", oc, ptyPlan("OPENCODE_*"), false)
-	if dir != nil || code != ExitConfigInvalid || !strings.HasPrefix(stderr.String(), "omac serve: pty socket folder: ") {
+	if dir != nil || code != ExitConfigInvalid || !strings.HasPrefix(stderr.String(), "omac serve: opencode shell helper: ") {
 		t.Errorf("denied: got %v, %d, %q; want nil, ExitConfigInvalid and the prefixed message", dir, code, stderr.String())
 	}
 
