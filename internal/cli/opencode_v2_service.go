@@ -785,13 +785,9 @@ func openCodePinDenied(plan sandboxPlan) error {
 	if plan.Policy == nil {
 		return nil
 	}
-	profile := plan.PolicyRef
-	if profile == "" {
-		profile = plan.Name
-	}
 	for _, v := range []string{"XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"} {
 		if sandboxprofile.EnvVarMatches(v, plan.Policy.Environment.DenyVars) {
-			return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port, remove %s from the profile's deny_vars", profile, v, v)
+			return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port, remove %s from the profile's deny_vars", plan.profileLabel(), v, v)
 		}
 	}
 	return nil

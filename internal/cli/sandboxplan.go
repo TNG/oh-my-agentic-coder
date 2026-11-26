@@ -51,6 +51,15 @@ type sandboxPlan struct {
 	PolicyErr error
 }
 
+// profileLabel names the profile in error messages: the policy profile when
+// the launcher names one, else the launcher profile.
+func (plan sandboxPlan) profileLabel() string {
+	if plan.PolicyRef != "" {
+		return plan.PolicyRef
+	}
+	return plan.Name
+}
+
 // resolveSandboxPlan resolves the launcher profile selected by flagProfile
 // (empty means sandbox.default_profile) and, when that launcher is omac's
 // native sandbox, its policy profile — read-only, so inspecting a profile

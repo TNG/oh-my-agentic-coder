@@ -587,15 +587,9 @@ func runServe(args []string, env *Env) int {
 	if noSandbox {
 		argv = inner
 	} else {
-		if denyErr := ptySocketDirDenied(harness, plan, noSandbox); denyErr != nil {
-			fmt.Fprintln(env.Stderr, "omac serve: pty socket folder:", denyErr)
-			return ExitConfigInvalid
-		}
-		var ptyErr error
-		ptyDir, ptyErr = newPTYSocketDir(harness, plan, noSandbox)
-		if ptyErr != nil {
-			fmt.Fprintln(env.Stderr, "omac serve: pty socket folder:", ptyErr)
-			return ExitIOError
+		var code int
+		if ptyDir, code = openPTYSocketDir(env.Stderr, "omac serve", harness, plan, noSandbox); code != ExitOK {
+			return code
 		}
 		defer ptyDir.Close()
 		// Create the harness's runtime dirs (plus a redirected config home)
@@ -638,10 +632,7 @@ func runServe(args []string, env *Env) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
-		argv = ptyDir.install(argv, plan)
-		if ptyDir != nil && verbose {
-			fmt.Fprintf(env.Stderr, "[verbose] pty socket folder: %s\n", ptyDir.Dir)
-		}
+		argv = ptyDir.install(argv, plan, env.Stderr, verbose)
 		// Forward the selected harness's auth env vars through the default
 		// profile's restrictive allow_vars filter. (Control-plane port and
 		// harness runtime dirs are granted inside sandboxServeArgv.)
@@ -725,11 +716,14 @@ func runServe(args []string, env *Env) int {
 	// (§5.3). The onReady hook is where any post-launch work would go; the
 	// control plane is already up, so it's a no-op marker here.
 	// Wire the strict-mode fatal handler now that sup/facade/control exist.
+	// os.Exit skips the deferred cleanups, so it repeats those that matter.
 	auditFatal = func(ferr error) {
 		fmt.Fprintln(env.Stderr, "omac serve: audit (strict) write failed, aborting:", ferr)
 		sup.ShutdownAll(5 * time.Second)
 		_ = f.Close()
 		httpSrv.Close()
+		ptyDir.Close()
+		_ = os.RemoveAll(sandboxTmp)
 		os.Exit(ExitIOError)
 	}
 	sandboxed := !noSandbox && !noInner

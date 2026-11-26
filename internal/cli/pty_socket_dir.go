@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
@@ -22,19 +23,33 @@ func needsPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) bool 
 	return !noSandbox && plan.Native && h.PTYSocketDirEnv != ""
 }
 
+// openPTYSocketDir checks the profile and creates the folder for a launch.
+// On failure it prints the reason after prefix and returns the exit code;
+// on success the code is ExitOK and the folder is nil when the launch needs none.
+func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySocketDir, int) {
+	if err := ptySocketDirDenied(h, plan, noSandbox); err != nil {
+		fmt.Fprintln(stderr, prefix+": pty socket folder:", err)
+		return nil, ExitConfigInvalid
+	}
+	dir, err := newPTYSocketDir(h, plan, noSandbox)
+	if err != nil {
+		fmt.Fprintln(stderr, prefix+": pty socket folder:", err)
+		return nil, ExitIOError
+	}
+	return dir, ExitOK
+}
+
 // ptySocketDirDenied reports a profile whose deny_vars would strip the variable omac sets.
 func ptySocketDirDenied(h config.Harness, plan sandboxPlan, noSandbox bool) error {
 	if !needsPTYSocketDir(h, plan, noSandbox) || plan.Policy == nil {
 		return nil
 	}
-	if !sandboxprofile.EnvVarMatches(h.PTYSocketDirEnv, plan.Policy.Environment.DenyVars) {
-		return nil
+	for _, entry := range plan.Policy.Environment.DenyVars {
+		if sandboxprofile.EnvVarMatches(h.PTYSocketDirEnv, []string{entry}) {
+			return fmt.Errorf("profile %q: deny_vars entry %q denies %s, which omac sets so that the harness can reach its shell helper inside the sandbox; remove or narrow that entry", plan.profileLabel(), entry, h.PTYSocketDirEnv)
+		}
 	}
-	profile := plan.PolicyRef
-	if profile == "" {
-		profile = plan.Name
-	}
-	return fmt.Errorf("profile %q: deny_vars denies %s, which omac sets so that the harness can reach its shell helper inside the sandbox; remove it from the profile's deny_vars", profile, h.PTYSocketDirEnv)
+	return nil
 }
 
 // newPTYSocketDir creates the folder; it returns nil, nil when the launch needs none.
@@ -50,9 +65,12 @@ func newPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySo
 }
 
 // install grants the folder and passes the variable through the profile's env filter.
-func (p *ptySocketDir) install(argv []string, plan sandboxPlan) []string {
+func (p *ptySocketDir) install(argv []string, plan sandboxPlan, stderr io.Writer, verbose bool) []string {
 	if p == nil {
 		return argv
+	}
+	if verbose {
+		fmt.Fprintf(stderr, "[verbose] pty socket folder: %s\n", p.Dir)
 	}
 	argv = injectSandboxFlag(argv, "--allow-unix-dir", p.Dir)
 	return injectSandboxEnvAllow(argv, []string{p.EnvVar}, plan)

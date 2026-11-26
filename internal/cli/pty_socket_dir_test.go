@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,7 +105,11 @@ func TestPTYSocketDirInstallAndApply(t *testing.T) {
 	dir := &ptySocketDir{Dir: "/tmp/omac-pty-1", EnvVar: "OPENCODE_PTY_SOCKET_DIR"}
 	argv := []string{"omac", "sandbox", "run", "--", "opencode"}
 
-	got := dir.install(argv, ptyPlan())
+	var verboseOut strings.Builder
+	got := dir.install(argv, ptyPlan(), &verboseOut, true)
+	if !strings.Contains(verboseOut.String(), "pty socket folder: "+dir.Dir) {
+		t.Errorf("verbose output lacks the folder: %q", verboseOut.String())
+	}
 	for _, pair := range [][2]string{{"--allow-unix-dir", dir.Dir}, {"--allow-env", dir.EnvVar}} {
 		if !containsPair(got, pair[0], pair[1]) {
 			t.Errorf("argv lacks %s %s: %v", pair[0], pair[1], got)
@@ -113,7 +118,7 @@ func TestPTYSocketDirInstallAndApply(t *testing.T) {
 
 	emptyAllow := ptyPlan()
 	emptyAllow.Policy.Environment.AllowVars = nil
-	if !containsPair(dir.install(argv, emptyAllow), "--allow-env", dir.EnvVar) {
+	if !containsPair(dir.install(argv, emptyAllow, io.Discard, false), "--allow-env", dir.EnvVar) {
 		t.Error("--allow-env missing when allow_vars is empty")
 	}
 
@@ -124,8 +129,9 @@ func TestPTYSocketDirInstallAndApply(t *testing.T) {
 	}
 
 	var none *ptySocketDir
-	if !slices.Equal(none.install(argv, ptyPlan()), argv) {
-		t.Error("nil install changed argv")
+	var quiet strings.Builder
+	if !slices.Equal(none.install(argv, ptyPlan(), &quiet, true), argv) || quiet.Len() != 0 {
+		t.Errorf("nil install changed argv or printed %q", quiet.String())
 	}
 	untouched := map[string]string{dir.EnvVar: "/host/value"}
 	none.apply(untouched)
@@ -147,9 +153,10 @@ func containsPair(argv []string, flag, value string) bool {
 func TestPTYSocketDirDenied(t *testing.T) {
 	oc := ptyHarness(t, "opencode")
 	for _, deny := range []string{"OPENCODE_*", "OPENCODE_PTY_SOCKET_DIR"} {
-		err := ptySocketDirDenied(oc, ptyPlan(deny), false)
-		if err == nil || !strings.Contains(err.Error(), "OPENCODE_PTY_SOCKET_DIR") || !strings.Contains(err.Error(), `"default"`) {
-			t.Errorf("deny %q: error must name the variable and the profile: %v", deny, err)
+		err := ptySocketDirDenied(oc, ptyPlan("XDG_*", deny), false)
+		want := fmt.Sprintf(`profile "default": deny_vars entry %q denies OPENCODE_PTY_SOCKET_DIR`, deny)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("deny %q: error must name the profile, the matching entry and the variable: %v", deny, err)
 		}
 	}
 	for name, err := range map[string]error{
@@ -161,6 +168,40 @@ func TestPTYSocketDirDenied(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s: unexpected error %v", name, err)
 		}
+	}
+}
+
+func TestOpenPTYSocketDir(t *testing.T) {
+	oc := ptyHarness(t, "opencode")
+
+	var stderr strings.Builder
+	dir, code := openPTYSocketDir(&stderr, "omac serve", oc, ptyPlan("OPENCODE_*"), false)
+	if dir != nil || code != ExitConfigInvalid || !strings.HasPrefix(stderr.String(), "omac serve: pty socket folder: ") {
+		t.Errorf("denied: got %v, %d, %q; want nil, ExitConfigInvalid and the prefixed message", dir, code, stderr.String())
+	}
+
+	stderr.Reset()
+	parent := ptySocketParent
+	ptySocketParent = filepath.Join(t.TempDir(), "missing")
+	dir, code = openPTYSocketDir(&stderr, "omac start", oc, ptyPlan(), false)
+	ptySocketParent = parent
+	if dir != nil || code != ExitIOError || !strings.HasPrefix(stderr.String(), "omac start: pty socket folder: ") {
+		t.Errorf("creation fails: got %v, %d, %q; want nil, ExitIOError and the prefixed message", dir, code, stderr.String())
+	}
+
+	dir, code = openPTYSocketDir(io.Discard, "omac start", oc, ptyPlan(), false)
+	defer dir.Close()
+	if dir == nil || code != ExitOK {
+		t.Errorf("allowed: got %v, %d; want a folder and ExitOK", dir, code)
+	}
+}
+
+func TestSandboxPlanProfileLabel(t *testing.T) {
+	if got := (sandboxPlan{Name: "builtin", PolicyRef: "default"}).profileLabel(); got != "default" {
+		t.Errorf("with a policy profile: %q, want default", got)
+	}
+	if got := (sandboxPlan{Name: "nono"}).profileLabel(); got != "nono" {
+		t.Errorf("without a policy profile: %q, want nono", got)
 	}
 }
 
@@ -294,7 +335,7 @@ func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 		if got.code != ExitConfigInvalid {
 			t.Errorf("exit = %d, want ExitConfigInvalid\nstderr:\n%s", got.code, got.stderr)
 		}
-		if !strings.Contains(got.stderr, "deny_vars denies "+variable) {
+		if !strings.Contains(got.stderr, `deny_vars entry "OPENCODE_*" denies `+variable) {
 			t.Errorf("stderr lacks the denial:\n%s", got.stderr)
 		}
 		if got.args != nil {
