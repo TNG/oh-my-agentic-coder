@@ -31,18 +31,19 @@ func ptyPlan(denyVars ...string) sandboxPlan {
 	}
 }
 
+var productionPTYSocketParent = ptySocketParent
+
+func TestPTYSocketParentDefaultIsTmp(t *testing.T) {
+	if productionPTYSocketParent != "/tmp" {
+		t.Errorf("default ptySocketParent = %q, want /tmp", productionPTYSocketParent)
+	}
+}
+
 func TestPTYSocketPathFitsMacOSLimit(t *testing.T) {
 	const tail = "/opencode-pty-4294967295/" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + ".sock"
-	if n := len("/private/tmp/" + "omac-pty-" + "4294967295" + tail); n >= 104 {
+	folderName := strings.Replace(ptySocketPattern, "*", "4294967295", 1)
+	if n := len("/private/tmp/" + folderName + tail); n >= 104 {
 		t.Errorf("worst-case socket path is %d bytes, want < 104", n)
-	}
-	dir, err := newPTYSocketDir(ptyHarness(t, "opencode"), ptyPlan(), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dir.Close()
-	if n := len("/private/tmp/" + filepath.Base(dir.Dir) + tail); n >= 104 {
-		t.Errorf("socket path under %s is %d bytes, want < 104", dir.Dir, n)
 	}
 }
 
@@ -60,8 +61,8 @@ func TestNewPTYSocketDir(t *testing.T) {
 	if first.Dir == second.Dir {
 		t.Errorf("two launches share %s", first.Dir)
 	}
-	if filepath.Dir(first.Dir) != "/tmp" {
-		t.Errorf("parent = %s, want /tmp", filepath.Dir(first.Dir))
+	if filepath.Dir(first.Dir) != ptySocketParent {
+		t.Errorf("parent = %s, want %s", filepath.Dir(first.Dir), ptySocketParent)
 	}
 	if first.EnvVar != "OPENCODE_PTY_SOCKET_DIR" {
 		t.Errorf("EnvVar = %q", first.EnvVar)
@@ -167,7 +168,7 @@ type ptyLaunch struct {
 
 func launchForPTYSocketDir(t *testing.T, harnessName string, noSandbox bool, denyVars []string) ptyLaunch {
 	t.Helper()
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
+	shortTmp, err := os.MkdirTemp(ptySocketParent, "omac-cli-")
 	if err != nil {
 		t.Fatal(err)
 	}

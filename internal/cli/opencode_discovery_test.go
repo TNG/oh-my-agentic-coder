@@ -268,7 +268,9 @@ func TestOpenCodeProjectDiscoveryDeniedLaunch(t *testing.T) {
 		t.Skip("macOS discovery workaround")
 	}
 	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-buildvcs=false", "-o", omac, "../../cmd/omac")
+	build := exec.Command("go", "build", "-buildvcs=false",
+		"-ldflags", "-X github.com/TNG/oh-my-agentic-coder/internal/cli.ptySocketParent="+ptySocketParent,
+		"-o", omac, "../../cmd/omac")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}

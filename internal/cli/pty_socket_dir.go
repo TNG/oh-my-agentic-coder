@@ -10,10 +10,9 @@ import (
 
 // The folder sits directly under /tmp because a Unix socket path must stay
 // below 104 bytes on macOS.
-const (
-	ptySocketParent  = "/tmp"
-	ptySocketPattern = "omac-pty-*"
-)
+const ptySocketPattern = "omac-pty-*"
+
+var ptySocketParent = "/tmp"
 
 // ptySocketDir is a per-launch folder the sandbox may connect into, so a
 // harness's helper daemon can place its sockets where the sandbox reaches them.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -30,7 +31,18 @@ func TestMain(m *testing.M) {
 	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
-	os.Exit(m.Run())
+	os.Exit(runWithShortPTYSocketParent(m))
+}
+
+func runWithShortPTYSocketParent(m *testing.M) int {
+	parent, err := os.MkdirTemp("", "omac-t-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	defer os.RemoveAll(parent)
+	ptySocketParent = parent
+	return m.Run()
 }
 
 func clearHarnessHomeEnvs() {
