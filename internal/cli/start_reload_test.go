@@ -287,6 +287,7 @@ func TestStartReloaderSessionReport(t *testing.T) {
 	post := func(body string) int {
 		req := httptest.NewRequest("POST", "/__omac__/session", stringReader(body))
 		req.Header.Set("content-type", "application/json")
+		r.addTestToken(req)
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec.Code
@@ -325,7 +326,7 @@ func (r *startReloader) startTestMux() *http.ServeMux {
 	m.HandleFunc("/__omac__/activate", auth(r.handleActivate))
 	m.HandleFunc("/__omac__/deactivate", auth(r.handleActivate))
 	m.HandleFunc("/__omac__/reload-global", auth(r.handleReloadGlobalStart))
-	m.HandleFunc("/__omac__/session", r.handleSession)
+	m.HandleFunc("/__omac__/session", auth(r.handleSession))
 	return m
 }
 

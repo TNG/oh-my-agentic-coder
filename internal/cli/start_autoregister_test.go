@@ -830,6 +830,14 @@ func TestParseLaunchArgs_SkipUnregistered(t *testing.T) {
 
 func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
 	isolateHome(t)
+	// Keep the runtime dir on a short path: this test's long name makes the
+	// HOME-derived fallback exceed the kernel's 108-byte Unix socket limit.
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 	wd := t.TempDir()
 	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
 

@@ -44,11 +44,13 @@ type Session struct {
 // work even when listing does not.
 var ErrUnsupported = errors.New("session listing not supported for this harness")
 
-// validSessionID reports whether id is safe to splice into a harness argv.
+// ValidSessionID reports whether id is safe to splice into a harness argv.
 // Accepted grammar: non-empty, starts with a letter or digit, contains only
 // [A-Za-z0-9._-]. This rejects leading dashes (flag injection) and path
-// separators (path traversal) at the enumeration boundary.
-func validSessionID(id string) bool {
+// separators (path traversal). Every trust boundary that receives a
+// harness-reported id and later splices it into a command line (argv or
+// pasteable hint text) must apply this same check rather than a local variant.
+func ValidSessionID(id string) bool {
 	if id == "" {
 		return false
 	}
@@ -116,7 +118,7 @@ func list(h config.Harness, workdir string, run runner, claudeRoot, ocDBPath, co
 	// Drop sessions whose IDs would be unsafe to splice into a harness argv.
 	filtered := sessions[:0]
 	for _, s := range sessions {
-		if validSessionID(s.ID) {
+		if ValidSessionID(s.ID) {
 			filtered = append(filtered, s)
 		}
 	}
