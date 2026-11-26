@@ -112,13 +112,13 @@ func TestMCPConfigValidateModes(t *testing.T) {
 	}
 }
 
-func TestCanIgnoreMCPOnlyForClaudeCode(t *testing.T) {
+func TestCanIgnoreMCPForHarnessesThatCanSwitchEntriesOff(t *testing.T) {
 	for _, name := range []string{"claude-code", "opencode", "codex", "copilot", "pi", "codewhale"} {
 		h, ok := LookupHarness(name)
 		if !ok {
 			t.Fatalf("no harness %s", name)
 		}
-		if got, want := h.CanIgnoreMCP(), name == "claude-code"; got != want {
+		if got, want := h.CanIgnoreMCP(), name == "claude-code" || name == "codex" || name == "copilot"; got != want {
 			t.Errorf("%s: CanIgnoreMCP = %v, want %v", name, got, want)
 		}
 	}

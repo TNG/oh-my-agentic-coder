@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -140,7 +141,7 @@ func TestMCPCopilotReceivesTheRegisteredServer(t *testing.T) {
 	}
 }
 
-func TestMCPCopilotDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
+func TestMCPCopilotTurnsOffItsOwnEntriesByNameAndWarns(t *testing.T) {
 	clearHarnessMCPEnv(t)
 	for _, mode := range []string{"", "ignore"} {
 		r := newMCPRig(t)
@@ -148,11 +149,37 @@ func TestMCPCopilotDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
 		r.writeFile(".mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
 
 		code, stderr := r.launch("copilot", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
-		if code != ExitConfigInvalid || !strings.Contains(stderr, `unregistered MCP server "native"`) {
+		if code != ExitOK {
 			t.Fatalf("mode %q: exit %d\n%s", mode, code, stderr)
 		}
+		if !strings.Contains(stderr, `warning: MCP server "native"`) || !strings.Contains(stderr, "turned off for this run") {
+			t.Errorf("mode %q: no warning:\n%s", mode, stderr)
+		}
+		args := strings.Join(r.rawArgs(), " ")
+		if !strings.Contains(args, "--disable-mcp-server native") || !strings.Contains(args, "--additional-mcp-config") {
+			t.Errorf("mode %q: args = %q", mode, args)
+		}
+	}
+}
+
+func TestMCPCopilotRefusesWhatItCannotTurnOff(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	files := map[string]string{
+		"same name as a registered server": `{"mcpServers":{"demo":{"command":"x"}}}`,
+		"name that needs quoting":          `{"mcpServers":{"a b":{"command":"x"}}}`,
+		"unparseable file":                 `{"mcpServers":`,
+	}
+	for name, content := range files {
+		r := newMCPRig(t)
+		r.register("demo", true, "copilot")
+		r.writeFile(".mcp.json", content)
+
+		code, stderr := r.launch("copilot", r.capture, nil)
+		if code != ExitConfigInvalid || !strings.Contains(stderr, "MCP policy refuses this start") {
+			t.Fatalf("%s: exit %d\n%s", name, code, stderr)
+		}
 		if _, _, ran := r.captured(); ran {
-			t.Error("the inner command ran")
+			t.Errorf("%s: the inner command ran", name)
 		}
 	}
 }
@@ -202,22 +229,58 @@ func TestMCPCodexReceivesTheRegisteredServer(t *testing.T) {
 	}
 }
 
-func TestMCPCodexDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
+func TestMCPCodexTurnsOffItsOwnUserEntriesByNameAndWarns(t *testing.T) {
 	clearHarnessMCPEnv(t)
 	for _, mode := range []string{"", "ignore"} {
+		home := t.TempDir()
+		t.Setenv("CODEX_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.native]\ncommand = \"x\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		r := newMCPRig(t)
 		r.register("demo", true, "codex")
-		r.writeFile(".codex/config.toml", "[mcp_servers.native]\ncommand = \"x\"\n")
 
 		code, stderr := r.launch("codex", r.capture, func(o *launchOpts) { o.mcpUnregistered = mode })
-		if code != ExitConfigInvalid || !strings.Contains(stderr, `unregistered MCP server "native"`) {
+		if code != ExitOK {
 			t.Fatalf("mode %q: exit %d\n%s", mode, code, stderr)
 		}
-		if mode == "ignore" && !strings.Contains(stderr, "ignore is not available for codex") {
-			t.Errorf("no fallback message:\n%s", stderr)
+		if !strings.Contains(stderr, `warning: MCP server "native"`) {
+			t.Errorf("mode %q: no warning:\n%s", mode, stderr)
+		}
+		args := strings.Join(r.rawArgs(), "\n")
+		if !strings.Contains(args, "mcp_servers.native.enabled=false") || !strings.Contains(args, "mcp_servers.demo={") {
+			t.Errorf("mode %q: args = %q", mode, args)
+		}
+	}
+}
+
+func TestMCPCodexRefusesWhatItCannotTurnOff(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	cases := map[string]struct{ user, project string }{
+		"project entry (not known to be loaded)": {project: "[mcp_servers.native]\ncommand = \"x\"\n"},
+		"same name as a registered server":       {user: "[mcp_servers.demo]\ncommand = \"x\"\n"},
+		"unparseable file":                       {user: "[mcp_servers.native\n"},
+	}
+	for name, c := range cases {
+		home := t.TempDir()
+		t.Setenv("CODEX_HOME", home)
+		if c.user != "" {
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(c.user), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r := newMCPRig(t)
+		r.register("demo", true, "codex")
+		if c.project != "" {
+			r.writeFile(".codex/config.toml", c.project)
+		}
+
+		code, stderr := r.launch("codex", r.capture, nil)
+		if code != ExitConfigInvalid || !strings.Contains(stderr, "MCP policy refuses this start") {
+			t.Fatalf("%s: exit %d\n%s", name, code, stderr)
 		}
 		if _, _, ran := r.captured(); ran {
-			t.Error("the inner command ran")
+			t.Errorf("%s: the inner command ran", name)
 		}
 	}
 }

@@ -205,10 +205,17 @@ func MCPCapableHarnessNames() []string {
 }
 
 // CanIgnoreMCP reports whether the harness can be told not to load its own MCP
-// config, which the ignore mode of mcp.unregistered needs. Only Claude Code can,
-// with --strict-mcp-config.
+// entries, which the ignore mode of mcp.unregistered needs. Claude Code can load
+// none of them (--strict-mcp-config). Codex and Copilot CLI can switch off the entries
+// omac finds, one by one, so entries omac cannot find still load.
 func (h Harness) CanIgnoreMCP() bool {
-	return h.MCPInjection == MCPInjectClaudeFlag
+	return h.MCPInjection == MCPInjectClaudeFlag || h.CanDisableMCPByName()
+}
+
+// CanDisableMCPByName reports whether the harness has a switch that turns off one
+// MCP server by name for a single run.
+func (h Harness) CanDisableMCPByName() bool {
+	return h.MCPInjection == MCPInjectCodexFlag || h.MCPInjection == MCPInjectCopilotFlag
 }
 
 // MCPInjectionKind selects the mechanism that injects MCP servers.

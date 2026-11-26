@@ -27,6 +27,8 @@ type mcpPlan struct {
 	policy  mcpinject.Policy
 	entries []*mcpreg.Entry
 	harness string
+	// disableArgs switch off harness MCP entries by name for this run.
+	disableArgs []string
 
 	sup       *supervisor.Supervisor
 	servers   []*mcpServer
@@ -105,9 +107,10 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintln(env.Stderr, prefix+": MCP config scan:", err)
 		return nil, ExitIOError
 	}
+	var disabledNames, disabledNotices []string
 	var loaded []mcpinject.Existing
 	var loadedFindings []mcpinject.Finding
-	if policy.Unregistered == mcpinject.ModeIgnore {
+	if policy.Unregistered == mcpinject.ModeIgnore && !harness.CanDisableMCPByName() {
 		// Strict mode does not stop what the user passes on the command line, such as --mcp-config.
 		// Those entries load, so they are reported as loaded and not as ignored.
 		bare, bareFindings, err := mcpinject.Scan(harness.MCPScan, mcpinject.Host{Workdir: env.Workdir, Home: home, Getenv: os.Getenv})
@@ -124,6 +127,16 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 	}
 	for i := range existing {
 		existing[i].AlsoRegistered = registered[existing[i].Name]
+	}
+	if policy.Unregistered == mcpinject.ModeIgnore && harness.CanDisableMCPByName() {
+		disable, rest := mcpinject.SplitDisableable(harness.MCPInjection, existing)
+		for _, e := range disable {
+			disabledNames = append(disabledNames, e.Name)
+		}
+		disabledNotices = mcpinject.DisabledNotices(harness.Name, disable)
+		// What omac cannot switch off, and files it cannot read, still stop the start.
+		policy.Unregistered = mcpinject.ModeRefuse
+		existing = rest
 	}
 	warnings, refusal := mcpinject.Evaluate(policy, existing, findings)
 	label := "warning"
@@ -143,7 +156,10 @@ func prepareMCP(env *Env, harness config.Harness, lc config.LauncherConfig, opts
 		fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, refusal)
 		return nil, ExitConfigInvalid
 	}
-	return &mcpPlan{policy: policy, entries: entries, harness: harness.Name, stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
+	for _, w := range disabledNotices {
+		fmt.Fprintf(env.Stderr, "%s: warning: %s\n", prefix, w)
+	}
+	return &mcpPlan{policy: policy, entries: entries, harness: harness.Name, disableArgs: mcpinject.DisableArgs(harness.MCPInjection, disabledNames), stop: make(chan struct{}), noticed: map[string]bool{}}, ExitOK
 }
 
 // noticeStrictMCP tells the user which MCP servers from the harness's own
@@ -390,6 +406,7 @@ func (p *mcpPlan) buildInjection(harness config.Harness, userArgs []string, sock
 	if err != nil {
 		return fmt.Errorf("MCP injection: %w", err)
 	}
+	injection.InnerArgs = append(injection.InnerArgs, p.disableArgs...)
 	p.injection = injection
 	return nil
 }
