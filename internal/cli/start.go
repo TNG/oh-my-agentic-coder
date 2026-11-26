@@ -779,11 +779,23 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// ocPin pins opencode v2's background service; set only for sandboxed v2 launches.
 	var ocPin *openCodeServicePin
+	var ptyDir *ptySocketDir
 	var argv []string
 	var watch *protectedWatch
 	if noSandbox {
 		argv = inner
 	} else {
+		if denyErr := ptySocketDirDenied(harness, plan, noSandbox); denyErr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": pty socket folder:", denyErr)
+			return ExitConfigInvalid
+		}
+		var ptyErr error
+		ptyDir, ptyErr = newPTYSocketDir(harness, plan, noSandbox)
+		if ptyErr != nil {
+			fmt.Fprintln(env.Stderr, prefix+": pty socket folder:", ptyErr)
+			return ExitIOError
+		}
+		defer ptyDir.Close()
 		argv, err = sandbox.Expand(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -840,6 +852,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = injectUntrustedSkillDenies(argv, env.Stderr, prefix, prof, env.Workdir)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+		}
+		argv = ptyDir.install(argv, plan)
+		if ptyDir != nil && verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] pty socket folder: %s\n", ptyDir.Dir)
 		}
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
@@ -920,6 +936,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			extra[k] = v
 		}
 	}
+	ptyDir.apply(extra)
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)

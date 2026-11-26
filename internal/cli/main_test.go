@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -24,6 +25,9 @@ import (
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
 func TestMain(m *testing.M) {
+	if isSandboxRunCapture() {
+		captureSandboxRun()
+	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
 	os.Exit(m.Run())
@@ -33,4 +37,24 @@ func clearHarnessHomeEnvs() {
 	for _, name := range config.HomeEnvNames() {
 		os.Unsetenv(name)
 	}
+}
+
+// isSandboxRunCapture reports whether this test binary was exec'd as the
+// native launcher (`{{self}} sandbox run ...`) by a launch test that set
+// OMAC_TEST_ARGS and OMAC_TEST_ENV.
+func isSandboxRunCapture() bool {
+	return len(os.Args) > 2 && os.Args[1] == "sandbox" && os.Args[2] == "run" &&
+		os.Getenv("OMAC_TEST_ARGS") != "" && os.Getenv("OMAC_TEST_ENV") != ""
+}
+
+// captureSandboxRun records the argv and environment of the native launcher
+// the way the capture script does for custom launchers, then exits.
+func captureSandboxRun() {
+	args := strings.Join(os.Args[1:], "\n") + "\n"
+	env := strings.Join(os.Environ(), "\n") + "\n"
+	if os.WriteFile(os.Getenv("OMAC_TEST_ARGS"), []byte(args), 0o600) != nil ||
+		os.WriteFile(os.Getenv("OMAC_TEST_ENV"), []byte(env), 0o600) != nil {
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
