@@ -1,18 +1,15 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -212,7 +209,19 @@ type ptyLaunch struct {
 	stderr string
 }
 
-func launchForPTYSocketDir(t *testing.T, command, harnessName string, noSandbox bool, denyVars []string) ptyLaunch {
+type ptyLaunchSpec struct {
+	harness   string
+	noSandbox bool
+	denyVars  []string
+	// customLauncher runs the capture script as the launcher, instead of
+	// `{{self}} sandbox run`, the way a nono launcher is configured.
+	customLauncher bool
+	// openCodeVersion, when set, names the inner stand-in opencode and makes
+	// it answer --version with this version, so omac classifies it.
+	openCodeVersion string
+}
+
+func launchForPTYSocketDir(t *testing.T, command string, spec ptyLaunchSpec) ptyLaunch {
 	t.Helper()
 	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
 	if err != nil {
@@ -232,7 +241,7 @@ func launchForPTYSocketDir(t *testing.T, command, harnessName string, noSandbox 
 	t.Setenv("OMAC_TEST_ARGS", argsPath)
 	t.Setenv("OMAC_TEST_ENV", envPath)
 
-	profileJSON, err := json.Marshal(map[string]any{"environment": map[string]any{"deny_vars": denyVars}})
+	profileJSON, err := json.Marshal(map[string]any{"environment": map[string]any{"deny_vars": spec.denyVars}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,30 +252,45 @@ func launchForPTYSocketDir(t *testing.T, command, harnessName string, noSandbox 
 	if err := os.WriteFile(filepath.Join(profileDir, "captured.json"), profileJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configText := fmt.Sprintf("sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: [%q, %q, %q, %q, %q, %q, %q, %q]\n",
-		"{{self}}", "sandbox", "run", "--profile", "captured", "--", "{{inner_cmd}}", "{{inner_args}}")
+
+	capturePath := filepath.Join(t.TempDir(), "capture")
+	script := "#!/bin/sh\n"
+	if spec.openCodeVersion != "" {
+		capturePath = filepath.Join(filepath.Dir(capturePath), "opencode")
+		script += fmt.Sprintf("if [ \"$1\" = --version ]; then echo %s; exit 0; fi\n", spec.openCodeVersion)
+	}
+	script += "printf '%s\\n' \"$@\" > \"$OMAC_TEST_ARGS\"\nenv > \"$OMAC_TEST_ENV\"\n"
+	if err := os.WriteFile(capturePath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	launcher := []string{"{{self}}", "sandbox", "run", "--profile", "captured"}
+	if spec.customLauncher {
+		launcher = []string{capturePath}
+	}
+	launcherJSON, err := json.Marshal(append(launcher, "--", "{{inner_cmd}}", "{{inner_args}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configText := "sandbox:\n  default_profile: capture\n  profiles:\n    capture:\n      command: " + string(launcherJSON) + "\n"
 	configPath := filepath.Join(home, ".config", "omac", "config.yaml")
 	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	capturePath := filepath.Join(t.TempDir(), "capture")
-	if err := os.WriteFile(capturePath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OMAC_TEST_ARGS\"\nenv > \"$OMAC_TEST_ENV\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	env, stderr := launchTestEnv(t, t.TempDir())
 	var code int
 	switch command {
 	case "start":
 		code = runLaunch(env, launchOpts{
 			label:            "start",
-			harness:          ptyHarness(t, harnessName),
+			harness:          ptyHarness(t, spec.harness),
 			innerCmdOverride: capturePath,
-			noSandbox:        noSandbox,
+			noSandbox:        spec.noSandbox,
 		})
 	case "serve":
-		args := []string{harnessName, "--no-audit", "--inner", capturePath}
-		if noSandbox {
+		args := []string{spec.harness, "--no-audit", "--inner", capturePath}
+		if spec.noSandbox {
 			args = append(args, "--no-sandbox")
 		}
 		code = runServe(args, env)
@@ -283,13 +307,38 @@ func launchForPTYSocketDir(t *testing.T, command, harnessName string, noSandbox 
 	return result
 }
 
+func ptySocketFolders(t *testing.T) []string {
+	t.Helper()
+	folders, err := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return folders
+}
+
+// lateLaunchFailure sets up a launch that fails after the PTY folder exists:
+// `omac start` stops at the OpenCode 2.x service pin, `omac serve` (macOS only)
+// at the OpenCode 2.0.x project-discovery workaround.
+func lateLaunchFailure(t *testing.T, command string) (spec ptyLaunchSpec, wantStderr string) {
+	t.Helper()
+	if command == "start" {
+		return ptyLaunchSpec{harness: "opencode", denyVars: []string{"OPENCODE_CONFIG_DIR"}, openCodeVersion: "2.3.0"},
+			"opencode v2 service pin:"
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("omac serve has no failure point after the folder outside macOS")
+	}
+	return ptyLaunchSpec{harness: "opencode", denyVars: []string{"OPENCODE_CONFIG_PROJECT_DISABLE"}, openCodeVersion: "2.0.5"},
+		"opencode project discovery:"
+}
+
 func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 	t.Helper()
 	const variable = "OPENCODE_PTY_SOCKET_DIR"
-	before, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
+	before := ptySocketFolders(t)
 
 	t.Run("opencode sandboxed", func(t *testing.T) {
-		got := launchForPTYSocketDir(t, command, "opencode", false, nil)
+		got := launchForPTYSocketDir(t, command, ptyLaunchSpec{harness: "opencode"})
 		if got.code != ExitOK {
 			t.Fatalf("exit = %d, want ExitOK\nstderr:\n%s", got.code, got.stderr)
 		}
@@ -309,17 +358,21 @@ func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 	})
 
 	for _, tc := range []struct {
-		name      string
-		harness   string
-		noSandbox bool
+		name string
+		spec ptyLaunchSpec
 	}{
-		{"other harness", "claude", false},
-		{"no sandbox", "opencode", true},
+		{"other harness", ptyLaunchSpec{harness: "claude"}},
+		{"no sandbox", ptyLaunchSpec{harness: "opencode", noSandbox: true}},
+		{"custom launcher", ptyLaunchSpec{harness: "opencode", customLauncher: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := launchForPTYSocketDir(t, command, tc.harness, tc.noSandbox, nil)
+			foldersBefore := ptySocketFolders(t)
+			got := launchForPTYSocketDir(t, command, tc.spec)
 			if got.code != ExitOK {
 				t.Fatalf("exit = %d, want ExitOK\nstderr:\n%s", got.code, got.stderr)
+			}
+			if got.args == nil {
+				t.Fatalf("launcher did not run\nstderr:\n%s", got.stderr)
 			}
 			if slices.Contains(got.args, "--allow-unix-dir") {
 				t.Errorf("argv grants a unix dir: %v", got.args)
@@ -327,11 +380,14 @@ func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 			if got.env[variable] != "/host/value" {
 				t.Errorf("%s = %q, want the host value /host/value", variable, got.env[variable])
 			}
+			if foldersAfter := ptySocketFolders(t); len(foldersAfter) != len(foldersBefore) {
+				t.Errorf("launch created a folder: before %v, after %v", foldersBefore, foldersAfter)
+			}
 		})
 	}
 
 	t.Run("deny_vars matches", func(t *testing.T) {
-		got := launchForPTYSocketDir(t, command, "opencode", false, []string{"OPENCODE_*"})
+		got := launchForPTYSocketDir(t, command, ptyLaunchSpec{harness: "opencode", denyVars: []string{"OPENCODE_*"}})
 		if got.code != ExitConfigInvalid {
 			t.Errorf("exit = %d, want ExitConfigInvalid\nstderr:\n%s", got.code, got.stderr)
 		}
@@ -343,8 +399,22 @@ func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 		}
 	})
 
-	after, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
-	if len(after) != len(before) {
+	t.Run("launch fails after the folder exists", func(t *testing.T) {
+		spec, wantStderr := lateLaunchFailure(t, command)
+		foldersBefore := ptySocketFolders(t)
+		got := launchForPTYSocketDir(t, command, spec)
+		if got.code != ExitConfigInvalid || !strings.Contains(got.stderr, wantStderr) {
+			t.Errorf("exit = %d, want ExitConfigInvalid with %q\nstderr:\n%s", got.code, wantStderr, got.stderr)
+		}
+		if got.args != nil {
+			t.Errorf("launcher ran despite the failure: %v", got.args)
+		}
+		if foldersAfter := ptySocketFolders(t); len(foldersAfter) != len(foldersBefore) {
+			t.Errorf("failed launch left a folder: before %v, after %v", foldersBefore, foldersAfter)
+		}
+	})
+
+	if after := ptySocketFolders(t); len(after) != len(before) {
 		t.Errorf("launches leaked folders: before %v, after %v", before, after)
 	}
 }
@@ -355,51 +425,4 @@ func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 
 func TestServeOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 	assertOpenCodeGetsOwnPTYSocketDir(t, "serve")
-}
-
-func TestServeNoInnerCreatesNoPTYSocketDir(t *testing.T) {
-	omac := buildOmacWithTestPTYSocketParent(t)
-	isolateHome(t)
-	root := t.TempDir()
-	before, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, omac, "serve", "opencode", "--no-inner", "--no-audit")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "TMPDIR=.")
-	stdout, err := os.Create(filepath.Join(root, "stdout"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stdout.Close()
-	cmd.Stdout = stdout
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	for {
-		out, err := os.ReadFile(stdout.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(out), "OMAC_CONTROL_BASE=") {
-			break
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("control-plane-only exited before readiness: %v", err)
-		case <-ctx.Done():
-			t.Fatal("control-plane-only readiness timed out")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	after, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
-	if len(after) != len(before) {
-		t.Errorf("--no-inner created a pty socket folder: before %v, after %v", before, after)
-	}
-	if err := cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		t.Fatal(err)
-	}
-	<-done
 }

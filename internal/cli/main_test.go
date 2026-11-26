@@ -26,19 +26,23 @@ import (
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
 //
-// It redirects ptySocketParent to a per-run folder, so launch tests need no
-// writable /tmp, and acts as the native launcher stand-in when exec'd as
-// `sandbox run` (see captureSandboxRun).
+// It redirects ptySocketParent to a per-run folder under $TMPDIR, so the PTY
+// folder helper's unit tests and the tests that build the omac binary do not
+// depend on /tmp. Launch tests still need a writable /tmp, like the other
+// launch tests, because the facade socket path there must stay short.
+//
+// It also acts as the native launcher stand-in when exec'd as `sandbox run`
+// (see captureSandboxRun).
 func TestMain(m *testing.M) {
 	if isSandboxRunCapture() {
 		captureSandboxRun()
 	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
-	os.Exit(runWithShortPTYSocketParent(m))
+	os.Exit(runWithTestPTYSocketParent(m))
 }
 
-func runWithShortPTYSocketParent(m *testing.M) int {
+func runWithTestPTYSocketParent(m *testing.M) int {
 	parent, err := os.MkdirTemp("", "omac-t-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

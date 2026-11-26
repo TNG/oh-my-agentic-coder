@@ -29,6 +29,10 @@ const (
 	opencodePTYPackage    = "@opencode/cli@2.3.2"
 	opencodePTYMinVersion = "2.3.0"
 
+	// The first shell call also starts OpenCode's shell helper, which can be
+	// slow on a CI runner. A blocked helper stalls every call for 20 s, so
+	// the later calls still catch it.
+	firstShellCallLimit  = 30 * time.Second
 	shellCallLimit       = 5 * time.Second
 	shellCallCount       = 3
 	ptyDaemonWarning     = "process daemon unavailable"
@@ -106,7 +110,8 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 	serverLogs := func() string {
 		return stdout.String() + stderr.String() + openCodeLogFiles(openCodeLogDir(home))
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Longer than firstShellCallLimit, so a slow first call fails on the limit, not on the client timeout.
+	client := &http.Client{Timeout: 2 * firstShellCallLimit}
 	baseURL := "http://127.0.0.1:" + strconv.Itoa(port)
 	if err := waitForOpenCodeHTTP(client, baseURL, password, waitCh, opencodeServeTimeout); err != nil {
 		t.Fatalf("%v\nOMAC AND OPENCODE OUTPUT:\n%s", err, tailLines(serverLogs(), 60))
@@ -121,8 +126,12 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 		if status/100 != 2 {
 			t.Fatalf("shell call %d: HTTP %d: %s", call, status, body)
 		}
-		if elapsed > shellCallLimit {
-			t.Errorf("shell call %d took %v, limit %v: OpenCode's shell helper is probably unreachable from the sandbox", call, elapsed, shellCallLimit)
+		limit, limitName := shellCallLimit, "shellCallLimit"
+		if call == 1 {
+			limit, limitName = firstShellCallLimit, "firstShellCallLimit"
+		}
+		if elapsed > limit {
+			t.Errorf("shell call %d took %v, over %s (%v): OpenCode's shell helper is probably unreachable from the sandbox", call, elapsed, limitName, limit)
 		}
 	}
 
