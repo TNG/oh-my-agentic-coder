@@ -102,6 +102,11 @@ type Harness struct {
 	// be listed in SandboxEnvAllow. Nil means no extra env.
 	LaunchEnvFunc func(configHome, tmpDir string) map[string]string
 
+	// PTYSocketDirEnv names the variable through which the harness is told
+	// where its helper daemon puts its Unix sockets. omac points it at a
+	// per-launch folder it grants to the sandbox. Empty means unused.
+	PTYSocketDirEnv string
+
 	// BriefingFileFunc delivers the briefing by writing a file into the
 	// workdir, for harnesses that (a) expose no system-prompt flag or env
 	// pointer and (b) load always-on context only from files in the
@@ -279,6 +284,9 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, PortFlag: "--port", AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
+			// OpenCode 2.3+ runs shell commands through opencode-pty, reached
+			// over a Unix socket the sandbox must be able to connect to.
+			PTYSocketDirEnv: "OPENCODE_PTY_SOCKET_DIR",
 			// No HomeEnv: OpenCode has no config-home override. OPENCODE_CONFIG_DIR
 			// only adds a config-search dir (credentials live elsewhere), so wiring
 			// it here would move omac's grants away from the dirs OpenCode reads.

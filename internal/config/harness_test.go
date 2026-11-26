@@ -1432,3 +1432,15 @@ func TestLaunchEnvFuncCopilotNoHome(t *testing.T) {
 		t.Errorf("LaunchEnvFunc(\"\") = %v; want no env", got)
 	}
 }
+
+func TestOnlyOpenCodeDeclaresPTYSocketDirEnv(t *testing.T) {
+	for _, h := range harnessRegistry() {
+		want := ""
+		if h.Name == "opencode" {
+			want = "OPENCODE_PTY_SOCKET_DIR"
+		}
+		if h.PTYSocketDirEnv != want {
+			t.Errorf("%s: PTYSocketDirEnv = %q; want %q", h.Name, h.PTYSocketDirEnv, want)
+		}
+	}
+}
