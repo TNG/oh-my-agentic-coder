@@ -25,6 +25,10 @@ import (
 // It also clears every harness config-home override (CLAUDE_CONFIG_DIR and
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
+//
+// It redirects ptySocketParent to a per-run folder, so launch tests need no
+// writable /tmp, and acts as the native launcher stand-in when exec'd as
+// `sandbox run` (see captureSandboxRun).
 func TestMain(m *testing.M) {
 	if isSandboxRunCapture() {
 		captureSandboxRun()

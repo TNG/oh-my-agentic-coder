@@ -8,10 +8,10 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-// The folder sits directly under /tmp because a Unix socket path must stay
-// below 104 bytes on macOS.
 const ptySocketPattern = "omac-pty-*"
 
+// ptySocketParent is /tmp because a Unix socket path must stay below 104 bytes
+// on macOS. Tests redirect it; production code never assigns it.
 var ptySocketParent = "/tmp"
 
 // ptySocketDir is a per-launch folder the sandbox may connect into, so a

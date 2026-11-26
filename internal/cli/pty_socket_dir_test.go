@@ -53,6 +53,7 @@ func TestNewPTYSocketDir(t *testing.T) {
 	if err != nil || first == nil {
 		t.Fatalf("newPTYSocketDir() = %v, %v", first, err)
 	}
+	defer first.Close()
 	second, err := newPTYSocketDir(oc, ptyPlan(), false)
 	if err != nil || second == nil {
 		t.Fatalf("second newPTYSocketDir() = %v, %v", second, err)
@@ -265,8 +266,8 @@ func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 			if slices.Contains(got.args, "--allow-unix-dir") {
 				t.Errorf("argv grants a unix dir: %v", got.args)
 			}
-			if strings.HasPrefix(got.env[variable], ptySocketParent) {
-				t.Errorf("%s = %q, want no omac folder", variable, got.env[variable])
+			if got.env[variable] != "/host/value" {
+				t.Errorf("%s = %q, want the host value /host/value", variable, got.env[variable])
 			}
 		})
 	}

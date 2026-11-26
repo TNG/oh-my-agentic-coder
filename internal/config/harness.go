@@ -284,8 +284,8 @@ func harnessRegistry() []Harness {
 			ServerLaunch: &ServerLaunch{Subcommand: "serve", ListenPort: 4096, PortFlag: "--port", AuthEnvVar: "OPENCODE_SERVER_PASSWORD"},
 			BridgeDir:    filepath.Join(".opencode", "plugins"),
 			SkillsBase:   "opencode",
-			// OpenCode 2.3+ runs shell commands through opencode-pty, reached
-			// over a Unix socket the sandbox must be able to connect to.
+			// OpenCode runs shell commands through opencode-pty, reached over
+			// a Unix socket the sandbox must be able to connect to.
 			PTYSocketDirEnv: "OPENCODE_PTY_SOCKET_DIR",
 			// No HomeEnv: OpenCode has no config-home override. OPENCODE_CONFIG_DIR
 			// only adds a config-search dir (credentials live elsewhere), so wiring
