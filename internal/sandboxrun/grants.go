@@ -36,6 +36,12 @@ type Grants struct {
 	ReadPaths  []string // read-only
 	WritePaths []string // write-only
 	AllowPaths []string // read+write
+	// derivedReadPaths are new, resolved targets admitted by the command
+	// policy. Keep them separate so lowering never follows their aliases again.
+	derivedReadPaths []string
+	// derivedReadDirs also retains required execution spellings. Linux uses
+	// namespace-only links, not host alias binds, to make those names visible.
+	derivedReadDirs []derivedReadDir
 
 	// ProtectedPaths are denied even under broader grants (expanded;
 	// override_deny holes already punched). Not existence-filtered:

@@ -19,7 +19,18 @@ import (
 // from a HOST-side lookup; handing sandbox-exec the path that lookup produced
 // is what keeps the two from disagreeing.
 func TestBuildChildArgvPassesTheInnerBinaryAsAnAbsolutePath(t *testing.T) {
-	dir := t.TempDir()
+	// Staged below the package directory, outside every shared temp root:
+	// BuildChildArgv bounds the derived grants by the writable surface, and
+	// a t.TempDir() fixture (under TMPDIR) would count as agent-writable
+	// and the derivation would be refused.
+	dir, err := os.MkdirTemp(".", "omac-darwin-argv-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if dir, err = filepath.Abs(dir); err != nil {
+		t.Fatal(err)
+	}
 	exe := filepath.Join(dir, "opencode")
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -132,7 +143,18 @@ func TestBuildChildArgvHomeOutsideWorkdir(t *testing.T) {
 // covers this layout — both the PATH-entry dir and the Cellar real dir must be
 // granted read AND map-executable, and the emitted argv must be absolute.
 func TestBuildChildArgvHomeRootedHomebrewPrefix(t *testing.T) {
-	home := t.TempDir()
+	// Staged below the package directory, outside every shared temp root:
+	// BuildChildArgv bounds the derived grants by the writable surface, and
+	// a t.TempDir() home (under TMPDIR) would count as agent-writable and
+	// the derivation would be refused.
+	home, err := os.MkdirTemp(".", "omac-darwin-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	if home, err = filepath.Abs(home); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 	cellarBin := filepath.Join(home, "homebrew", "Cellar", "opencode", "1.18.15", "bin")
 	if err := os.MkdirAll(cellarBin, 0o755); err != nil {
