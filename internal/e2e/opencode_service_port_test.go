@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
 // TestE2EOpenCodeV2RefusesTakenServicePort drives the real `omac start` with a
 // fake OpenCode v2 binary and a pinned service port that is not usable (#345).
 // omac must refuse before launching the inner command, exit non-zero, and say
@@ -48,12 +58,7 @@ func TestE2EOpenCodeV2RefusesTakenServicePort(t *testing.T) {
 			return port, []string{fmt.Sprintf("port %d", port), "already in use by another process", "run the command again"}
 		}},
 		{"port registered by the host OpenCode service", func(t *testing.T, home string) (int, []string) {
-			l, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			port := l.Addr().(*net.TCPAddr).Port
-			_ = l.Close()
+			port := freeLoopbackPort(t)
 			reg := filepath.Join(home, ".local", "state", "opencode", "service.json")
 			if err := os.MkdirAll(filepath.Dir(reg), 0o700); err != nil {
 				t.Fatal(err)

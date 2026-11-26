@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
-	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxrun"
 )
 
@@ -782,13 +781,8 @@ func openCodeSpecVersion(args []string) (major, minor int, hasMinor, ok bool) {
 
 // openCodePinDenied hard-errors when the profile's deny_vars would strip a var the pin's config/state redirects rely on.
 func openCodePinDenied(plan sandboxPlan) error {
-	if plan.Policy == nil {
-		return nil
-	}
-	for _, v := range []string{"XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"} {
-		if sandboxprofile.EnvVarMatches(v, plan.Policy.Environment.DenyVars) {
-			return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port, remove %s from the profile's deny_vars", plan.profileLabel(), v, v)
-		}
+	if v, _, denied := plan.deniedEnvVar("XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"); denied {
+		return fmt.Errorf("profile %q: deny_vars denies %s, which the opencode v2 service pin needs; the pin's redirects would be stripped and the sandboxed service would revert to its ungranted default port, remove %s from the profile's deny_vars", plan.profileLabel(), v, v)
 	}
 	return nil
 }

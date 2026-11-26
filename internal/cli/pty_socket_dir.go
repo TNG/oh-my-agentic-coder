@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
-	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 const ptySocketPattern = "omac-pty-*"
@@ -19,8 +18,8 @@ var ptySocketParent = "/tmp"
 // harness's helper daemon can place its sockets where the sandbox reaches them.
 type ptySocketDir struct{ Dir, EnvVar string }
 
-func needsPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) bool {
-	return !noSandbox && plan.Native && h.PTYSocketDirEnv != ""
+func needsPTYSocketDir(h config.Harness, plan sandboxPlan) bool {
+	return plan.Native && h.PTYSocketDirEnv != ""
 }
 
 // openPTYSocketDir checks the profile and creates the folder for a launch.
@@ -29,12 +28,12 @@ func needsPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) bool 
 // folder is nil when the launch needs none, and also when it cannot be
 // created: the harness then runs without it, which only slows its shell
 // commands down, so the launch continues with a warning.
-func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySocketDir, int) {
-	if err := ptySocketDirDenied(h, plan, noSandbox); err != nil {
+func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sandboxPlan) (*ptySocketDir, int) {
+	if err := ptySocketDirDenied(h, plan); err != nil {
 		fmt.Fprintln(stderr, prefix+": "+h.Name+" shell helper:", err)
 		return nil, ExitConfigInvalid
 	}
-	dir, err := newPTYSocketDir(h, plan, noSandbox)
+	dir, err := newPTYSocketDir(h, plan)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: warning: could not create a folder for the shell helper of %s (%v); its shell commands may be slow\n", prefix, h.Name, err)
 		return nil, ExitOK
@@ -43,21 +42,19 @@ func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sa
 }
 
 // ptySocketDirDenied reports a profile whose deny_vars would strip the variable omac sets.
-func ptySocketDirDenied(h config.Harness, plan sandboxPlan, noSandbox bool) error {
-	if !needsPTYSocketDir(h, plan, noSandbox) || plan.Policy == nil {
+func ptySocketDirDenied(h config.Harness, plan sandboxPlan) error {
+	if !needsPTYSocketDir(h, plan) {
 		return nil
 	}
-	for _, entry := range plan.Policy.Environment.DenyVars {
-		if sandboxprofile.EnvVarMatches(h.PTYSocketDirEnv, []string{entry}) {
-			return fmt.Errorf("profile %q: deny_vars entry %q denies %s, which omac sets so that shell commands of %s are not slow in the sandbox; nothing was started, remove or narrow that entry in the profile's environment.deny_vars", plan.profileLabel(), entry, h.PTYSocketDirEnv, h.Name)
-		}
+	if _, entry, denied := plan.deniedEnvVar(h.PTYSocketDirEnv); denied {
+		return fmt.Errorf("profile %q: deny_vars entry %q denies %s, which omac sets so that shell commands of %s are not slow in the sandbox; nothing was started, remove or narrow that entry in the profile's environment.deny_vars", plan.profileLabel(), entry, h.PTYSocketDirEnv, h.Name)
 	}
 	return nil
 }
 
 // newPTYSocketDir creates the folder; it returns nil, nil when the launch needs none.
-func newPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySocketDir, error) {
-	if !needsPTYSocketDir(h, plan, noSandbox) {
+func newPTYSocketDir(h config.Harness, plan sandboxPlan) (*ptySocketDir, error) {
+	if !needsPTYSocketDir(h, plan) {
 		return nil, nil
 	}
 	dir, err := os.MkdirTemp(ptySocketParent, ptySocketPattern)

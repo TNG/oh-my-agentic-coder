@@ -24,12 +24,7 @@ import (
 func TestSecurityColdStartSpawnedArgvComesFromApprovedSnapshot(t *testing.T) {
 	sectest.RequireLoopbackListener(t)
 	isolateHome(t)
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(shortTmp) })
-	t.Setenv("TMPDIR", shortTmp)
+	shortTmpDir(t)
 
 	workdir := t.TempDir()
 	// The hostile command in the workdir manifest writes to this marker.

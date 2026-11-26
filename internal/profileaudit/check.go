@@ -164,7 +164,7 @@ func secretDescription(path string) string {
 		return "git config (may embed tokens)"
 	case strings.Contains(path, ".config/hub"):
 		return "GitHub hub token"
-	case strings.HasPrefix(path, "/tmp/opencode-pty-"):
+	case pathutil.Under(path, sandboxprofile.SharedOpenCodePTYDir()):
 		return "OpenCode shell helper sockets of other sessions"
 	case strings.Contains(path, ".cf"):
 		return "Cloud Foundry CLI"

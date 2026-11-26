@@ -15,6 +15,19 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
+// shortTmpDir makes TMPDIR a folder directly under /tmp, so Unix socket paths
+// below it stay under the 104-byte macOS limit.
+func shortTmpDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "omac-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("TMPDIR", dir)
+	return dir
+}
+
 func ptyHarness(t *testing.T, name string) config.Harness {
 	t.Helper()
 	h, ok := config.LookupHarness(name)
@@ -31,6 +44,15 @@ func ptyPlan(denyVars ...string) sandboxPlan {
 		PolicyRef: "default",
 		Policy:    &sandboxprofile.Profile{Environment: sandboxprofile.Environment{DenyVars: denyVars}},
 	}
+}
+
+func containsPair(argv []string, flag, value string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 var productionPTYSocketParent = ptySocketParent
@@ -51,12 +73,12 @@ func TestPTYSocketPathFitsMacOSLimit(t *testing.T) {
 
 func TestNewPTYSocketDir(t *testing.T) {
 	oc := ptyHarness(t, "opencode")
-	first, err := newPTYSocketDir(oc, ptyPlan(), false)
+	first, err := newPTYSocketDir(oc, ptyPlan())
 	if err != nil || first == nil {
 		t.Fatalf("newPTYSocketDir() = %v, %v", first, err)
 	}
 	defer first.Close()
-	second, err := newPTYSocketDir(oc, ptyPlan(), false)
+	second, err := newPTYSocketDir(oc, ptyPlan())
 	if err != nil || second == nil {
 		t.Fatalf("second newPTYSocketDir() = %v, %v", second, err)
 	}
@@ -83,15 +105,13 @@ func TestNewPTYSocketDir(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		harness   config.Harness
-		plan      sandboxPlan
-		noSandbox bool
+		harness config.Harness
+		plan    sandboxPlan
 	}{
-		"no sandbox":    {oc, ptyPlan(), true},
-		"non-native":    {oc, sandboxPlan{}, false},
-		"other harness": {ptyHarness(t, "claude-code"), ptyPlan(), false},
+		"non-native":    {oc, sandboxPlan{}},
+		"other harness": {ptyHarness(t, "claude-code"), ptyPlan()},
 	} {
-		got, err := newPTYSocketDir(tc.harness, tc.plan, tc.noSandbox)
+		got, err := newPTYSocketDir(tc.harness, tc.plan)
 		if got != nil || err != nil {
 			t.Errorf("%s: newPTYSocketDir() = %v, %v; want nil, nil", name, got, err)
 		}
@@ -138,29 +158,19 @@ func TestPTYSocketDirInstallAndApply(t *testing.T) {
 	none.Close()
 }
 
-func containsPair(argv []string, flag, value string) bool {
-	for i := 0; i+1 < len(argv); i++ {
-		if argv[i] == flag && argv[i+1] == value {
-			return true
-		}
-	}
-	return false
-}
-
 func TestPTYSocketDirDenied(t *testing.T) {
 	oc := ptyHarness(t, "opencode")
 	for _, deny := range []string{"OPENCODE_*", "OPENCODE_PTY_SOCKET_DIR"} {
-		err := ptySocketDirDenied(oc, ptyPlan("XDG_*", deny), false)
+		err := ptySocketDirDenied(oc, ptyPlan("XDG_*", deny))
 		want := fmt.Sprintf(`profile "default": deny_vars entry %q denies OPENCODE_PTY_SOCKET_DIR`, deny)
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "shell commands of opencode") || !strings.Contains(err.Error(), "nothing was started") {
 			t.Errorf("deny %q: error must name the profile, the matching entry, the variable and its purpose, and say that nothing was started: %v", deny, err)
 		}
 	}
 	for name, err := range map[string]error{
-		"unrelated deny": ptySocketDirDenied(oc, ptyPlan("XDG_*"), false),
-		"other harness":  ptySocketDirDenied(ptyHarness(t, "claude-code"), ptyPlan("*"), false),
-		"no sandbox":     ptySocketDirDenied(oc, ptyPlan("*"), true),
-		"non-native":     ptySocketDirDenied(oc, sandboxPlan{}, false),
+		"unrelated deny": ptySocketDirDenied(oc, ptyPlan("XDG_*")),
+		"other harness":  ptySocketDirDenied(ptyHarness(t, "claude-code"), ptyPlan("*")),
+		"non-native":     ptySocketDirDenied(oc, sandboxPlan{}),
 	} {
 		if err != nil {
 			t.Errorf("%s: unexpected error %v", name, err)
@@ -172,7 +182,7 @@ func TestOpenPTYSocketDir(t *testing.T) {
 	oc := ptyHarness(t, "opencode")
 
 	var stderr strings.Builder
-	dir, code := openPTYSocketDir(&stderr, "omac serve", oc, ptyPlan("OPENCODE_*"), false)
+	dir, code := openPTYSocketDir(&stderr, "omac serve", oc, ptyPlan("OPENCODE_*"))
 	if dir != nil || code != ExitConfigInvalid || !strings.HasPrefix(stderr.String(), "omac serve: opencode shell helper: ") {
 		t.Errorf("denied: got %v, %d, %q; want nil, ExitConfigInvalid and the prefixed message", dir, code, stderr.String())
 	}
@@ -180,13 +190,13 @@ func TestOpenPTYSocketDir(t *testing.T) {
 	stderr.Reset()
 	parent := ptySocketParent
 	ptySocketParent = filepath.Join(t.TempDir(), "missing")
-	dir, code = openPTYSocketDir(&stderr, "omac start", oc, ptyPlan(), false)
+	dir, code = openPTYSocketDir(&stderr, "omac start", oc, ptyPlan())
 	ptySocketParent = parent
 	if dir != nil || code != ExitOK || !strings.HasPrefix(stderr.String(), "omac start: warning: could not create a folder for the shell helper of opencode (") {
 		t.Errorf("creation fails: got %v, %d, %q; want nil, ExitOK and the warning", dir, code, stderr.String())
 	}
 
-	dir, code = openPTYSocketDir(io.Discard, "omac start", oc, ptyPlan(), false)
+	dir, code = openPTYSocketDir(io.Discard, "omac start", oc, ptyPlan())
 	defer dir.Close()
 	if dir == nil || code != ExitOK {
 		t.Errorf("allowed: got %v, %d; want a folder and ExitOK", dir, code)
@@ -223,12 +233,7 @@ type ptyLaunchSpec struct {
 
 func launchForPTYSocketDir(t *testing.T, command string, spec ptyLaunchSpec) ptyLaunch {
 	t.Helper()
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(shortTmp) })
-	t.Setenv("TMPDIR", shortTmp)
+	shortTmp := shortTmpDir(t)
 	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
 	home := t.TempDir()
 	t.Setenv("HOME", home)

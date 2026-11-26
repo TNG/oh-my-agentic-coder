@@ -588,7 +588,7 @@ func runServe(args []string, env *Env) int {
 		argv = inner
 	} else {
 		var code int
-		if ptyDir, code = openPTYSocketDir(env.Stderr, "omac serve", harness, plan, noSandbox); code != ExitOK {
+		if ptyDir, code = openPTYSocketDir(env.Stderr, "omac serve", harness, plan); code != ExitOK {
 			return code
 		}
 		defer ptyDir.Close()

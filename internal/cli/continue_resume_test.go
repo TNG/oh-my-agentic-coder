@@ -402,12 +402,7 @@ func launchCacheCapture(t *testing.T, noSandbox, ephemeral, verbose bool) cacheC
 
 func launchCacheCaptureForHarness(t *testing.T, harnessName string, noSandbox, ephemeral, verbose bool) cacheCapture {
 	t.Helper()
-	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(shortTmp) })
-	t.Setenv("TMPDIR", shortTmp)
+	shortTmp := shortTmpDir(t)
 	// Keep the runtime dir under shortTmp so the bridge socket path stays
 	// short enough for the kernel's Unix socket limit (104/108 bytes).
 	t.Setenv("XDG_RUNTIME_DIR", shortTmp)

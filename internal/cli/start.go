@@ -786,7 +786,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		argv = inner
 	} else {
 		var code int
-		if ptyDir, code = openPTYSocketDir(env.Stderr, prefix, harness, plan, noSandbox); code != ExitOK {
+		if ptyDir, code = openPTYSocketDir(env.Stderr, prefix, harness, plan); code != ExitOK {
 			return code
 		}
 		defer ptyDir.Close()

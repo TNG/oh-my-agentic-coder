@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,8 +25,7 @@ const (
 	// opencodePTYPackage is installed next to, and independent of, the
 	// opencode-ai pin in harnessVersions: OpenCode only reaches its shell
 	// helper over a Unix socket from 2.3.0 on, and 2.x ships as @opencode/cli.
-	opencodePTYPackage    = "@opencode/cli@2.3.2"
-	opencodePTYMinVersion = "2.3.0"
+	opencodePTYPackage = "@opencode/cli@2.3.2"
 
 	// The first shell call also starts OpenCode's shell helper, which can be
 	// slow on a CI runner. A blocked helper stalls every call for 20 s, so
@@ -72,10 +70,6 @@ func TestOpenCodeShellCallDoesNotStall(t *testing.T) {
 
 	omacBin := buildOmac(t)
 	installHarness(t, h, home)
-	version := harnessVersion(t, h, home)
-	if !versionAtLeast(version, opencodePTYMinVersion) {
-		t.Skipf("OpenCode %s does not use the shell helper socket (needs >= %s)", version, opencodePTYMinVersion)
-	}
 	writeSandboxProfile(t, home, h, nil)
 
 	port := freeLoopbackPort(t)
@@ -223,16 +217,6 @@ func openCodeLogFiles(logDir string) string {
 	return b.String()
 }
 
-func freeLoopbackPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
 func randomHex(t *testing.T, n int) string {
 	t.Helper()
 	buf := make([]byte, n)
@@ -240,28 +224,4 @@ func randomHex(t *testing.T, n int) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(buf)
-}
-
-// versionAtLeast compares dotted numeric versions; a non-numeric part counts as 0.
-func versionAtLeast(version, minimum string) bool {
-	have, want := versionParts(version), versionParts(minimum)
-	for i := range want {
-		if have[i] != want[i] {
-			return have[i] > want[i]
-		}
-	}
-	return true
-}
-
-func versionParts(v string) [3]int {
-	var parts [3]int
-	fields := strings.SplitN(strings.TrimPrefix(v, "v"), ".", 3)
-	for i := 0; i < len(fields) && i < 3; i++ {
-		digits := fields[i]
-		if end := strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' }); end >= 0 {
-			digits = digits[:end]
-		}
-		parts[i], _ = strconv.Atoi(digits)
-	}
-	return parts
 }
