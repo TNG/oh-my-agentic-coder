@@ -168,7 +168,7 @@ type ptyLaunch struct {
 
 func launchForPTYSocketDir(t *testing.T, harnessName string, noSandbox bool, denyVars []string) ptyLaunch {
 	t.Helper()
-	shortTmp, err := os.MkdirTemp(ptySocketParent, "omac-cli-")
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
 	if err != nil {
 		t.Fatal(err)
 	}
