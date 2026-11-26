@@ -219,10 +219,14 @@ must be archived before this change is archived.
 
 ## Risks
 
-- **Not yet run with a real OpenCode.** The design rests on OpenCode's source
-  and on omac's existing sandbox test for `allow_unix_dir`
-  (`TestIntegrationAllowUnixDirGrantsSocketAccess`). The first task is a manual
-  proof on macOS before any code is written.
+- **Proven by hand, not yet with the implementation.** The manual proof ran in
+  a macOS 27 test VM with OpenCode 2.3.2 under `omac serve` (see the table
+  under "Why"). `omac start` with a model and OpenCode Desktop were not part
+  of it.
+- **The protected path covers only OpenCode's default folder.** An OpenCode
+  started outside omac with its own `OPENCODE_PTY_SOCKET_DIR` puts its helper
+  elsewhere, and the protected list does not know that folder. It stays
+  unreachable unless a profile grants it.
 - **The new end-to-end test may not fit this change.** The suite pins OpenCode
   1.18.29, the oldest supported version, and has never installed a real 2.x.
   If 2.x cannot be installed through the suite's existing route, the test
