@@ -284,27 +284,11 @@ func checkBroadGrant(field, entry string) []Finding {
 	return findings
 }
 
-// grantCovers reports whether the grant equals or is a parent of the
-// secret path in any spelling of either, so that /private/tmp/x and
-// /tmp/x (the same folder on macOS) match each other.
+// grantCovers reports whether the grant equals or contains the secret path,
+// as written or after resolving symlinks, so that /private/tmp/x and /tmp/x
+// (the same folder on macOS) match each other.
 func grantCovers(grant, secret string) bool {
-	for _, g := range pathForms(grant) {
-		for _, s := range pathForms(secret) {
-			if isParent(g, s) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// pathForms returns p and, when it differs, its symlink-resolved form.
-func pathForms(p string) []string {
-	forms := []string{p}
-	if c := pathutil.Canonical(p); c != p {
-		forms = append(forms, c)
-	}
-	return forms
+	return isParent(grant, secret) || pathutil.Under(grant, secret)
 }
 
 // isParent reports whether parent == child or child is beneath parent.
@@ -312,7 +296,10 @@ func isParent(parent, child string) bool {
 	if parent == child {
 		return true
 	}
-	return strings.HasPrefix(child, parent+string(filepath.Separator))
+	if !strings.HasSuffix(parent, string(filepath.Separator)) {
+		parent += string(filepath.Separator)
+	}
+	return strings.HasPrefix(child, parent)
 }
 
 // cloudMetadataHosts are the cloud instance-metadata endpoints that

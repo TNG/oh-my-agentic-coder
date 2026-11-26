@@ -527,3 +527,22 @@ func TestAuditIgnoresGrantsThatDoNotCoverSharedOpenCodePTYDir(t *testing.T) {
 		})
 	}
 }
+
+func TestAuditFlagsGrantOfFilesystemRoot(t *testing.T) {
+	for _, field := range []string{"filesystem.read", "filesystem.write"} {
+		t.Run(field, func(t *testing.T) {
+			p := cleanProfile()
+			if field == "filesystem.read" {
+				p.Filesystem.Read = []string{"/"}
+			} else {
+				p.Filesystem.Write = []string{"/"}
+			}
+			for _, f := range Check(p) {
+				if f.Field == field && f.Category == CatFSGrant && f.Severity == SeverityHigh {
+					return
+				}
+			}
+			t.Errorf("a grant of / in %s covers every protected path but yields no high finding", field)
+		})
+	}
+}
