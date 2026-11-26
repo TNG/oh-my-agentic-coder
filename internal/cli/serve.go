@@ -581,11 +581,23 @@ func runServe(args []string, env *Env) int {
 	}
 
 	var argv []string
+	var ptyDir *ptySocketDir
 	var watch *protectedWatch
 	ocClass := openCodeOther
 	if noSandbox {
 		argv = inner
 	} else {
+		if denyErr := ptySocketDirDenied(harness, plan, noSandbox); denyErr != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: pty socket folder:", denyErr)
+			return ExitConfigInvalid
+		}
+		var ptyErr error
+		ptyDir, ptyErr = newPTYSocketDir(harness, plan, noSandbox)
+		if ptyErr != nil {
+			fmt.Fprintln(env.Stderr, "omac serve: pty socket folder:", ptyErr)
+			return ExitIOError
+		}
+		defer ptyDir.Close()
 		// Create the harness's runtime dirs (plus a redirected config home)
 		// before grant resolution existence-filters them.
 		if err := prepareSandboxDirs(harness.ResolvedCreateDirs()); err != nil {
@@ -625,6 +637,10 @@ func runServe(args []string, env *Env) int {
 		argv = injectUntrustedSkillDenies(argv, env.Stderr, "omac serve", prof, serveSkillWorkdirs(env.Workdir, workdir, desktopWorktrees)...)
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
+		}
+		argv = ptyDir.install(argv, plan)
+		if ptyDir != nil && verbose {
+			fmt.Fprintf(env.Stderr, "[verbose] pty socket folder: %s\n", ptyDir.Dir)
 		}
 		// Forward the selected harness's auth env vars through the default
 		// profile's restrictive allow_vars filter. (Control-plane port and
@@ -691,6 +707,7 @@ func runServe(args []string, env *Env) int {
 			})
 		}
 	}
+	ptyDir.apply(extra)
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] inner argv: %v\n", argv)
 	}

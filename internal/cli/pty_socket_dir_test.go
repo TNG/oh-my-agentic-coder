@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -167,7 +171,7 @@ type ptyLaunch struct {
 	stderr string
 }
 
-func launchForPTYSocketDir(t *testing.T, harnessName string, noSandbox bool, denyVars []string) ptyLaunch {
+func launchForPTYSocketDir(t *testing.T, command, harnessName string, noSandbox bool, denyVars []string) ptyLaunch {
 	t.Helper()
 	shortTmp, err := os.MkdirTemp("/tmp", "omac-cli-")
 	if err != nil {
@@ -210,12 +214,24 @@ func launchForPTYSocketDir(t *testing.T, harnessName string, noSandbox bool, den
 		t.Fatal(err)
 	}
 	env, stderr := launchTestEnv(t, t.TempDir())
-	code := runLaunch(env, launchOpts{
-		label:            "start",
-		harness:          ptyHarness(t, harnessName),
-		innerCmdOverride: capturePath,
-		noSandbox:        noSandbox,
-	})
+	var code int
+	switch command {
+	case "start":
+		code = runLaunch(env, launchOpts{
+			label:            "start",
+			harness:          ptyHarness(t, harnessName),
+			innerCmdOverride: capturePath,
+			noSandbox:        noSandbox,
+		})
+	case "serve":
+		args := []string{harnessName, "--no-audit", "--inner", capturePath}
+		if noSandbox {
+			args = append(args, "--no-sandbox")
+		}
+		code = runServe(args, env)
+	default:
+		t.Fatalf("unknown command %q", command)
+	}
 	result := ptyLaunch{code: code, stderr: stderr()}
 	if args, err := os.ReadFile(argsPath); err == nil {
 		result.args = strings.Fields(string(args))
@@ -226,12 +242,13 @@ func launchForPTYSocketDir(t *testing.T, harnessName string, noSandbox bool, den
 	return result
 }
 
-func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
+func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
+	t.Helper()
 	const variable = "OPENCODE_PTY_SOCKET_DIR"
 	before, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
 
 	t.Run("opencode sandboxed", func(t *testing.T) {
-		got := launchForPTYSocketDir(t, "opencode", false, nil)
+		got := launchForPTYSocketDir(t, command, "opencode", false, nil)
 		if got.code != ExitOK {
 			t.Fatalf("exit = %d, want ExitOK\nstderr:\n%s", got.code, got.stderr)
 		}
@@ -259,7 +276,7 @@ func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 		{"no sandbox", "opencode", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := launchForPTYSocketDir(t, tc.harness, tc.noSandbox, nil)
+			got := launchForPTYSocketDir(t, command, tc.harness, tc.noSandbox, nil)
 			if got.code != ExitOK {
 				t.Fatalf("exit = %d, want ExitOK\nstderr:\n%s", got.code, got.stderr)
 			}
@@ -273,7 +290,7 @@ func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 	}
 
 	t.Run("deny_vars matches", func(t *testing.T) {
-		got := launchForPTYSocketDir(t, "opencode", false, []string{"OPENCODE_*"})
+		got := launchForPTYSocketDir(t, command, "opencode", false, []string{"OPENCODE_*"})
 		if got.code != ExitConfigInvalid {
 			t.Errorf("exit = %d, want ExitConfigInvalid\nstderr:\n%s", got.code, got.stderr)
 		}
@@ -289,4 +306,59 @@ func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
 	if len(after) != len(before) {
 		t.Errorf("launches leaked folders: before %v, after %v", before, after)
 	}
+}
+
+func TestStartOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
+	assertOpenCodeGetsOwnPTYSocketDir(t, "start")
+}
+
+func TestServeOpenCodeGetsOwnPTYSocketDir(t *testing.T) {
+	assertOpenCodeGetsOwnPTYSocketDir(t, "serve")
+}
+
+func TestServeNoInnerCreatesNoPTYSocketDir(t *testing.T) {
+	omac := buildOmacWithTestPTYSocketParent(t)
+	isolateHome(t)
+	root := t.TempDir()
+	before, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, omac, "serve", "opencode", "--no-inner", "--no-audit")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "TMPDIR=.")
+	stdout, err := os.Create(filepath.Join(root, "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	cmd.Stdout = stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	for {
+		out, err := os.ReadFile(stdout.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "OMAC_CONTROL_BASE=") {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("control-plane-only exited before readiness: %v", err)
+		case <-ctx.Done():
+			t.Fatal("control-plane-only readiness timed out")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	after, _ := filepath.Glob(filepath.Join(ptySocketParent, ptySocketPattern))
+	if len(after) != len(before) {
+		t.Errorf("--no-inner created a pty socket folder: before %v, after %v", before, after)
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatal(err)
+	}
+	<-done
 }
