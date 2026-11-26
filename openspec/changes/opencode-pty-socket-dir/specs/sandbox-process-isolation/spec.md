@@ -6,8 +6,8 @@ requirement below is ADDED next to "Protected-path denials override grants"
 in openspec/changes/native-sandbox/specs/sandbox-process-isolation/spec.md,
 so archive native-sandbox before archiving this change.
 
-On macOS the socket-connect scenario depends on issue #512 (pull request
-#513), which makes protected paths deny Unix-socket connects.
+On macOS the socket-connect scenario builds on pull request #513 (merged),
+which makes protected paths deny Unix-socket connects.
 -->
 
 ## ADDED Requirements

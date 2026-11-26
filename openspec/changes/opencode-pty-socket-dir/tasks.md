@@ -1,9 +1,8 @@
 # Tasks: opencode-pty-socket-dir
 
 One pull request for all sections. Sections 1 to 3 remove the stall. Section 4
-needs pull request #513 (closes #512) on `main`; rebase after it is merged. If
-#513 is delayed for long, move section 4 and tasks 5.6 to 5.8 into a second
-pull request.
+builds on pull request #513 (merged 2026-11-26), which makes protected paths
+block socket connects on macOS.
 
 ## 1. Prove the approach by hand first (macOS, OpenCode ≥ 2.3.0)
 
@@ -90,7 +89,7 @@ Launch wiring:
   the listener outside the sandbox
 - [ ] 5.5 The folder is gone after the launch returns
 
-Protected path (needs #513):
+Protected path:
 
 - [ ] 5.6 Unit: the resolved protected paths contain the folder for the
   current uid on both platforms, and `override_deny` removes it

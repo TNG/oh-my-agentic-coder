@@ -150,12 +150,10 @@ All decisions below were made with the maintainer.
   `macos-listen-all-ports` (#521) replaces that with a rule for all paths the
   session may write to, which includes the new folder. This change works
   before and after #521.
-- **The protected path relies on #512.** On today's `main`, a protected path
-  on macOS blocks file access but not a socket connect. Pull request #513
-  ("close protected paths to socket use", closes #512) fixes that in the rule
-  generator. This change does not repeat that fix. Its pull request is rebased
-  after #513 is merged. If #513 is delayed for long, part 2 is split into its
-  own pull request so that the stall fix can ship.
+- **The protected path builds on #513.** Since pull request #513 (merged
+  2026-11-26, closes #512), a protected path on macOS also blocks a socket
+  connect, and omac warns at launch when a socket grant lies in a protected
+  path. This change only adds the shared folder to the protected list.
 - **One pull request** for both parts, the tests and the docs.
 - **Not a profile setting.** The folder is created per launch, so it cannot be
   written into a profile file. It is added at launch, the same way the tool
@@ -177,8 +175,8 @@ chosen design costs.
 | No OpenCode version check | Set the variable only for 2.x | A wrong version detection would bring the stall back silently | OpenCode 1.x sessions get an unused variable and an empty folder |
 | Built-in sandbox only | Set the variable for the nono backend too | omac cannot grant the folder to nono, so the helper would move out of reach of the user's nono profile | nono users on OpenCode ≥ 2.3.0 keep the stall until they change their nono profile |
 | Host state folder stays readable | Hide `~/.local/state/opencode` in this change | Safe only where omac redirects OpenCode's state, which today is `omac start` with OpenCode 2.x. Elsewhere it would break the helper and bring the stall back | Helper tokens and prompt history of other OpenCode processes stay readable. The tokens are unusable, because the sockets are blocked twice |
-| Reuse #513 for the generator gap | Fix protected-path socket connects here | It would duplicate an open pull request and conflict with it | The protected-path part waits for #513 |
-| One pull request | Split the stall fix from the protected path | Decided by the maintainer: fix and hardening ship together | The stall fix is tied to the merge of #513, unless the split in `tasks.md` is used |
+| Reuse #513 for the generator gap | Fix protected-path socket connects here | It would have duplicated a pull request that was open at the time | None since #513 is merged |
+| One pull request | Split the stall fix from the protected path | Decided by the maintainer: fix and hardening ship together | None since #513 is merged |
 | No sweep of leftover folders | Remove stale `/tmp/omac-pty-*` at launch | A wrong liveness check would delete a running session's folder | Empty folders remain after a crash until `/tmp` is emptied |
 
 ## Capabilities
@@ -254,7 +252,7 @@ Follow-up issues:
 
 Also out of scope:
 
-- The rule-generator fix for protected paths (#512, pull request #513).
+- The rule-generator fix for protected paths (#512), done in pull request #513.
 - The fix on OpenCode's side that remembers a failed helper start instead of
   retrying on every call (`anomalyco/opencode#64080`).
 - The stall under the deprecated nono backend.
