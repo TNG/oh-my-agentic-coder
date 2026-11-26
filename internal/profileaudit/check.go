@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
@@ -295,19 +296,11 @@ func grantCovers(grant, secret string) bool {
 	return false
 }
 
-// pathForms returns p and, when it differs, p with symlinks resolved in
-// its deepest existing ancestor.
+// pathForms returns p and, when it differs, its symlink-resolved form.
 func pathForms(p string) []string {
 	forms := []string{p}
-	dir, tail := p, ""
-	for dir != "/" && dir != "." {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			if r := filepath.Join(resolved, tail); r != p {
-				forms = append(forms, r)
-			}
-			break
-		}
-		dir, tail = filepath.Dir(dir), filepath.Join(filepath.Base(dir), tail)
+	if c := pathutil.Canonical(p); c != p {
+		forms = append(forms, c)
 	}
 	return forms
 }

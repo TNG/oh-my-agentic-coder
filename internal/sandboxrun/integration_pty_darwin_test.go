@@ -3,6 +3,7 @@
 package sandboxrun
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
@@ -99,6 +100,8 @@ func TestIntegrationPTYDirListenAndConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener := exec.Command(argv[0], argv[1:]...)
+	var listenerOutput bytes.Buffer
+	listener.Stdout, listener.Stderr = &listenerOutput, &listenerOutput
 	if err := listener.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +115,7 @@ func TestIntegrationPTYDirListenAndConnect(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the sandboxed process did not create %s", sock)
+			t.Fatalf("the sandboxed process did not create %s: %q", sock, listenerOutput.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

@@ -512,3 +512,18 @@ func TestAuditFlagsGrantOfSharedOpenCodePTYDir(t *testing.T) {
 		})
 	}
 }
+
+func TestAuditIgnoresGrantsThatDoNotCoverSharedOpenCodePTYDir(t *testing.T) {
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	for _, grant := range []string{dir + "0", dir + "/x"} {
+		t.Run(grant, func(t *testing.T) {
+			p := cleanProfile()
+			p.Filesystem.AllowUnixDir = []string{grant}
+			for _, f := range Check(p) {
+				if f.Category == CatFSGrant {
+					t.Errorf("allow_unix_dir %s should not be flagged; got %+v", grant, f)
+				}
+			}
+		})
+	}
+}
