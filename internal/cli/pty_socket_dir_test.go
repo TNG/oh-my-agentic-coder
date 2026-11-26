@@ -182,8 +182,8 @@ func TestOpenPTYSocketDir(t *testing.T) {
 	ptySocketParent = filepath.Join(t.TempDir(), "missing")
 	dir, code = openPTYSocketDir(&stderr, "omac start", oc, ptyPlan(), false)
 	ptySocketParent = parent
-	if dir != nil || code != ExitIOError || !strings.HasPrefix(stderr.String(), "omac start: pty socket folder: ") {
-		t.Errorf("creation fails: got %v, %d, %q; want nil, ExitIOError and the prefixed message", dir, code, stderr.String())
+	if dir != nil || code != ExitOK || !strings.HasPrefix(stderr.String(), "omac start: warning: could not create a folder for the shell helper of opencode (") {
+		t.Errorf("creation fails: got %v, %d, %q; want nil, ExitOK and the warning", dir, code, stderr.String())
 	}
 
 	dir, code = openPTYSocketDir(io.Discard, "omac start", oc, ptyPlan(), false)
@@ -385,6 +385,26 @@ func assertOpenCodeGetsOwnPTYSocketDir(t *testing.T, command string) {
 			}
 		})
 	}
+
+	t.Run("folder cannot be created", func(t *testing.T) {
+		parent := ptySocketParent
+		ptySocketParent = filepath.Join(t.TempDir(), "missing")
+		defer func() { ptySocketParent = parent }()
+
+		got := launchForPTYSocketDir(t, command, ptyLaunchSpec{harness: "opencode"})
+		if got.code != ExitOK {
+			t.Fatalf("exit = %d, want ExitOK\nstderr:\n%s", got.code, got.stderr)
+		}
+		if got.args == nil {
+			t.Fatalf("launcher did not run\nstderr:\n%s", got.stderr)
+		}
+		if slices.Contains(got.args, "--allow-unix-dir") {
+			t.Errorf("argv grants a unix dir: %v", got.args)
+		}
+		if !strings.Contains(got.stderr, "warning: could not create a folder for the shell helper of opencode") {
+			t.Errorf("stderr lacks the warning:\n%s", got.stderr)
+		}
+	})
 
 	t.Run("deny_vars matches", func(t *testing.T) {
 		got := launchForPTYSocketDir(t, command, ptyLaunchSpec{harness: "opencode", denyVars: []string{"OPENCODE_*"}})

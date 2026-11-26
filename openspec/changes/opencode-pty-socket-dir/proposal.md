@@ -159,6 +159,11 @@ All decisions below were made with the maintainer.
   connect, and omac warns at launch when a socket grant lies in a protected
   path. This change only adds the shared folder to the protected list.
 - **One pull request** for both parts, the tests and the docs.
+- **A folder that cannot be created does not stop the launch.** omac creates
+  the folder as the user who starts it, before the sandbox exists. If that
+  fails, for example on a machine with a read-only `/tmp`, omac warns and
+  launches without the folder. The harness then works as before this change,
+  with slow shell commands. The shared folder stays blocked either way.
 - **Not a profile setting.** The folder is created per launch, so it cannot be
   written into a profile file. It is added at launch, the same way the tool
   cache folder is (`injectSandboxFlag(argv, "--allow", …)` in

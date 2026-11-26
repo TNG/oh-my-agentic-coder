@@ -34,6 +34,10 @@ omac SHALL NOT create the folder or set the variable for other harnesses, with `
 - **WHEN** the session ends normally
 - **THEN** the session's folder under `/tmp` no longer exists
 
+#### Scenario: Folder cannot be created
+- **WHEN** the user who starts omac cannot create a folder under `/tmp`
+- **THEN** omac prints a warning and launches the harness without the folder, the grant and the variable
+
 #### Scenario: Profile blocks the variable
 - **WHEN** the effective profile has `environment.deny_vars: ["OPENCODE_*"]` and `omac start opencode` is launched in the built-in sandbox
 - **THEN** omac exits with a configuration error that names `OPENCODE_PTY_SOCKET_DIR`, before the harness starts

@@ -24,8 +24,11 @@ func needsPTYSocketDir(h config.Harness, plan sandboxPlan, noSandbox bool) bool 
 }
 
 // openPTYSocketDir checks the profile and creates the folder for a launch.
-// On failure it prints the reason after prefix and returns the exit code;
-// on success the code is ExitOK and the folder is nil when the launch needs none.
+// A profile that blocks the variable stops the launch: it prints the reason
+// after prefix and returns the exit code. Otherwise the code is ExitOK. The
+// folder is nil when the launch needs none, and also when it cannot be
+// created: the harness then runs without it, which only slows its shell
+// commands down, so the launch continues with a warning.
 func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sandboxPlan, noSandbox bool) (*ptySocketDir, int) {
 	if err := ptySocketDirDenied(h, plan, noSandbox); err != nil {
 		fmt.Fprintln(stderr, prefix+": pty socket folder:", err)
@@ -33,8 +36,8 @@ func openPTYSocketDir(stderr io.Writer, prefix string, h config.Harness, plan sa
 	}
 	dir, err := newPTYSocketDir(h, plan, noSandbox)
 	if err != nil {
-		fmt.Fprintln(stderr, prefix+": pty socket folder:", err)
-		return nil, ExitIOError
+		fmt.Fprintf(stderr, "%s: warning: could not create a folder for the shell helper of %s (%v); its shell commands may be slow\n", prefix, h.Name, err)
+		return nil, ExitOK
 	}
 	return dir, ExitOK
 }
