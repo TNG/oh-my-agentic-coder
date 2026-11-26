@@ -18,12 +18,13 @@ const sbplKeychainNameRegex = `\.[kK][eE][yY][cC][hH][aA][iI][nN](-[dD][bB])?$`
 // string generation — unit-testable on every platform; only the exec
 // path is darwin-specific.
 //
-// Rule order matters: read allows -> write allows -> protected-path denies
-// -> secret-name denies (.env, ...) -> keychain name-deny -> read-only
-// root-store re-allow. Seatbelt is last-match-wins, so the denies override
-// both read and write allows for those paths. The root-store re-allow is
-// the one rule allowed to undo a deny; any file allow emitted later (e.g.
-// the /dev devices) must not cover a protected path or a keychain file.
+// Seatbelt is last-match-wins, so the denies come after every allow:
+// allows (files, devices, network) -> keychain name-deny -> read-only
+// root-store re-allow -> secret-name denies (.env, ...) -> protected-path
+// denies. The root-store re-allow is the one allow that follows a deny. It
+// undoes only the keychain name-deny before it: the secret-name and
+// protected-path denies come later, so a user's deny that covers the root
+// store wins.
 func GenerateSBPL(g *Grants) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -109,26 +110,6 @@ func GenerateSBPL(g *Grants) string {
 	}
 	b.WriteString("\n")
 
-	// --- Protected-path and keychain denies (after all allows, so last-match-wins blocks both reads and writes) ---
-	for _, p := range g.ProtectedPaths {
-		for _, fp := range pathForms(p) {
-			fmt.Fprintf(&b, "(deny file-read* (subpath %s))\n", sbplQuote(fp))
-			fmt.Fprintf(&b, "(deny file-write* (subpath %s))\n", sbplQuote(fp))
-		}
-	}
-	b.WriteString(sbplNameDenies(g))
-	// securityd is reachable (see the mach section), so it decrypts any
-	// unlocked keychain whose file the process can read. Keychains outside
-	// the protected folders (e.g. a CI signing keychain in /tmp) must be
-	// hidden by name. Apple's read-only root stores stay readable: TLS
-	// trust evaluation needs them. The re-allow must stay directly after
-	// the name-deny: moved before it, the deny would hide the root store
-	// and break TLS again.
-	fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", sbplKeychainNameRegex)
-	fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", sbplKeychainNameRegex)
-	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
-	b.WriteString("\n")
-
 	// --- Devices every process needs ---
 	for _, dev := range []string{"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/dtracehelper"} {
 		fmt.Fprintf(&b, "(allow file-read* file-write-data (literal %s))\n", sbplQuote(dev))
@@ -139,7 +120,40 @@ func GenerateSBPL(g *Grants) string {
 
 	// --- Network ---
 	b.WriteString(generateSBPLNetwork(g))
+	b.WriteString("\n")
+
+	// --- Denies (last, so no allow can reopen them) ---
+	// securityd is reachable (see the mach section), so it decrypts any
+	// unlocked keychain whose file the process can read. Keychains outside
+	// the protected folders (e.g. a CI signing keychain in /tmp) must be
+	// hidden by name. Apple's read-only root stores stay readable: TLS
+	// trust evaluation needs them. The re-allow must stay directly after
+	// the name-deny: moved before it, the deny would hide the root store
+	// and break TLS again.
+	sbplDenyAll(&b, fmt.Sprintf("(regex #\"%s\")", sbplKeychainNameRegex))
+	b.WriteString("(allow file-read* (subpath \"/System/Library/Keychains\"))\n")
+
+	b.WriteString(sbplNameDenies(g))
+	for _, p := range g.ProtectedPaths {
+		for _, fp := range pathForms(p) {
+			sbplDenyAll(&b, "(subpath "+sbplQuote(fp)+")")
+		}
+	}
 	return b.String()
+}
+
+// sbplDeniedOps are the operations a protected path is closed to: those the
+// profile allows somewhere that a path filter can restrict. network-outbound
+// is among them because Seatbelt files a Unix-socket connect under it, not
+// under file access.
+var sbplDeniedOps = []string{"file-read*", "file-write*", "file-ioctl", "file-map-executable", "process-exec*", "network-outbound"}
+
+// sbplDenyAll closes whatever filter matches to every operation in
+// sbplDeniedOps.
+func sbplDenyAll(b *strings.Builder, filter string) {
+	for _, op := range sbplDeniedOps {
+		fmt.Fprintf(b, "(deny %s %s)\n", op, filter)
+	}
 }
 
 // generateSBPLNetwork emits the network section per NetworkMode.
@@ -285,8 +299,7 @@ func sbplNameDenies(g *Grants) string {
 				continue
 			}
 			for _, re := range res {
-				fmt.Fprintf(&b, "(deny file-read* (regex #\"%s\"))\n", re)
-				fmt.Fprintf(&b, "(deny file-write* (regex #\"%s\"))\n", re)
+				sbplDenyAll(&b, "(regex #\""+re+"\")")
 			}
 		}
 	}

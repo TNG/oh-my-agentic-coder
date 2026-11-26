@@ -136,6 +136,10 @@ func Run(opts Options) int {
 		recorder = newLearnRecorder(grants, intentBase)
 		grants = grants.withUnrestrictedFilesystem()
 	}
+	if runtime.GOOS == "darwin" {
+		builtInProtected := sandboxprofile.EffectiveProtectedPaths(sandboxprofile.PlatformBaseline(), nil)
+		warnSocketsClosedByProtection(stderr, grants, builtInProtected)
+	}
 
 	// Injected child env. The validated cache redirect is recreated here
 	// and proxy vars are added before the backend builds its rules.
