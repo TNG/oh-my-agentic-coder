@@ -138,14 +138,19 @@ func runGit(args []string, env *Env) int {
 				}
 			}
 			req.Expected = result.State
+			if action == "switch" {
+				var exists bool
+				req.Target, exists = result.State.Branches[req.Branch]
+				if !exists {
+					fmt.Fprintf(env.Stderr, "omac git: no local branch named %q\n", req.Branch)
+					return ExitMisuse
+				}
+			}
 			var nonce [16]byte
 			if _, err = rand.Read(nonce[:]); err == nil {
 				req.ID = result.State.Session + ":" + hex.EncodeToString(nonce[:])
 				if action == "branches" {
 					req.Target = result.State.Head
-				}
-				if action == "switch" {
-					req.Target = result.State.Branches[req.Branch]
 				}
 				result, err = call("POST", action, req)
 			}

@@ -79,7 +79,13 @@ func New(opts Options) (_ *Service, err error) {
 		return nil, err
 	}
 	s.gitInfo, err = os.Lstat(filepath.Join(root, ".git"))
-	if err != nil || !s.gitInfo.IsDir() {
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("no .git directory in %s; run from the repository root", root)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect Git metadata: %w", err)
+	}
+	if !s.gitInfo.IsDir() {
 		return nil, fmt.Errorf("git service supports only a real .git directory, not linked worktrees or separate gitdirs")
 	}
 	if err = s.validateRepository(); err != nil {

@@ -443,3 +443,26 @@ func TestIndexFailureRecoveryRequiresVerifiableCompletion(t *testing.T) {
 		t.Fatal("unreadable repository treated as unchanged")
 	}
 }
+
+func TestEnrollmentReportsRepositoryRoot(t *testing.T) {
+	dir := gitFixture(t)
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{sub, t.TempDir()} {
+		s, err := New(Options{Workdir: root, Name: "Test", Email: "test@example.invalid"})
+		if err == nil {
+			s.Close()
+			t.Fatal("enrolled missing repository")
+		}
+		if !strings.Contains(err.Error(), "run from the repository root") || !strings.Contains(err.Error(), root) {
+			t.Fatalf("missing repository: %v", err)
+		}
+	}
+	writeFile(t, filepath.Join(sub, ".git"), "gitdir: ../.git\n")
+	_, err := New(Options{Workdir: sub, Name: "Test", Email: "test@example.invalid"})
+	if err == nil || !strings.Contains(err.Error(), "linked worktrees or separate gitdirs") {
+		t.Fatalf("unsupported layout: %v", err)
+	}
+}

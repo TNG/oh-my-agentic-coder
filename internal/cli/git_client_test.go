@@ -115,3 +115,13 @@ func TestGitClientChecksMutationReceipt(t *testing.T) {
 		}
 	}
 }
+
+func TestGitClientReportsUnknownBranchBeforePosting(t *testing.T) {
+	code, output := runGitClientTest(t, []string{"switch", "missing"}, func(w http.ResponseWriter, r *http.Request, req gitservice.Request) {
+		t.Error("posted nonexistent branch")
+		w.WriteHeader(400)
+	})
+	if code != ExitMisuse || !strings.Contains(output, `no local branch named "missing"`) || strings.Contains(output, "Do not retry") {
+		t.Fatalf("exit=%d: %s", code, output)
+	}
+}

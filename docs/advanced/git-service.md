@@ -12,7 +12,7 @@ can still run under the usual sandbox policy.
 
 ## Start a session
 
-From an ordinary checkout, including an empty `git init` repository:
+From the root of an ordinary checkout, including an empty `git init` repository:
 
 ```sh
 omac start --git-service=prototype \
