@@ -52,9 +52,10 @@ func cacheTree(t *testing.T) string {
 
 func cacheWalk(t *testing.T, root string, cache *denyScanCache) []string {
 	t.Helper()
-	got, hitCap := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency)
+	scan := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, defaultScanParams(), make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency)
+	got := scan.matches
 	slices.Sort(got)
-	if hitCap {
+	if scan.hitCap {
 		t.Fatalf("unexpected cap hit walking %s", root)
 	}
 	return got
@@ -209,7 +210,7 @@ func TestDenyScanCacheFileRootSkipsReaddirs(t *testing.T) {
 // changed ones) and report the cap like a full recount would.
 func TestDenyScanCacheChargesCapAcrossPasses(t *testing.T) {
 	steadyState(t)
-	setDenyScanLimit(t, 40)
+	params := denyScanParams{limit: 40}
 	setDenyByName(t, true)
 	root := t.TempDir()
 	big := filepath.Join(root, "big")
@@ -222,8 +223,8 @@ func TestDenyScanCacheChargesCapAcrossPasses(t *testing.T) {
 		}
 	}
 	cache := newDenyScanCache()
-	if got, hitCap := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency); hitCap || len(got) != 0 {
-		t.Fatalf("first pass: matches %v, cap %v", got, hitCap)
+	if first := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, params, make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency); first.hitCap || len(first.matches) != 0 {
+		t.Fatalf("first pass: matches %v, cap %v", first.matches, first.hitCap)
 	}
 
 	// Grow past the cap inside the one directory the second pass
@@ -234,7 +235,7 @@ func TestDenyScanCacheChargesCapAcrossPasses(t *testing.T) {
 		}
 	}
 	bump(t, big)
-	if _, hitCap := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency); !hitCap {
+	if second := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, params, make(chan struct{}, denyScanConcurrency), cache, denyScanConcurrency); !second.hitCap {
 		t.Fatal("incremental pass must report the cap after the tree outgrew it")
 	}
 }
@@ -245,9 +246,10 @@ func TestDenyScanCacheChargesCapAcrossPasses(t *testing.T) {
 func TestDenyScanCacheThrottledConcurrency(t *testing.T) {
 	steadyState(t)
 	root := resolvePath(t, cacheTree(t))
-	got, hitCap := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, make(chan struct{}, 1), newDenyScanCache(), 1)
+	scan := walkOneDenyRoot(root, []string{".env"}, map[string]bool{}, defaultScanParams(), make(chan struct{}, 1), newDenyScanCache(), 1)
+	got := scan.matches
 	slices.Sort(got)
-	if hitCap {
+	if scan.hitCap {
 		t.Fatal("unexpected cap hit")
 	}
 	if want := filepath.Join(root, "sub1", "deep", ".env"); len(got) != 1 || got[0] != want {

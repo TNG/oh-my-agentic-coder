@@ -24,6 +24,11 @@ import (
 // friends): tests fake $HOME, but an ambient override names an absolute
 // path and would survive the fake.
 func TestMain(m *testing.M) {
+	// A launch test whose native profile reaches exec runs {{self}}, which is
+	// this test binary; without this exit it would rerun the whole suite.
+	if len(os.Args) > 1 && os.Args[1] == "sandbox" {
+		os.Exit(97)
+	}
 	keyring.MockInit()
 	clearHarnessHomeEnvs()
 	os.Exit(m.Run())

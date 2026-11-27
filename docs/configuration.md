@@ -82,12 +82,14 @@ omac creates this file the first time you run `omac start`. Key fields:
 | `environment.allow_vars` | `string[]` | see created file | Env vars passed into the sandbox; everything else is stripped |
 | `filesystem.protected_paths` | `string[]` | `["~/.ssh", "~/.gnupg", ...]` | Paths that remain blocked even if a broader grant would cover them |
 | `filesystem.registry_config` | `string[]` | `[]` | Ecosystems whose package-registry settings are copied into the sandbox without their credentials. Currently `"npm"`. See [Private package registries](#private-package-registries) |
+| `filesystem.deny_scan.max_entries` | `number` | `1000000` | How many files and folders omac lists per granted directory when it looks for `.env` files to hide. Must be positive. Example: `{"filesystem": {"deny_scan": {"max_entries": 2000000}}}`. See [Filesystem](./security.md#filesystem) |
+| `filesystem.deny_scan.skip_dir_names` | `string[]` | `[]` | Folder names the `.env` scan does not enter, at any depth, in addition to the built-in ones such as `node_modules` and `build`. Each entry is one name without `/`. Example: `{"filesystem": {"deny_scan": {"skip_dir_names": ["build-gradle"]}}}`. A `.env` inside a skipped folder is not hidden |
 
 See [Security model → Sandbox access reference](./security.md#sandbox-access-reference) for the full list of what the agent can and cannot access.
 
 omac does not rewrite this file on its own once it exists, so upgrading omac does not add newer default grants to a profile you already have. The one exception is a learn-mode session (`omac sandbox run --learn`) where you approve adding folders, which rewrites the file. To pick up the newer defaults, make a copy of your current file, delete the original, and run `omac start` to write a fresh one. Then copy any changes you had made back from your saved copy into the new file.
 
-The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
+The reverse also applies. An unknown field is an error, so that a typo cannot quietly weaken the sandbox. A file using a newer field, such as `filesystem.registry_config` or `filesystem.deny_scan`, is therefore rejected by an older omac. If you share this file between machines, upgrade omac on all of them before adding a new field.
 
 ### Opening a port
 

@@ -79,12 +79,12 @@ func TestSbplNameRegex(t *testing.T) {
 // be hidden too, so that setup keeps refusing, as does Linux.
 func TestResolveGrantsHidesByNameWhenScanIsIncomplete(t *testing.T) {
 	setDenyByName(t, true)
-	setDenyScanLimit(t, 20000)
 	workdir := t.TempDir()
 	populateLargeTree(t, workdir)
 	prof := &sandboxprofile.Profile{
-		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
-		Network: sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
+		Network:    sandboxprofile.Network{Mode: sandboxprofile.ModeBlocked},
 	}
 
 	var notices strings.Builder
@@ -103,9 +103,13 @@ func TestResolveGrantsHidesByNameWhenScanIsIncomplete(t *testing.T) {
 		t.Errorf("profile lacks the name rule for %s", workdir)
 	}
 
+	scan, err := ScanProtected(prof, workdir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stop := make(chan struct{})
 	close(stop)
-	if err := WatchNewProtected(prof, workdir, time.Hour, func([]string) {}, stop, WatchTuning{}); err != nil {
+	if err := WatchNewProtected(scan, prof, time.Hour, func([]string) {}, stop, WatchTuning{}); err != nil {
 		t.Errorf("the mid-session watch must start too: %v", err)
 	}
 
@@ -137,14 +141,20 @@ func TestResolveGrantsNoNameRuleForCompleteScan(t *testing.T) {
 // must stop with an error instead of quietly checking only part of it.
 func TestWatchNewProtectedStopsWhenFolderOutgrowsCap(t *testing.T) {
 	setDenyByName(t, true)
-	setDenyScanLimit(t, 20000)
 	workdir := t.TempDir()
-	prof := &sandboxprofile.Profile{Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite}}
+	prof := &sandboxprofile.Profile{
+		Workdir:    sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{DenyScan: smallScanLimit()},
+	}
+	scan, err := ScanProtected(prof, workdir, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stop := make(chan struct{})
 	defer close(stop)
 	done := make(chan error, 1)
 	go func() {
-		done <- WatchNewProtected(prof, workdir, 10*time.Millisecond, func([]string) {}, stop, WatchTuning{})
+		done <- WatchNewProtected(scan, prof, 10*time.Millisecond, func([]string) {}, stop, WatchTuning{})
 	}()
 
 	populateLargeTree(t, workdir)

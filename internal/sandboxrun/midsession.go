@@ -3,6 +3,7 @@ package sandboxrun
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -54,33 +55,33 @@ func (t resolvedTuning) fullPassDue(ticks int) bool {
 }
 
 // WatchNewProtected polls the deny-scan roots for files that match a
-// protected pattern but were created after the initial snapshot,
-// calling onNew for each. It blocks until stop is closed; the caller
-// owns the goroutine.
+// protected pattern but were created after the launch scan, calling onNew
+// for each. It blocks until stop is closed; the caller owns the goroutine.
 //
 // ResolveGrants masks only files that exist at launch, and the kernel
 // enforcement it feeds (bwrap binds, Seatbelt profiles) is immutable
-// for the session — so a mid-session match is readable by the agent.
+// for the session, so a mid-session match is readable by the agent.
 // This closes the information gap: the parent notices and can warn
 // the user that only a restart restores protection.
 //
-// Snapshot and ticks reuse resolveDenyPaths on the same roots, so a
-// tick recomputes what launch would mask now. onNew receives one batch
-// per tick, so a worktree setup that creates several dotenv files at
-// once costs one alert, not one per file. A path is reported once: a
+// The watch starts from scan instead of scanning again: scan.Matches are
+// the known files, so a file created between the launch scan and the first
+// tick is reported on that tick. Roots the user accepted as incomplete and
+// roots covered by the macOS name rule are not walked again. onNew receives
+// one batch per tick, so a worktree setup that creates several dotenv files
+// at once costs one alert, not one per file. A path is reported once: a
 // masked path keeps its mask even when the underlying file is recreated
 // (the bind mount shadows the path, not the inode), and an already-known
 // path must not re-alert on every tick.
 //
-// The walk carries a denyScanCache across ticks: the snapshot seeds it
-// and every tick re-walks incrementally, re-reading only directories
-// whose fingerprint changed since the previous pass. A tick's result
-// lists only matches from re-read directories — every match of an
-// unchanged directory was reported by an earlier pass, so new-match
-// detection is unchanged — and an idle pass costs one lstat per
-// directory instead of re-opening and re-reading the whole grant, which
-// on macOS's Seatbelt-backed home paths burned multiple cores for as
-// long as the session sat idle.
+// The walk carries scan's denyScanCache across ticks and re-walks
+// incrementally, re-reading only directories whose fingerprint changed
+// since the previous pass. A tick's result lists only matches from re-read
+// directories, since every match of an unchanged directory was reported
+// by an earlier pass, and an idle pass costs one lstat per directory
+// instead of re-opening and re-reading the whole grant, which on macOS's
+// Seatbelt-backed home paths burned multiple cores for as long as the
+// session sat idle.
 //
 // Directory timestamps come from the filesystem's coarse clock, so a
 // change can share the previous read's timestamps and slip past the
@@ -90,36 +91,32 @@ func (t resolvedTuning) fullPassDue(ticks int) bool {
 // A full uncached pass remains available via tuning.FullPassTicks as an
 // opt-in backstop for filesystems with timestamps coarser than that
 // window; it is off by default.
-func WatchNewProtected(p *sandboxprofile.Profile, workdir string, interval time.Duration, onNew func(paths []string), stop <-chan struct{}, tuning WatchTuning) error {
+func WatchNewProtected(scan *ProtectedScan, p *sandboxprofile.Profile, interval time.Duration, onNew func(paths []string), stop <-chan struct{}, tuning WatchTuning) error {
 	t := tuning.resolve()
 	base := sandboxprofile.PlatformBaseline()
-	roots, err := denyScanRoots(p, workdir)
-	if err != nil {
-		return err
-	}
-	protected := sandboxprofile.EffectiveProtectedPaths(base, p.Filesystem.OverrideDeny)
-	protected = append(protected, literalDenies(p)...)
-	cache := newDenyScanCache()
+	cache := scan.cache
+	params := scan.params
+	roots := slices.DeleteFunc(slices.Clone(scan.roots), func(r string) bool {
+		return slices.Contains(scan.ByNameRoots, r) || slices.Contains(scan.Accepted, r)
+	})
 	resolve := func(scanCache *denyScanCache, concurrency int) ([]string, error) {
-		out, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil, scanCache, concurrency)
-		if err == nil && len(byName.roots) > 0 {
-			// The folder grew past the cap during the session. The profile
-			// has no name rule for it, so stop as an incomplete scan does.
-			err = fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session", byName.roots[0], denyScanLimit.Load())
+		out, byName, incomplete, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, scan.protected, params, nil, scanCache, concurrency)
+		if err != nil {
+			return nil, err
 		}
-		return out, err
+		var grown []string
+		for _, s := range incomplete {
+			grown = append(grown, s.root)
+		}
+		grown = append(grown, byName.roots...)
+		if len(grown) > 0 {
+			return nil, fmt.Errorf("sandbox grants: filesystem.deny scan of %s hit the %d-entry limit during the session; raise \"filesystem.deny_scan.max_entries\" in %s to keep watching it", strings.Join(grown, ", "), params.limit, profileName(scan.profilePath))
+		}
+		return out, nil
 	}
 
 	known := map[string]bool{}
-	initial, byName, err := resolveDenyPaths(p.Filesystem.Deny, base.WorkdirProtected, p.Filesystem.OverrideDeny, roots, protected, nil, cache, denyScanConcurrency)
-	if err != nil {
-		return err
-	}
-	// A folder too large to scan is covered by a name rule (macOS), which
-	// also hides files created during the session, so the ticks leave it
-	// out instead of re-walking it up to the cap every interval.
-	roots = slices.DeleteFunc(roots, func(r string) bool { return slices.Contains(byName.roots, r) })
-	for _, m := range initial {
+	for _, m := range scan.Matches {
 		known[m] = true
 	}
 

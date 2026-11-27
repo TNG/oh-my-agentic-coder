@@ -547,12 +547,140 @@ func (r *recordingAuditor) RunID() string       { return "" }
 func (r *recordingAuditor) NextSeq() uint64     { return 0 }
 
 func TestStartProtectedWatchSkipsNonNative(t *testing.T) {
-	if w := startProtectedWatch(audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir", sandboxrun.WatchTuning{}); w != nil {
-		t.Fatal("non-native plan must not start a watch")
+	env := &Env{}
+	if w, _, err := startProtectedWatch(env, audit.Nop(), nil, sandboxPlan{Name: "nono"}, nil, "/workdir", sandboxrun.WatchTuning{}); w != nil || err != nil {
+		t.Fatalf("non-native plan must not start a watch: %v", err)
 	}
 	argv := []string{"/omac", "not-sandbox", "run"}
 	plan := sandboxPlan{Name: "builtin", Native: true, Policy: &sandboxprofile.Profile{}}
-	if w := startProtectedWatch(audit.Nop(), nil, plan, argv, "/workdir", sandboxrun.WatchTuning{}); w != nil {
-		t.Fatal("argv that is not a sandbox run must not start a watch")
+	w, got, err := startProtectedWatch(env, audit.Nop(), nil, plan, argv, "/workdir", sandboxrun.WatchTuning{})
+	if w != nil || err != nil {
+		t.Fatalf("argv that is not a sandbox run must not start a watch: %v", err)
+	}
+	if !slices.Equal(got, argv) {
+		t.Errorf("argv = %v, want it unchanged", got)
+	}
+}
+
+// overLimitWorkdir returns a workdir holding more entries than the profile's
+// max_entries of 100. The override_deny entry inside it keeps the macOS name
+// rule from covering the folder, so the limit asks on every platform.
+func overLimitWorkdir(t *testing.T, entries int) (string, *sandboxprofile.Profile) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range entries {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%03d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limit := int64(100)
+	p := &sandboxprofile.Profile{
+		Workdir: sandboxprofile.Workdir{Access: sandboxprofile.AccessReadWrite},
+		Filesystem: sandboxprofile.Filesystem{
+			DenyScan:     &sandboxprofile.DenyScan{MaxEntries: &limit},
+			OverrideDeny: []string{filepath.Join(root, ".env")},
+		},
+	}
+	return root, p
+}
+
+func stubScanAsk(t *testing.T, choices ...sandboxrun.ScanChoice) *int {
+	t.Helper()
+	calls := 0
+	orig := scanAskFor
+	scanAskFor = func(*Env, string) sandboxrun.ScanAsk {
+		return func([]string, int64) sandboxrun.ScanChoice {
+			calls++
+			if calls > len(choices) {
+				return sandboxrun.ScanAbort
+			}
+			return choices[calls-1]
+		}
+	}
+	t.Cleanup(func() { scanAskFor = orig })
+	return &calls
+}
+
+func reportText(w *protectedWatch) string {
+	var buf bytes.Buffer
+	w.report(false, func(format string, args ...any) { fmt.Fprintf(&buf, format+"\n", args...) })
+	return buf.String()
+}
+
+func TestStartProtectedWatchInjectsDecision(t *testing.T) {
+	isolateHome(t)
+	root, p := overLimitWorkdir(t, 150)
+	calls := stubScanAsk(t, sandboxrun.ScanContinue)
+	argv := []string{"/omac", "sandbox", "run", "--profile", "default", "--", "true"}
+
+	w, got, err := startProtectedWatch(&Env{}, audit.Nop(), nil, sandboxPlan{Native: true, Policy: p}, argv, root, sandboxrun.WatchTuning{})
+	if err != nil {
+		t.Fatalf("startProtectedWatch: %v", err)
+	}
+	defer reportText(w)
+	if *calls != 1 {
+		t.Errorf("ask calls = %d, want 1", *calls)
+	}
+	limit := slices.Index(got, "--deny-scan-limit")
+	if limit < 0 || limit+1 >= len(got) || got[limit+1] != "200" {
+		t.Fatalf("argv = %v, want --deny-scan-limit 200", got)
+	}
+	if sep := slices.Index(got, "--"); sep < limit {
+		t.Errorf("argv = %v, decision flags must come before --", got)
+	}
+}
+
+func TestStartProtectedWatchNoTerminalRefuses(t *testing.T) {
+	isolateHome(t)
+	root, p := overLimitWorkdir(t, 150)
+	stdin, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	defer stdinWrite.Close()
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	plan := sandboxPlan{Native: true, Policy: p, PolicyPath: "/p/default.json"}
+	argv := []string{"/omac", "sandbox", "run", "--", "true"}
+
+	w, _, err := startProtectedWatch(&Env{Stdin: stdin, Stderr: stderr}, audit.Nop(), nil, plan, argv, root, sandboxrun.WatchTuning{})
+	if w != nil {
+		reportText(w)
+		t.Fatal("a refused scan must not start the watch")
+	}
+	if err == nil || !strings.Contains(err.Error(), "no terminal") || !strings.Contains(err.Error(), "/p/default.json") {
+		t.Fatalf("err = %v, want the no-terminal refusal naming the profile", err)
+	}
+}
+
+func TestStartProtectedWatchNotesAfterContinue(t *testing.T) {
+	isolateHome(t)
+	argv := []string{"/omac", "sandbox", "run", "--", "true"}
+
+	root, p := overLimitWorkdir(t, 150)
+	stubScanAsk(t, sandboxrun.ScanContinue)
+	w, _, err := startProtectedWatch(&Env{}, audit.Nop(), nil, sandboxPlan{Native: true, Policy: p}, argv, root, sandboxrun.WatchTuning{})
+	if err != nil {
+		t.Fatalf("startProtectedWatch: %v", err)
+	}
+	if got := reportText(w); !strings.Contains(got, "needed") {
+		t.Errorf("report after continue = %q, want the entries the scan needed", got)
+	}
+
+	root, p = overLimitWorkdir(t, 50)
+	calls := stubScanAsk(t)
+	w, _, err = startProtectedWatch(&Env{}, audit.Nop(), nil, sandboxPlan{Native: true, Policy: p}, argv, root, sandboxrun.WatchTuning{})
+	if err != nil {
+		t.Fatalf("startProtectedWatch: %v", err)
+	}
+	if got := reportText(w); *calls != 0 || strings.Contains(got, "needed") {
+		t.Errorf("report without a question = %q (ask calls %d), want no note", got, *calls)
 	}
 }
