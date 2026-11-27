@@ -20,6 +20,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
+	"github.com/TNG/oh-my-agentic-coder/internal/gitservice"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
@@ -77,7 +78,9 @@ type launchOpts struct {
 	sessionID string
 	// openPorts are extra loopback ports from --open-port (repeatable),
 	// typically a local webServer port for browser tests.
-	openPorts []int
+	openPorts                     []int
+	gitService, gitName, gitEmail string
+	gitWrapper                    bool
 	// innerArgs are appended to the resolved inner command (user-supplied
 	// trailing `-- args` plus any command-specific flags like --continue).
 	innerArgs []string
@@ -107,6 +110,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		noAudit            = fs.Bool("no-audit", false, "Disable the security audit trail.")
 		auditStrict        = fs.Bool("audit-strict", false, "Fail-closed: abort if the audit log cannot be written.")
 		sessionID          = fs.String("session", "", "Continue a specific session by id instead of the most recent one. (shorthand: -s)")
+		gitMode            = fs.String("git-service", "", "Opt-in Linux Git service: prototype. Makes this checkout's .git read-only.")
+		gitName            = fs.String("git-user-name", "", "Author and committer name for the Git service.")
+		gitEmail           = fs.String("git-user-email", "", "Author and committer email for the Git service.")
+		gitWrapper         = fs.Bool("git-wrapper", false, "Route a small subset of git commands through the Git service.")
 	)
 	var openPorts intMultiFlag
 	fs.Var(&openPorts, "open-port", "Allow the sandboxed process to bind and connect on this TCP port (repeatable). Useful for a local app/dev server the agent or its tools talk to — e.g. Playwright/Vite/Next on :3000. On Linux, Landlock cannot limit that to loopback: outbound TCP to any host on the same port is also allowed.")
@@ -171,6 +178,10 @@ func parseLaunchArgs(cmdName string, args []string, env *Env) (launchOpts, int) 
 		sessionID:          *sessionID,
 		openPorts:          append([]int(nil), openPorts...),
 		innerArgs:          innerArgs,
+		gitService:         *gitMode,
+		gitName:            *gitName,
+		gitEmail:           *gitEmail,
+		gitWrapper:         *gitWrapper,
 	}, ExitOK
 }
 
@@ -265,6 +276,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 	}
 	profName := plan.Name
 	prof := plan.Launcher
+	if err := validateGitServiceLaunch(opts, plan); err != nil {
+		fmt.Fprintln(env.Stderr, prefix+":", err)
+		return ExitConfigInvalid
+	}
 
 	// 1b. Pre-flight: inner harness binary must be on $PATH. Checked on the
 	//     resolved argv (profile inner_cmd, else harness default) — the same
@@ -593,6 +608,16 @@ func runLaunch(env *Env, opts launchOpts) int {
 		return ExitIOError
 	}
 	defer auditor.Close()
+	var gitService *gitservice.Service
+	if opts.gitService != "" {
+		gitService, err = gitservice.New(gitservice.Options{Workdir: env.Workdir, Name: opts.gitName, Email: opts.gitEmail, Audit: gitServiceAudit(auditor, env.Workdir)})
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": Git service:", err)
+			return ExitConfigInvalid
+		}
+		defer gitService.Close()
+		fmt.Fprintln(env.Stderr, "omac: Git service prototype enabled. Only this checkout is protected; host hooks may still execute agent-edited source scripts.")
+	}
 
 	// Per-session sandbox temp dir. Bun-built harnesses (opencode) extract
 	// an embedded runtime into TMPDIR at startup; the sandbox must grant
@@ -706,6 +731,15 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Mount unapproved skills as broken routes so a probe gets an
 	// actionable 502 instead of a silent 404 (and they never spawn).
 	routes = append(routes, refusedRoutes...)
+	if gitService != nil {
+		for _, route := range routes {
+			if route.Mount == "git" {
+				fmt.Fprintln(env.Stderr, prefix+": skill mount git conflicts with the Git service")
+				return ExitConfigInvalid
+			}
+		}
+		routes = append(routes, gitServiceRoute(gitService))
+	}
 
 	// 7. Open both listeners (Unix socket + ephemeral 127.0.0.1 TCP) and
 	//    mount routes. We always bind both so clients can pick whichever
@@ -770,6 +804,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	// Inject the sandbox briefing: Claude via its --append-system-prompt flag
 	// (SystemContextArgs), OpenCode via OMAC_SANDBOX_BRIEFING set below.
 	briefingText, injectBriefing := briefingInjection(noSandbox, inner, harness, lc.Sandbox.Briefing, cacheScope)
+	if gitService != nil && injectBriefing {
+		briefingText += gitServiceBriefing
+	}
 	if injectBriefing && harness.SystemContextArgs != nil {
 		inner = append(inner, harness.SystemContextArgs(briefingText)...)
 	}
@@ -858,14 +895,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			argv = injectSandboxFlag(argv, "--audit-run-id", auditor.RunID())
 			argv = injectSandboxFlag(argv, "--audit-mode", string(auditCfg.Mode))
 		}
-		watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
-			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
-			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
-		})
-		if err != nil {
-			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, err)
-			return ExitConfigInvalid
-		}
 	}
 	if verbose {
 		fmt.Fprintf(env.Stderr, "[verbose] sandbox argv: %v\n", argv)
@@ -934,6 +963,40 @@ func runLaunch(env *Env, opts launchOpts) int {
 		extra["OMAC_CONTROL_TOKEN"] = reloader.controlToken
 	}
 	extra["OMAC_FACADE_TOKEN"] = reloader.facade.FacadeToken
+	if gitService != nil {
+		extra["OMAC_GIT_BASE"] = fmt.Sprintf("http://127.0.0.1:%d/git", tcpPort)
+		extra["GIT_OPTIONAL_LOCKS"] = "0"
+		argv = injectSandboxFlag(argv, "--allow-env", "GIT_OPTIONAL_LOCKS")
+		if opts.gitWrapper {
+			dir, cleanup, err := createGitWrapper()
+			if err != nil {
+				fmt.Fprintln(env.Stderr, prefix+": Git wrapper:", err)
+				return ExitIOError
+			}
+			defer cleanup()
+			argv = injectSandboxFlag(argv, "--read", dir)
+			extra["PATH"] = dir + string(os.PathListSeparator) + os.Getenv("PATH")
+		}
+		argv, err = configureGitService(gitService, plan, argv)
+		if err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": Git service policy:", err)
+			return ExitConfigInvalid
+		}
+	}
+	if !noSandbox {
+		// Resolve the watch only after every launch-time grant and deny is final.
+		watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
+			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
+		})
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, err)
+			return ExitConfigInvalid
+		}
+		defer watch.report(verbose, func(format string, args ...any) {
+			fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
+		})
+	}
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;
 		// Claude ignores it (it gets the briefing via the flag above).
@@ -1016,7 +1079,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}, hintTimeout)
 	}
 
-	code, err := sandbox.ExecWithReadyPID(argv, extra, onReady)
+	code, err := sandbox.ExecInDir(argv, extra, env.Workdir, onReady)
 	auditor.Emit(audit.SessionStop(code))
 	if ocPin != nil {
 		// Always report a failed save: otherwise the user silently re-picks
@@ -1025,9 +1088,6 @@ func runLaunch(env *Env, opts launchOpts) int {
 			fmt.Fprintf(env.Stderr, "%s: opencode v2 model state not saved: %v\n", prefix, stateErr)
 		}
 	}
-	watch.report(verbose, func(format string, args ...any) {
-		fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
-	})
 	if finishServiceCheck != nil {
 		svcPID, svcErr := finishServiceCheck()
 		if svcErr != nil {

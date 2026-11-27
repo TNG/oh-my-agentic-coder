@@ -317,6 +317,32 @@ primitives built into the OS so confinement is enforced by the kernel.
 | Secret store | Keychain | Secret Service |
 | Prompt dialog | AppleScript | zenity / kdialog |
 
+## Git metadata: opt-in prototype
+
+Without the Git service option, an ordinary checkout's `.git` is still inside
+the writable project grant. An agent can modify hooks or command-executing Git
+configuration that a later host Git command may run outside the sandbox
+([#542](https://github.com/TNG/oh-my-agentic-coder/issues/542)). Do not treat the
+default plain-checkout policy as protection against that persistence vector.
+
+On Linux, `omac start --git-service=prototype` makes the **whole enrolled
+`.git` directory** read-only. Permission-controlled staging, commits, branch
+creation and clean branch switching run through isolated workers with private
+configuration, no hooks or credentials, and no network. Source editing, builds,
+tests and local Git reads remain available under the usual grants. Setup failure
+aborts launch; a service failure never makes metadata writable. Directories
+containing protected files are also fixed in place for the session, while their
+other contents remain editable. This prevents renaming a masked secret out of
+the service's saved deny paths.
+
+This is opt-in and single-checkout only, not protection for every repository in
+a writable tree. It does not change existing linked-worktree behavior or
+standalone `omac sandbox run` defaults. Unusual mount aliases and concurrent
+host Git mutations are unsupported. Existing host hooks may still execute
+agent-edited source scripts. Read the [Git service guide](./advanced/git-service.md)
+for the supported layouts, permissions, configuration differences and recovery
+procedure before enabling it.
+
 ## Sandbox access reference
 
 The table below lists which paths, ports, and environment variables the sandbox

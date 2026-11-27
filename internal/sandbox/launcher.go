@@ -292,6 +292,12 @@ func ExecWithReady(argv []string, extraEnv map[string]string, onReady func()) (i
 // ExecWithReadyPID is ExecWithReady with the child's pid (also its process
 // group id) passed to onReady.
 func ExecWithReadyPID(argv []string, extraEnv map[string]string, onReady func(pid int)) (int, error) {
+	return ExecInDir(argv, extraEnv, "", onReady)
+}
+
+// ExecInDir starts the launcher in the selected workdir, so a native sandbox
+// child resolves the same repository and profile paths as its parent.
+func ExecInDir(argv []string, extraEnv map[string]string, workdir string, onReady func(pid int)) (int, error) {
 	// Inherit host env, then overlay extras. Appending can leave a key twice
 	// (an inherited value and an extra); os/exec keeps only the last value of
 	// a duplicate key, so the extra wins and the child sees a single entry.
@@ -299,7 +305,7 @@ func ExecWithReadyPID(argv []string, extraEnv map[string]string, onReady func(pi
 	for k, v := range extraEnv {
 		env = append(env, k+"="+v)
 	}
-	return ExecWithEnv(argv, env, "", onReady)
+	return ExecWithEnv(argv, env, workdir, onReady)
 }
 
 // newChildCmd builds the child command with its stdio, environment and

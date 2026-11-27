@@ -52,3 +52,23 @@ func TestCanonicalEmpty(t *testing.T) {
 		t.Fatalf("Canonical(\"\") = %q, want empty", got)
 	}
 }
+
+func TestExistingParentsWithin(t *testing.T) {
+	root := Canonical(t.TempDir())
+	parent := filepath.Join(root, "parent")
+	deep := filepath.Join(parent, "deep")
+	if err := os.MkdirAll(deep, 0700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ExistingParentsWithin(root, []string{filepath.Join(deep, ".env"), filepath.Join(parent, "another"), filepath.Join(root+"-other", "not-covered"), filepath.Join(root, "missing", "secret")})
+	if err != nil || len(got) != 2 || got[0] != parent || got[1] != deep {
+		t.Fatalf("parents=%v error=%v", got, err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(parent, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExistingParentsWithin(root, []string{filepath.Join(alias, ".env")}); err == nil {
+		t.Fatal("accepted symlink parent")
+	}
+}
