@@ -220,7 +220,7 @@ func TestWorkerEnvironmentIsNotInherited(t *testing.T) {
 	}
 }
 
-func TestMutationFailureIsNotReplayedOrSilentlyRecovered(t *testing.T) {
+func TestRejectedMutationIsNotReplayedAndServiceRecovers(t *testing.T) {
 	dir := gitFixture(t)
 	s := newTestService(t, dir)
 	writeFile(t, filepath.Join(dir, "source"), "new")
@@ -228,7 +228,7 @@ func TestMutationFailureIsNotReplayedOrSilentlyRecovered(t *testing.T) {
 	writeFile(t, filepath.Join(dir, ".git", "index.lock"), "unrelated lock")
 	r := Request{ID: fmt.Sprintf("%s:%032x", state.Session, 1), Expected: &state, Paths: []string{"source"}}
 	code, failed := call(t, s, "stage", &r)
-	if code != 409 || !failed.Unknown {
+	if code != 409 || failed.Unknown {
 		t.Fatalf("lock conflict: %d %+v", code, failed)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, ".git", "index.lock")); err != nil || string(data) != "unrelated lock" {
@@ -238,16 +238,14 @@ func TestMutationFailureIsNotReplayedOrSilentlyRecovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, again := call(t, s, "stage", &r)
-	if code != 409 || again.Error != failed.Error || !again.Unknown {
+	if code != 409 || again.Error != failed.Error || again.Unknown {
 		t.Fatal("retried a failed operation")
 	}
 	r.ID = fmt.Sprintf("%s:%032x", state.Session, 2)
-	if code, result := call(t, s, "stage", &r); code != 409 || !result.Unknown {
-		t.Fatal("admitted mutation after uncertain result")
+	if code, result := call(t, s, "stage", &r); code != 200 || result.Unknown {
+		t.Fatalf("rejected request blocked later staging: %d %+v", code, result)
 	}
-	if after := status(t, s); after.Index != state.Index {
-		t.Fatal("index changed despite lock conflict")
-	}
+
 }
 
 func TestOperationLedgerLimitAndBusyService(t *testing.T) {
@@ -390,5 +388,58 @@ func TestCanceledClientRetainsKnownCommitOutcome(t *testing.T) {
 	}
 	if got := fixtureGit(t, dir, "rev-list", "--count", "HEAD"); got != "1" {
 		t.Fatalf("lost response replayed commit: %s", got)
+	}
+}
+
+func TestFailedStageOutcomeDependsOnIndex(t *testing.T) {
+	for _, paths := range [][]string{{"missing"}, {"ignored"}, {"source", "ignored"}} {
+		t.Run(strings.Join(paths, "+"), func(t *testing.T) {
+			dir := gitFixture(t)
+			writeFile(t, filepath.Join(dir, ".gitignore"), "ignored\n")
+			writeFile(t, filepath.Join(dir, "ignored"), "ignored contents")
+			writeFile(t, filepath.Join(dir, "source"), "valid contents")
+			s := newTestService(t, dir)
+			before := status(t, s)
+			r := Request{ID: fmt.Sprintf("%s:%032x", s.session, 1), Expected: &before, Paths: paths}
+			code, failed := call(t, s, "stage", &r)
+			after := status(t, s)
+			partial := len(paths) > 1
+			if code != 409 || failed.Unknown != partial || (before.Index != after.Index) != partial {
+				t.Fatalf("stage: %d %+v, index changed=%t", code, failed, before.Index != after.Index)
+			}
+			code, replay := call(t, s, "stage", &r)
+			if code != 409 || replay.Error != failed.Error || replay.Unknown != partial {
+				t.Fatal("failed request was replayed")
+			}
+			r.ID = fmt.Sprintf("%s:%032x", s.session, 2)
+			r.Expected, r.Paths = &after, []string{"source"}
+			code, next := call(t, s, "stage", &r)
+			if (code == 200) == partial || next.Unknown != partial {
+				t.Fatalf("follow-up: %d %+v", code, next)
+			}
+		})
+	}
+}
+
+func TestIndexFailureRecoveryRequiresVerifiableCompletion(t *testing.T) {
+	s := newTestService(t, gitFixture(t))
+	before := status(t, s)
+	_, failure := s.run(context.Background(), true, false, nil, "add", "--", "missing")
+	if failure == nil || s.indexMayHaveChanged(context.Background(), before, failure) {
+		t.Fatal("completed unchanged failure not recoverable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !s.indexMayHaveChanged(ctx, before, failure) {
+		t.Fatal("cancellation treated as known outcome")
+	}
+	if !s.indexMayHaveChanged(context.Background(), before, fmt.Errorf("unverifiable worker failure")) {
+		t.Fatal("unverifiable worker treated as completed")
+	}
+	if err := os.Remove(filepath.Join(s.root, ".git", "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	if !s.indexMayHaveChanged(context.Background(), before, failure) {
+		t.Fatal("unreadable repository treated as unchanged")
 	}
 }

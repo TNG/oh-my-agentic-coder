@@ -5,6 +5,7 @@ package gitservice
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -134,4 +135,9 @@ func (s *Service) run(ctx context.Context, metadataWrite, projectWrite bool, inp
 		return nil, fmt.Errorf("Git worker: %w: %s", err, msg)
 	}
 	return stdout.buffer.Bytes(), nil
+}
+
+func completedWorkerFailure(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() > 0
 }

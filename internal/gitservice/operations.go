@@ -61,21 +61,36 @@ func (s *Service) state(ctx context.Context) (State, error) {
 		out.Branches[name] = oid
 	}
 	out.Head = out.Branches[out.Branch]
-	index, err := s.run(ctx, false, false, nil, "ls-files", "--stage", "-z")
+	out.Index, err = s.indexFingerprint(ctx)
 	if err != nil {
 		return out, err
 	}
-	if _, err := indexPaths(index); err != nil {
-		return out, err
-	}
-	hash := sha256.Sum256(index)
-	out.Index = hex.EncodeToString(hash[:])
 	status, err := s.run(ctx, false, false, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return out, err
 	}
 	out.Dirty = len(status) != 0
 	return out, nil
+}
+
+func (s *Service) indexFingerprint(ctx context.Context) (string, error) {
+	index, err := s.run(ctx, false, false, nil, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", err
+	}
+	if _, err := indexPaths(index); err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(index)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func (s *Service) indexMayHaveChanged(ctx context.Context, before State, failure error) bool {
+	if ctx.Err() != nil || !completedWorkerFailure(failure) {
+		return true
+	}
+	index, err := s.indexFingerprint(ctx)
+	return ctx.Err() != nil || err != nil || index != before.Index
 }
 
 func indexPaths(data []byte) ([]string, error) {
@@ -138,7 +153,7 @@ func (s *Service) mutate(ctx context.Context, action string, req Request, before
 			return before, false, err
 		}
 		if _, err := run(append([]string{"add", "--"}, req.Paths...)...); err != nil {
-			return before, changed, err
+			return before, s.indexMayHaveChanged(ctx, before, err), err
 		}
 		diff, err := s.run(ctx, false, false, nil, append([]string{"diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"}, req.Paths...)...)
 		if err != nil || len(diff) != 0 {

@@ -123,6 +123,10 @@ carry an operation ID and expected state. Duplicate requests with the same ID
 and body return their recorded result, not a second commit. IDs are valid only
 for the current session; the ledger holds at most 4,096 operations.
 
+A rejected request that made no index change leaves the service usable. For
+example, correct a missing or ignored path and stage again. A multi-file staging
+failure may have staged some files; that remains an uncertain outcome.
+
 After a lost response, use the ID printed by the client:
 
 ```sh

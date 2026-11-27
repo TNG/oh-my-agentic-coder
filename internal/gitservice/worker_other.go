@@ -16,3 +16,5 @@ func lockRepository(string) (*os.File, error) { return nil, supportedPlatform() 
 func (s *Service) run(context.Context, bool, bool, []byte, ...string) ([]byte, error) {
 	return nil, supportedPlatform()
 }
+
+func completedWorkerFailure(error) bool { return false }
