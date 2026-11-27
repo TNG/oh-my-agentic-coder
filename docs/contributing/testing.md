@@ -137,6 +137,16 @@ unaffected):
 - `E2E_RECOVER_INSTALL=1` — retries harness install with `--ignore-scripts` + a manual postinstall, since the sandbox blocks the package manager's spawned postinstall (and falls back from bun to npm when `~/.bun` isn't writable).
 - `TMPDIR=/tmp/omac-e2e…` — a short path so the facade's `bridge.sock` stays under macOS's 104-byte socket-path limit.
 
+### Using an already installed harness
+
+By default each E2E test installs its harness (via bun or npm) into a temporary home, which needs network access. To use a harness that is already installed instead, for example on a machine without network, set `E2E_HARNESS_PREINSTALLED=1`:
+
+```bash
+E2E_HARNESS_PREINSTALLED=1 go test -tags=e2e -run TestHarnessCLIContract -v ./internal/e2e/
+```
+
+The tests then take the harness binary from `PATH` and skip the installation. The binary's `--version` must match the pinned version (in `internal/e2e/pinned_package.go`, or `E2E_VERSION_<HARNESS>` if set); otherwise the test fails and names both versions. To check against a different version, override one harness's pin, for example `E2E_VERSION_OPENCODE=opencode-ai@1.18.29`. With `E2E_USE_LATEST=1` the tests drop all pins and install the newest release of each harness, so a preinstalled harness of any version is accepted. A pin without a version number, such as `opencode-ai@latest`, accepts any version too.
+
 ---
 
 ## Harness compatibility drift detection
