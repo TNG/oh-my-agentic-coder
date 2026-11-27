@@ -137,7 +137,9 @@ func runGit(args []string, env *Env) int {
 					return ExitMisuse
 				}
 			}
-			req.Expected = result.State
+			expected := *result.State
+			expected.Branches = nil
+			req.Expected = &expected
 			if action == "switch" {
 				var exists bool
 				req.Target, exists = result.State.Branches[req.Branch]

@@ -65,12 +65,19 @@ func (s *Service) state(ctx context.Context) (State, error) {
 	if err != nil {
 		return out, err
 	}
-	status, err := s.run(ctx, false, false, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
+	var status outputPresence
+	if err := s.runTo(ctx, false, false, nil, &status, "status", "--porcelain=v1", "-z", "--untracked-files=normal"); err != nil {
 		return out, err
 	}
-	out.Dirty = len(status) != 0
+	out.Dirty = status.nonempty
 	return out, nil
+}
+
+type outputPresence struct{ nonempty bool }
+
+func (p *outputPresence) Write(data []byte) (int, error) {
+	p.nonempty = p.nonempty || len(data) != 0
+	return len(data), nil
 }
 
 func (s *Service) indexFingerprint(ctx context.Context) (string, error) {

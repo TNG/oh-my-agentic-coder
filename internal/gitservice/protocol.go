@@ -18,7 +18,7 @@ type State struct {
 	Branch     string            `json:"branch"`
 	Index      string            `json:"index"`
 	Dirty      bool              `json:"dirty"`
-	Branches   map[string]string `json:"branches"`
+	Branches   map[string]string `json:"branches,omitempty"`
 }
 
 type Request struct {
@@ -146,6 +146,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = 409
 		} else {
 			state, changed, err := s.mutate(ctx, path, req, before)
+			state.Branches = nil
 			result.State = &state
 			if err != nil {
 				result.Error = err.Error()

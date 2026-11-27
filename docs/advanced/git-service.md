@@ -39,7 +39,8 @@ Requirements:
 - A real `.git` directory, not a linked worktree, submodule or separate gitdir.
   Metadata symlinks, special files and multiply linked files are refused.
   For a locally hardlinked clone, make a fresh clone with `--no-hardlinks`.
-  Metadata scans are limited to 100,000 entries.
+  Metadata scans are limited to 100,000 entries. Parsed Git output, including
+  index and branch listings, is limited to 4 MiB per worker command.
 
 The option currently works with `start`, not `continue`, `resume` or `serve`.
 Launch fails rather than silently dropping the restriction if setup fails.
@@ -121,7 +122,9 @@ host Git or agents launched without this option.
 Results include the session, HEAD, branch and an index fingerprint. Mutations
 carry an operation ID and expected state. Duplicate requests with the same ID
 and body return their recorded result, not a second commit. IDs are valid only
-for the current session; the ledger holds at most 4,096 operations.
+for the current session; the ledger holds at most 4,096 operations. Only
+`omac git status` includes the branch map; mutation results and their recorded
+replays contain the compact repository state.
 
 Approval denials, busy responses and stale-state rejections do not execute the
 requested mutation. Inspect `omac git status`, resolve the reported cause and

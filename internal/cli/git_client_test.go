@@ -104,6 +104,9 @@ func TestGitClientFailureHints(t *testing.T) {
 func TestGitClientChecksMutationReceipt(t *testing.T) {
 	for _, wrong := range []bool{false, true} {
 		code, output := runGitClientTest(t, []string{"stage", "--", "source"}, func(w http.ResponseWriter, r *http.Request, req gitservice.Request) {
+			if req.Expected == nil || req.Expected.Branches != nil {
+				t.Error("request includes unnecessary branch map")
+			}
 			id := req.ID
 			if wrong {
 				id = "wrong-session:nonce"

@@ -113,28 +113,37 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (s *Service) run(ctx context.Context, metadataWrite, projectWrite bool, input []byte, args ...string) ([]byte, error) {
+	var stdout boundedBuffer
+	err := s.runTo(ctx, metadataWrite, projectWrite, input, &stdout, args...)
+	if stdout.overflow {
+		return nil, fmt.Errorf("Git worker: Git output exceeds limit")
+	}
+	return stdout.buffer.Bytes(), err
+}
+
+func (s *Service) runTo(ctx context.Context, metadataWrite, projectWrite bool, input []byte, stdout io.Writer, args ...string) error {
 	argv, err := s.workerArgv(metadataWrite, projectWrite, args)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/bwrap", argv...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
 	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr boundedBuffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	var stderr boundedBuffer
+	cmd.Stdout, cmd.Stderr = stdout, &stderr
 	cmd.WaitDelay = time.Second
 	err = cmd.Run()
-	if stdout.overflow || stderr.overflow {
-		return nil, fmt.Errorf("Git worker: Git output exceeds limit")
+	if stderr.overflow {
+		return fmt.Errorf("Git worker: Git output exceeds limit")
 	}
 	if err != nil {
 		msg := strings.TrimSpace(stderr.buffer.String())
 		if len(msg) > 4096 {
 			msg = msg[:4096]
 		}
-		return nil, fmt.Errorf("Git worker: %w: %s", err, msg)
+		return fmt.Errorf("Git worker: %w: %s", err, msg)
 	}
-	return stdout.buffer.Bytes(), nil
+	return nil
 }
 
 func completedWorkerFailure(err error) bool {

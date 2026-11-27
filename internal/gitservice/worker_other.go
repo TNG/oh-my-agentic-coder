@@ -5,6 +5,7 @@ package gitservice
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -18,3 +19,7 @@ func (s *Service) run(context.Context, bool, bool, []byte, ...string) ([]byte, e
 }
 
 func completedWorkerFailure(error) bool { return false }
+
+func (s *Service) runTo(context.Context, bool, bool, []byte, io.Writer, ...string) error {
+	return supportedPlatform()
+}
