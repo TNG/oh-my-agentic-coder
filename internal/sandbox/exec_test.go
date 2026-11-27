@@ -77,3 +77,16 @@ func TestExecEmptyArgv(t *testing.T) {
 		t.Error("expected error for empty argv")
 	}
 }
+
+func TestExecInDirForwardsWorkdirAndEnvironment(t *testing.T) {
+	wd := t.TempDir()
+	code, err := ExecInDir([]string{"/bin/sh", "-c", `printf '%s\n' "$PWD" "$OMAC_TEST_VALUE" > result`}, map[string]string{"OMAC_TEST_VALUE": "overlaid"}, wd, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("launch: %d %v", code, err)
+	}
+	got, err := os.ReadFile(filepath.Join(wd, "result"))
+	want, _ := filepath.EvalSymlinks(wd)
+	if err != nil || string(got) != want+"\noverlaid\n" {
+		t.Fatalf("child state: %q %v", got, err)
+	}
+}

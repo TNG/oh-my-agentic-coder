@@ -44,6 +44,7 @@ const (
 	TypeControlMutation = "control.mutation"
 	TypeSecretInject    = "secret.inject"
 	TypeRouteState      = "route.state"
+	TypeGitOperation    = "git.operation"
 )
 
 // Event is one audit record. The envelope fields (Ts, RunID, Seq, Type,

@@ -31,6 +31,8 @@ type Grants struct {
 	// real path and fails with EPERM if it cannot (#337), even when HOME
 	// lies outside every other grant.
 	HomeDir string
+	// GitReadOnly reserves all metadata writes for the opt-in Git service.
+	GitReadOnly bool
 
 	// Path grants (expanded, absolute, existing).
 	ReadPaths  []string // read-only
@@ -988,6 +990,7 @@ func (g *Grants) withUnrestrictedFilesystem() *Grants {
 	out := *g
 	out.AllowPaths = append(append([]string{}, g.AllowPaths...), "/")
 	out.ProtectedPaths = nil
+	out.GitReadOnly = false
 	out.NameDenyRoots, out.NameDenyGlobs = nil, nil
 	return &out
 }
