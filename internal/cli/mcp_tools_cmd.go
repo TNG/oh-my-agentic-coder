@@ -125,6 +125,9 @@ func probeMCPServer(env *Env, cmd string, scope mcpreg.Scope, name string) (*mcp
 // pinnedCommand returns a copy of entry whose server program is the absolute
 // path the host resolves, refused when it lies inside workdir.
 func pinnedCommand(entry *mcpreg.Entry, workdir string) (*mcpreg.Entry, error) {
+	if entry.Def.Server.Remote() {
+		return entry, nil
+	}
 	prog, err := mcpreg.ResolveCommand(entry.Def, workdir)
 	if err != nil {
 		return nil, err

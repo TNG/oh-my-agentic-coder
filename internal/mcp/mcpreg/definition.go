@@ -15,6 +15,7 @@ import (
 
 	"github.com/TNG/oh-my-agentic-coder/internal/approval"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcphttp"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/sidecarauth"
 )
@@ -45,11 +46,20 @@ func (d *Definition) validate() error {
 	if err := config.ValidSkillName(d.Name); err != nil {
 		return fmt.Errorf("name: %w", err)
 	}
-	if len(d.Server.Command) == 0 || d.Server.Command[0] == "" {
-		return errors.New("server.command must not be empty")
-	}
-	if prog := d.Server.Command[0]; strings.ContainsRune(prog, filepath.Separator) && !filepath.IsAbs(prog) {
-		return fmt.Errorf("server.command %q is a relative path; use an absolute path or a program name on PATH", prog)
+	if d.Server.Remote() {
+		if err := d.validateRemote(); err != nil {
+			return err
+		}
+	} else {
+		if len(d.Server.Command) == 0 || d.Server.Command[0] == "" {
+			return errors.New("server.command must not be empty (or set server.url)")
+		}
+		if prog := d.Server.Command[0]; strings.ContainsRune(prog, filepath.Separator) && !filepath.IsAbs(prog) {
+			return fmt.Errorf("server.command %q is a relative path; use an absolute path or a program name on PATH", prog)
+		}
+		if len(d.Server.Headers) > 0 || d.Server.BearerSecret != "" || d.Server.AllowPrivateNetwork {
+			return errors.New("server.headers, server.bearer_secret and server.allow_private_network apply to server.url only")
+		}
 	}
 	seen := map[string]bool{}
 	for _, name := range d.Secrets {
@@ -80,6 +90,57 @@ func (d *Definition) validate() error {
 		return err
 	}
 	return d.validatePolicy()
+}
+
+var (
+	headerNameRE = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	// credentialHeaderHints are fragments of header names that carry credentials.
+	// Such a header cannot be written into the definition.
+	credentialHeaderHints = []string{"auth", "token", "secret", "key", "cookie", "password", "credential"}
+	reservedHeaders       = map[string]bool{"host": true, "content-length": true, "content-type": true, "accept": true,
+		"transfer-encoding": true, "connection": true, "upgrade": true, "mcp-session-id": true, "mcp-protocol-version": true}
+)
+
+// validateRemote checks a definition whose server is reached by URL.
+func (d *Definition) validateRemote() error {
+	s := d.Server
+	if len(s.Command) > 0 {
+		return errors.New("set either server.command or server.url, not both")
+	}
+	if len(s.Env) > 0 || len(s.EnvPassthrough) > 0 || d.Mode != nil {
+		return errors.New("server.env, server.env_passthrough and mode apply to server.command only")
+	}
+	if err := mcphttp.Validate(s.URL); err != nil {
+		return err
+	}
+	for name, value := range s.Headers {
+		lower := strings.ToLower(name)
+		if !headerNameRE.MatchString(name) || reservedHeaders[lower] {
+			return fmt.Errorf("server.headers: %q is not allowed", name)
+		}
+		for _, hint := range credentialHeaderHints {
+			if strings.Contains(lower, hint) {
+				return fmt.Errorf("server.headers: %q looks like a credential header; a credential must not be written into the definition, use server.bearer_secret", name)
+			}
+		}
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("server.headers: the value of %q contains a control character", name)
+		}
+	}
+	if s.BearerSecret != "" {
+		if err := checkEnvName("server.bearer_secret", s.BearerSecret); err != nil {
+			return err
+		}
+	}
+	for _, name := range d.Secrets {
+		if name != s.BearerSecret {
+			return fmt.Errorf("secret %q is not used: a URL server takes only server.bearer_secret", name)
+		}
+	}
+	if s.BearerSecret != "" && len(d.Secrets) == 0 {
+		return fmt.Errorf("server.bearer_secret %q must also be declared in secrets", s.BearerSecret)
+	}
+	return nil
 }
 
 // checkNoOverlap refuses a variable that is set from two places (a secret,
@@ -172,6 +233,9 @@ func checkEnvName(kind, name string) error {
 // inside workdir, because the agent can write there and would control what
 // runs outside the sandbox.
 func CheckCommandOutsideWorkdir(def *Definition, workdir string) error {
+	if def.Server.Remote() {
+		return nil
+	}
 	prog := def.Server.Command[0]
 	if !filepath.IsAbs(prog) || workdir == "" {
 		return nil
@@ -190,6 +254,9 @@ func CheckCommandOutsideWorkdir(def *Definition, workdir string) error {
 // Callers run the returned path, so a later PATH lookup cannot pick up a
 // program the agent creates afterwards.
 func ResolveCommand(def *Definition, workdir string) (string, error) {
+	if def.Server.Remote() {
+		return "", errors.New("a URL server has no command")
+	}
 	prog := def.Server.Command[0]
 	path, err := exec.LookPath(prog)
 	if err != nil {

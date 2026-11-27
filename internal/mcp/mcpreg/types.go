@@ -70,10 +70,22 @@ func (d *Definition) Policy() *mcppolicy.Policy {
 
 // ServerSpec describes the stdio server process.
 type ServerSpec struct {
-	Command        []string          `yaml:"command"                   json:"command"`
+	Command        []string          `yaml:"command,omitempty"         json:"command,omitempty"`
 	Env            map[string]string `yaml:"env,omitempty"             json:"env,omitempty"`
 	EnvPassthrough []string          `yaml:"env_passthrough,omitempty" json:"env_passthrough,omitempty"`
+
+	// URL is the endpoint of a Streamable HTTP server, instead of Command.
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+	// Headers are literal, non-credential request headers of a URL server.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	// BearerSecret names the declared secret sent as "Authorization: Bearer".
+	BearerSecret string `yaml:"bearer_secret,omitempty" json:"bearer_secret,omitempty"`
+	// AllowPrivateNetwork lets a URL server resolve to private addresses.
+	AllowPrivateNetwork bool `yaml:"allow_private_network,omitempty" json:"allow_private_network,omitempty"`
 }
+
+// Remote reports whether the server is reached by URL.
+func (s ServerSpec) Remote() bool { return s.URL != "" }
 
 // ModeSpec sets one environment variable that switches the server's mode.
 type ModeSpec struct {

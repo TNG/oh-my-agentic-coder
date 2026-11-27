@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	addUsage     = "Usage: omac mcp add [--scope project|global] [--harness a,b] [-e KEY=value]... [--secret NAME]... [--replace] <name> -- <command> [args...]"
+	addUsage     = "Usage: omac mcp add [--scope project|global] [--harness a,b] [-e KEY=value]... [--secret NAME]... [--replace] <name> -- <command> [args...]\n       omac mcp add [--scope project|global] [--harness a,b] --url <https-url> [--bearer-secret NAME] [-H 'Name: value']... [--allow-private-network] [--replace] <name>"
 	addJSONUsage = "Usage: omac mcp add-json [--scope project|global] [--harness a,b] [--secret NAME]... [--replace] <name> '<json>'\n       omac mcp add-json [flags] --file <file> [names...]"
 )
 
@@ -46,7 +46,11 @@ func runMCPAdd(args []string, env *Env) int {
 	left, command, found := splitAtDoubleDash(args)
 	fs := flag.NewFlagSet("mcp add", flag.ContinueOnError)
 	var f mcpAddFlags
-	var envFlags multiFlag
+	var envFlags, headerFlags multiFlag
+	url := fs.String("url", "", "Register a Streamable HTTP server by URL (https, or http for localhost) instead of a command.")
+	bearer := fs.String("bearer-secret", "", "With --url: name of the secret that holds the bearer token. omac asks for its value or reads OMAC_SECRET_<NAME>, and keeps it in the keychain only.")
+	allowPrivate := fs.Bool("allow-private-network", false, "With --url: allow the host to resolve to a private address (company-internal servers).")
+	fs.Var(&headerFlags, "H", "With --url: a literal, non-credential request header, 'Name: value'. Repeatable.")
 	f.register(fs)
 	fs.Var(&envFlags, "e", "Environment variable for the server, KEY=value. The value is stored in the definition, so use --secret for a credential. Repeatable.")
 	fs.Usage = func() {
@@ -56,19 +60,54 @@ func runMCPAdd(args []string, env *Env) int {
 	if code, ok := parseFlags(fs, left, env); !ok {
 		return code
 	}
-	if !found || len(command) == 0 || fs.NArg() != 1 {
+	remote := *url != ""
+	if (!remote && (!found || len(command) == 0)) || (remote && (found || len(envFlags) > 0)) || fs.NArg() != 1 {
 		fs.Usage()
 		return ExitMisuse
 	}
 	if refuseInsideSandbox(env, "add") {
 		return ExitMisuse
 	}
-	def, err := definitionFromAddArgs(fs.Arg(0), command, envFlags, f.secrets)
+	var def *mcpreg.Definition
+	var err error
+	if remote {
+		def, err = definitionFromURLArgs(fs.Arg(0), *url, *bearer, headerFlags, *allowPrivate, f.secrets)
+	} else {
+		def, err = definitionFromAddArgs(fs.Arg(0), command, envFlags, f.secrets)
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac mcp add: refused:", err)
 		return ExitMisuse
 	}
 	return installMCPDefinitions(env, "add", f, []mcpAddition{{def: def}})
+}
+
+func definitionFromURLArgs(name, url, bearer string, headerFlags []string, allowPrivate bool, secretNames []string) (*mcpreg.Definition, error) {
+	if len(secretNames) > 0 {
+		return nil, errors.New("--secret applies to a command; for a URL server use --bearer-secret")
+	}
+	def := &mcpreg.Definition{Name: name, Server: mcpreg.ServerSpec{URL: url, BearerSecret: bearer, AllowPrivateNetwork: allowPrivate}}
+	if bearer != "" {
+		def.Secrets = []string{bearer}
+	}
+	for _, h := range headerFlags {
+		key, value, ok := strings.Cut(h, ":")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || key == "" || value == "" {
+			return nil, fmt.Errorf("-H %q must be 'Name: value'", h)
+		}
+		if strings.Contains(value, "${") {
+			return nil, fmt.Errorf("-H %s has a variable reference; a credential must not be written into the definition, use --bearer-secret", key)
+		}
+		if _, dup := def.Server.Headers[key]; dup {
+			return nil, fmt.Errorf("-H %s is given twice", key)
+		}
+		if def.Server.Headers == nil {
+			def.Server.Headers = map[string]string{}
+		}
+		def.Server.Headers[key] = value
+	}
+	return def, nil
 }
 
 func definitionFromAddArgs(name string, command, envFlags, secretNames []string) (*mcpreg.Definition, error) {

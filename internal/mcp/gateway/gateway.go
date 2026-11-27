@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcphttp"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpproc"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
@@ -79,8 +80,8 @@ func Handler(o Options) (http.Handler, func(), error) {
 }
 
 func newGateway(o Options) (*gateway, error) {
-	if o.Def == nil || len(o.Def.Server.Command) == 0 {
-		return nil, errors.New("gateway: definition without a server command")
+	if o.Def == nil || (len(o.Def.Server.Command) == 0 && !o.Def.Server.Remote()) {
+		return nil, errors.New("gateway: definition without a server command or url")
 	}
 	if o.Policy == nil {
 		return nil, errors.New("gateway: no tool policy")
@@ -496,7 +497,9 @@ func idKey(id json.RawMessage) string {
 }
 
 type session struct {
-	id      string
+	id string
+	// up is set for a server reached by URL; cmd and stdin are set otherwise.
+	up      *mcphttp.Transport
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	log     io.Writer
@@ -522,6 +525,9 @@ type session struct {
 }
 
 func startSession(id string, o Options, env []string, onExit func(*session)) (*session, error) {
+	if o.Def.Server.Remote() {
+		return startRemoteSession(id, o, env, onExit)
+	}
 	argv := o.Def.Server.Command
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = o.Dir
@@ -553,6 +559,52 @@ func startSession(id string, o Options, env []string, onExit func(*session)) (*s
 		lastActive: time.Now(),
 	}
 	go s.readLoop(stdout)
+	return s, nil
+}
+
+// startRemoteSession opens a session to a server reached by URL. The bearer
+// token comes from the declared secret in env and exists only in this process.
+func startRemoteSession(id string, o Options, env []string, onExit func(*session)) (*session, error) {
+	spec := o.Def.Server
+	bearer := ""
+	if spec.BearerSecret != "" {
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, spec.BearerSecret+"="); ok {
+				bearer = v
+			}
+		}
+		if bearer == "" {
+			return nil, fmt.Errorf("secret %s for the bearer token is missing", spec.BearerSecret)
+		}
+		if strings.ContainsAny(bearer, " \t\r\n\x00") {
+			return nil, fmt.Errorf("secret %s is not a valid bearer token: it contains whitespace or a control character", spec.BearerSecret)
+		}
+	}
+	s := &session{
+		id:         id,
+		log:        o.Log,
+		done:       make(chan struct{}),
+		readEnd:    make(chan struct{}),
+		events:     make(chan []byte, eventQueueSize),
+		onExit:     onExit,
+		waiters:    map[string]chan []byte{},
+		lastActive: time.Now(),
+	}
+	close(s.readEnd)
+	up, err := mcphttp.New(mcphttp.Config{
+		URL:                 spec.URL,
+		Headers:             spec.Headers,
+		Bearer:              bearer,
+		AllowPrivateNetwork: spec.AllowPrivateNetwork,
+		Log:                 o.Log,
+	}, s.route, func() {
+		onExit(s)
+		s.close()
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.up = up
 	return s, nil
 }
 
@@ -626,6 +678,9 @@ func (s *session) send(msg []byte) error {
 		return errors.New("session closed")
 	default:
 	}
+	if s.up != nil {
+		return s.up.Send(msg)
+	}
 	_, err := s.stdin.Write(append(msg, '\n'))
 	return err
 }
@@ -674,6 +729,10 @@ func (s *session) releaseStream() {
 func (s *session) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		if s.up != nil {
+			s.up.Close()
+			return
+		}
 		s.wmu.Lock()
 		s.stdin.Close()
 		s.wmu.Unlock()

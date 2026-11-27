@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcphttp"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcppolicy"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpproc"
 	"github.com/TNG/oh-my-agentic-coder/internal/mcp/mcpreg"
@@ -33,6 +34,10 @@ const (
 // env, mode and passthrough variables found in baseEnv, and sec. It and its
 // process group are killed before ListTools returns.
 func ListTools(ctx context.Context, e *mcpreg.Entry, sec map[string]secrets.Secret, baseEnv []string, timeout time.Duration) ([]mcppolicy.ToolInfo, string, error) {
+	if e.Def.Server.Remote() {
+		tools, err := listRemoteTools(ctx, e.Def, sec, timeout)
+		return tools, "", err
+	}
 	argv := e.Def.Server.Command
 	if len(argv) == 0 {
 		return nil, "", errors.New("definition has no server command")
@@ -120,13 +125,13 @@ type message struct {
 }
 
 type client struct {
-	stdin io.Writer
+	write func([]byte) error
 	msgs  chan message
 	next  int
 }
 
 func newClient(ctx context.Context, stdin io.Writer, stdout io.Reader) *client {
-	c := &client{stdin: stdin, msgs: make(chan message, 16)}
+	c := &client{write: func(b []byte) error { _, err := stdin.Write(append(b, '\n')); return err }, msgs: make(chan message, 16)}
 	go func() {
 		defer close(c.msgs)
 		sc := bufio.NewScanner(stdout)
@@ -150,8 +155,7 @@ func (c *client) send(v any) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.stdin.Write(append(b, '\n'))
-	return err
+	return c.write(b)
 }
 
 // Call implements mcppolicy.RoundTripper.
@@ -217,4 +221,39 @@ func (t *tailBuffer) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return string(t.buf)
+}
+
+// listRemoteTools runs the handshake against a server reached by URL, with the
+// same address and redirect rules as the gateway.
+func listRemoteTools(ctx context.Context, def *mcpreg.Definition, sec map[string]secrets.Secret, timeout time.Duration) ([]mcppolicy.ToolInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	spec := def.Server
+	bearer := ""
+	if spec.BearerSecret != "" {
+		v, ok := sec[spec.BearerSecret]
+		if !ok {
+			return nil, fmt.Errorf("secret %s for the bearer token is missing", spec.BearerSecret)
+		}
+		bearer = v.ExposeString()
+		if strings.ContainsAny(bearer, " \t\r\n\x00") {
+			return nil, fmt.Errorf("secret %s is not a valid bearer token: it contains whitespace or a control character", spec.BearerSecret)
+		}
+	}
+	c := &client{msgs: make(chan message, 16)}
+	t, err := mcphttp.New(mcphttp.Config{URL: spec.URL, Headers: spec.Headers, Bearer: bearer, AllowPrivateNetwork: spec.AllowPrivateNetwork}, func(b []byte) {
+		var m message
+		if json.Unmarshal(b, &m) == nil {
+			select {
+			case c.msgs <- m:
+			case <-ctx.Done():
+			}
+		}
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer t.Close()
+	c.write = t.Send
+	return c.handshakeAndList(ctx)
 }

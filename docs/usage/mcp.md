@@ -11,9 +11,9 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 
 | You want | Use |
 |---|---|
-| The agent to call a service with a secret, and the secret must stay out of the sandbox, and a stdio MCP server for it exists | The MCP gateway (this page) |
+| The agent to call a service with a secret, and the secret must stay out of the sandbox, and a stdio MCP server or a Streamable HTTP server with a bearer token for it exists | The MCP gateway (this page) |
 | The same, and you write the integration yourself or one exists as a skill | A [skill](./skills.md) |
-| An MCP server with no secret, or you accept that the agent can read its token, or a remote or OAuth server | Not supported by the gateway yet. omac does not load the harness's own MCP entries by default (Claude Code, and Codex and Copilot CLI for the entries it can turn off) or refuses to start with them (the others, and what it cannot turn off), so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
+| An MCP server with no secret, or you accept that the agent can read its token, or a server that needs OAuth | Not supported by the gateway yet (OAuth is planned; a server with no secret can be registered by URL). omac does not load the harness's own MCP entries by default (Claude Code, and Codex and Copilot CLI for the entries it can turn off) or refuses to start with them (the others, and what it cannot turn off), so run once with `--mcp-unregistered=allow`; the server then runs inside the sandbox. See [Existing MCP entries](#existing-mcp-entries-in-the-harness-config) and [Running an MCP server the harness launches](../configuration.md#running-an-mcp-server-the-harness-launches) |
 
 If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are not loaded (Claude Code; Codex and Copilot CLI for the entries omac can turn off by name) or refused, because inside omac MCP configuration comes only from the registry. OpenCode, Claude Code, Codex, Copilot CLI, pi and CodeWhale can all receive registered servers. See [Other harnesses](#other-harnesses).
 
@@ -58,7 +58,7 @@ What this means in practice:
 
 Run these in a normal terminal on your machine, not inside the agent's sandbox. All registration commands refuse to run when they detect they are inside an omac session. Registering only stores the server. **No tool is callable until you have reviewed its tools** (see [Reviewing tools and detecting changes](#reviewing-tools-and-detecting-changes)).
 
-There are three ways to register, with the same result.
+There are three ways to register, with the same result. A server reached over HTTP is registered by URL, see [Remote servers](#remote-servers-streamable-http).
 
 **1. From the command line.** Everything after `--` is the command that starts the server:
 
@@ -113,6 +113,26 @@ omac mcp deregister demo       # removes the registration, its secrets from the 
 
 At registration omac writes the canonical form of the definition into a snapshot and records the sha256 hash of that canonical form (not of your file's bytes, so comments and key order in your file do not matter). At every start, omac checks the snapshot against the hash and runs the server from the snapshot, not from your file. If you edit `mcp.yaml` afterwards, nothing changes until you register it again. The server runs with the snapshot directory as its working directory (never your project, because tools such as `npx` and `uvx` read config files like `.npmrc` from the working directory, and the agent can write those) and with a cleaned environment: omac's own variables are removed, and only the `server.env`, `secrets`, `mode` and `env_passthrough` entries are added, plus a small base set (`PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`).
 
+### Remote servers (Streamable HTTP)
+
+A server that is already running somewhere, on your machine or on the network, is registered by URL:
+
+```bash
+omac mcp add --harness claude-code --url https://mcp.example.com/mcp --bearer-secret EXAMPLE_TOKEN example
+omac mcp add --harness claude-code --url http://localhost:8931/mcp local-tools
+```
+
+The gateway on your host connects to the server, not the sandbox, so the bearer token stays on the host like any other secret: omac asks for its value (or reads `OMAC_SECRET_<NAME>`), keeps it in the keychain and sends it as `Authorization: Bearer <token>`. Tool classes, approvals, review and audit work exactly as for a stdio server.
+
+- **`--url`** must be `https`. Plain `http` is accepted only for `localhost`, `127.0.0.1` and `::1`. A URL with user info, a query or a fragment is refused, because a token in a URL would be stored in the definition.
+- **`--bearer-secret NAME`** names the secret. It is optional for a server without authentication. Other credential headers (such as `X-Api-Key`) are not supported yet.
+- **`-H 'Name: value'`** adds a literal header that is not a credential. A header whose name looks like a credential (`Authorization`, anything with `token`, `key`, `secret`, `cookie`, `password`) is refused.
+- **Redirects are not followed**, because they would carry the token to another host. A redirect is an error.
+- **Private addresses are refused.** The gateway checks the address the name resolves to when it connects. A host that resolves to a private, link-local or carrier-grade-NAT address (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `100.64/10`, unique-local IPv6) is refused, so a hostile or rebinding DNS answer cannot point your token at an internal service. A server inside your company network needs `--allow-private-network` for that server. Loopback is allowed only when the URL itself names a loopback host. If an HTTP proxy is set in the environment of `omac`, the proxy resolves the name and this check sees the proxy, not the target.
+- The first connection to a remote host goes through omac's usual network approval.
+
+Not supported yet: OAuth, the legacy SSE transport, resuming a dropped event stream, and registering a remote entry with `add-json` or from a harness config.
+
 ## Reviewing tools and detecting changes
 
 A server announces its tools by itself, and it can change them at any time. So omac does not trust the announcement: you review the tools once, give each a class, and omac records a fingerprint of what you saw.
@@ -164,6 +184,10 @@ approvals:
 | Field | Meaning |
 |---|---|
 | `name` | Name of the server. The harness shows it, and you use it in `omac mcp show <name>`. |
+| `server.url` | Instead of `server.command`: the endpoint of a Streamable HTTP server (`https`, or `http` for a loopback host). |
+| `server.bearer_secret` | With `server.url`: the declared secret sent as `Authorization: Bearer`. |
+| `server.headers` | With `server.url`: literal, non-credential request headers. |
+| `server.allow_private_network` | With `server.url`: allow the host to resolve to a private address. Default false. |
 | `server.command` | The command that starts a stdio MCP server. Use an absolute path or a command found on `PATH` (such as `npx` or `uvx`). Relative paths and absolute paths inside your project are refused. A program name that `PATH` resolves to a file inside your project (for example through `node_modules/.bin` on `PATH`) is refused when the gateway starts, and the gateway runs the resolved path for the whole session. |
 | `server.env` | Fixed, non-secret environment variables for the server. |
 | `server.env_passthrough` | Names of host environment variables to hand to the server as they are, for example a proxy setting. |
@@ -174,7 +198,7 @@ approvals:
 | `approvals` | Whether a call asks you first, per class: `none` or `required`. Defaults: `read: none`, `write: required`, `delete: required`. |
 | `reviewed` | `tools_hash`, `tools` (a hash per tool), `text` (the description and parameter summary of each tool as you saw it, capped, so a later review can show what changed; reviews recorded before this existed have none and show only that the fingerprint differs) and `at` (when the tools were reviewed). Written by omac. Do not edit it by hand: it is rewritten by `omac mcp tools --classify` and `omac mcp review`. |
 
-Only stdio servers are supported.
+A definition sets either `server.command` (a stdio server the gateway starts) or `server.url` (a Streamable HTTP server it connects to), not both. `server.env`, `server.env_passthrough` and `mode` apply to commands only.
 
 ## What omac does at launch
 

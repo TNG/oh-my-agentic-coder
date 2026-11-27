@@ -139,6 +139,9 @@ func diagnoseEntry(scope mcpreg.Scope, e *mcpreg.Entry, workdir string) []string
 }
 
 func checkMCPCommand(def *mcpreg.Definition, workdir string) error {
+	if def.Server.Remote() {
+		return nil
+	}
 	if err := mcpreg.CheckCommandOutsideWorkdir(def, workdir); err != nil {
 		return err
 	}

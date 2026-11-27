@@ -323,7 +323,20 @@ func runMCPShow(args []string, env *Env) int {
 	fmt.Fprintf(w, "harnesses:   %s\n", strings.Join(e.Harnesses, ", "))
 	fmt.Fprintf(w, "registered:  %s\n", e.RegisteredAt.Format("2006-01-02 15:04:05Z"))
 	fmt.Fprintf(w, "bundle hash: %s\n", e.BundleHash)
-	fmt.Fprintf(w, "command:     %s\n", stripControlChars(strings.Join(e.Def.Server.Command, " ")))
+	if e.Def.Server.Remote() {
+		fmt.Fprintf(w, "url:         %s\n", stripControlChars(e.Def.Server.URL))
+		if keys := sortedKeys(e.Def.Server.Headers); len(keys) > 0 {
+			fmt.Fprintf(w, "headers:     %s\n", stripControlChars(strings.Join(keys, ", ")))
+		}
+		if e.Def.Server.BearerSecret != "" {
+			fmt.Fprintf(w, "bearer:      secret %s\n", stripControlChars(e.Def.Server.BearerSecret))
+		}
+		if e.Def.Server.AllowPrivateNetwork {
+			fmt.Fprintf(w, "private net: allowed\n")
+		}
+	} else {
+		fmt.Fprintf(w, "command:     %s\n", stripControlChars(strings.Join(e.Def.Server.Command, " ")))
+	}
 	if keys := sortedKeys(e.Def.Server.Env); len(keys) > 0 {
 		fmt.Fprintf(w, "env:         %s\n", stripControlChars(strings.Join(keys, ", ")))
 	}
