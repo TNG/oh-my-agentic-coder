@@ -7,12 +7,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // Check statically lints a resolved sandbox profile against known secret
-// locations and network attack vectors. It performs no filesystem or
-// network I/O. The returned findings are sorted by severity
+// locations and network attack vectors. It reads the filesystem only to
+// resolve symlinks, so both spellings of a path (for example /tmp and
+// /private/tmp) are compared; findings can therefore depend on the host.
+// It performs no network I/O. The returned findings are sorted by severity
 // (high → medium → low), then by category, then by field.
 func Check(profile *sandboxprofile.Profile) []Finding {
 	if profile == nil {
@@ -161,6 +164,8 @@ func secretDescription(path string) string {
 		return "git config (may embed tokens)"
 	case strings.Contains(path, ".config/hub"):
 		return "GitHub hub token"
+	case pathutil.Under(sandboxprofile.SharedOpenCodePTYDir(), path):
+		return "OpenCode shell helper sockets of other sessions"
 	case strings.Contains(path, ".cf"):
 		return "Cloud Foundry CLI"
 	default:
@@ -234,7 +239,7 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 		if err != nil {
 			continue
 		}
-		if exp == expandedSP || isParent(exp, expandedSP) {
+		if grantCovers(exp, expandedSP) {
 			findings = append(findings, Finding{
 				Severity: SeverityHigh,
 				Category: CatFSGrant,
@@ -249,7 +254,7 @@ func checkExplicitGrant(field, entry, exp string, baseline, extension []string) 
 		if err != nil {
 			continue
 		}
-		if exp == expandedSP || isParent(exp, expandedSP) {
+		if grantCovers(exp, expandedSP) {
 			findings = append(findings, Finding{
 				Severity: SeverityMedium,
 				Category: CatFSGrant,
@@ -279,12 +284,22 @@ func checkBroadGrant(field, entry string) []Finding {
 	return findings
 }
 
+// grantCovers reports whether the grant equals or contains the secret path,
+// as written or after resolving symlinks, so that /private/tmp/x and /tmp/x
+// (the same folder on macOS) match each other.
+func grantCovers(grant, secret string) bool {
+	return isParent(grant, secret) || pathutil.Under(grant, secret)
+}
+
 // isParent reports whether parent == child or child is beneath parent.
 func isParent(parent, child string) bool {
 	if parent == child {
 		return true
 	}
-	return strings.HasPrefix(child, parent+string(filepath.Separator))
+	if !strings.HasSuffix(parent, string(filepath.Separator)) {
+		parent += string(filepath.Separator)
+	}
+	return strings.HasPrefix(child, parent)
 }
 
 // cloudMetadataHosts are the cloud instance-metadata endpoints that

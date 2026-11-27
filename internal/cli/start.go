@@ -779,11 +779,17 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// ocPin pins opencode v2's background service; set only for sandboxed v2 launches.
 	var ocPin *openCodeServicePin
+	var ptyDir *ptySocketDir
 	var argv []string
 	var watch *protectedWatch
 	if noSandbox {
 		argv = inner
 	} else {
+		var code int
+		if ptyDir, code = openPTYSocketDir(env.Stderr, prefix, harness, plan); code != ExitOK {
+			return code
+		}
+		defer ptyDir.Close()
 		argv, err = sandbox.Expand(prof, sandbox.Inputs{
 			Workdir:  env.Workdir,
 			Socket:   socketPath,
@@ -841,6 +847,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 		if cacheScope != nil {
 			argv = injectSandboxFlag(argv, "--allow", cacheScope.Dir)
 		}
+		argv = ptyDir.install(argv, plan, env.Stderr, verbose)
 		// Forward the selected harness's auth env vars through the
 		// default profile's restrictive allow_vars filter — only for the
 		// selected harness.
@@ -920,6 +927,7 @@ func runLaunch(env *Env, opts launchOpts) int {
 			extra[k] = v
 		}
 	}
+	ptyDir.apply(extra)
 	for _, m := range mounts {
 		extra[sandbox.OmacEnvName(m)] = sandbox.OmacTCPEnvValue(m, tcpPort)
 		extra[sandbox.OmacSocketEnvName(m)] = sandbox.OmacEnvValue(m, socketPath)
@@ -961,8 +969,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 
 	// Now that the supervisor, facade, and control plane exist, give the
 	// strict-mode fatal handler a real teardown: stop sidecars, close the
-	// facade + control plane, then exit non-zero. A strict-mode audit write
-	// failure mid-run lands here.
+	// facade + control plane, remove the session's temp folders, then exit
+	// non-zero. os.Exit skips the deferred cleanups, so each one that matters
+	// is repeated here. A strict-mode audit write failure mid-run lands here.
 	fatalTeardown = func(ferr error) {
 		fmt.Fprintln(env.Stderr, prefix+": audit (strict) write failed, aborting:", ferr)
 		if !keepRunning {
@@ -970,6 +979,8 @@ func runLaunch(env *Env, opts launchOpts) int {
 		}
 		_ = f.Close()
 		closeControl()
+		ptyDir.Close()
+		_ = os.RemoveAll(sandboxTmp)
 		os.Exit(ExitIOError)
 	}
 

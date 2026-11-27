@@ -1,6 +1,7 @@
 package profileaudit
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -486,5 +487,78 @@ func TestCheck_NetworkTableDriven(t *testing.T) {
 				t.Errorf("severity = %q; want %q", got.Severity, tc.wantSev)
 			}
 		})
+	}
+}
+
+func TestAuditFlagsGrantOfSharedOpenCodePTYDir(t *testing.T) {
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	grants := []string{dir, "/tmp"}
+	if runtime.GOOS == "darwin" {
+		grants = append(grants, "/private"+dir, "/private/tmp")
+	}
+	for _, grant := range grants {
+		t.Run(grant, func(t *testing.T) {
+			p := cleanProfile()
+			p.Filesystem.AllowUnixDir = []string{grant}
+			var got *Finding
+			for _, f := range Check(p) {
+				if f.Field == "filesystem.allow_unix_dir" && f.Severity == SeverityHigh &&
+					strings.Contains(f.Message, "OpenCode shell helper sockets of other sessions") {
+					got = &f
+				}
+			}
+			if got == nil {
+				t.Errorf("no high finding naming the OpenCode shell helper sockets for allow_unix_dir %s", grant)
+			}
+		})
+	}
+}
+
+func TestAuditIgnoresGrantsThatDoNotCoverSharedOpenCodePTYDir(t *testing.T) {
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	for _, grant := range []string{dir + "0", dir + "/x"} {
+		t.Run(grant, func(t *testing.T) {
+			p := cleanProfile()
+			p.Filesystem.AllowUnixDir = []string{grant}
+			for _, f := range Check(p) {
+				if f.Category == CatFSGrant {
+					t.Errorf("allow_unix_dir %s should not be flagged; got %+v", grant, f)
+				}
+			}
+		})
+	}
+}
+
+func TestAuditFlagsGrantOfFilesystemRoot(t *testing.T) {
+	for _, field := range []string{"filesystem.read", "filesystem.write"} {
+		t.Run(field, func(t *testing.T) {
+			p := cleanProfile()
+			if field == "filesystem.read" {
+				p.Filesystem.Read = []string{"/"}
+			} else {
+				p.Filesystem.Write = []string{"/"}
+			}
+			for _, f := range Check(p) {
+				if f.Field == field && f.Category == CatFSGrant && f.Severity == SeverityHigh {
+					return
+				}
+			}
+			t.Errorf("a grant of / in %s covers every protected path but yields no high finding", field)
+		})
+	}
+}
+
+func TestSecretDescriptionOfSharedOpenCodePTYDir(t *testing.T) {
+	const label = "OpenCode shell helper sockets of other sessions"
+	dir := sandboxprofile.SharedOpenCodePTYDir()
+	for _, inside := range []string{dir, filepath.Join(dir, "a.sock")} {
+		if got := secretDescription(inside); got != label {
+			t.Errorf("secretDescription(%q) = %q, want %q", inside, got, label)
+		}
+	}
+	for _, outside := range []string{filepath.Dir(dir), dir + "0"} {
+		if got := secretDescription(outside); got == label {
+			t.Errorf("secretDescription(%q) = %q, but the path is not in the shared folder", outside, got)
+		}
 	}
 }

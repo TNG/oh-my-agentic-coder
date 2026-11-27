@@ -39,3 +39,11 @@ When `nono-netprofile` is active, nono routes all outbound traffic through its o
 omac redirects tool caches (`npm`, `pip`, `cargo`, …) to an isolated directory so the agent cannot read or write `~/.cache` — the directory where these tools normally store downloaded packages on your machine. However, with nono, the filesystem grants are controlled by your nono sandbox profile, not by omac. If your profile grants broad read/write access to `~/.cache`, the agent can bypass omac's redirect and reach it directly.
 
 This only affects users who write their own nono sandbox profile. When authoring one, make sure it does not broad-grant `~/.cache`. See [Cache](./cache.md) for context on what omac's cache isolation does.
+
+## Shell commands in OpenCode
+
+OpenCode 2.3 and later runs shell commands through a helper program that it reaches over a socket in a folder. With nono, omac does not set up a folder for this helper, so OpenCode's shell commands are slow there.
+
+Do not grant OpenCode's shared default folder `/tmp/opencode-pty-<uid>` to fix this. Every OpenCode of yours, including ones outside the sandbox, puts its helper there, and nono does not block it for you. [Security model](../security.md#sandbox-access-reference) describes the risk.
+
+What should work instead, but is untested with nono: give the sandboxed OpenCode a folder of its own. Set `OPENCODE_PTY_SOCKET_DIR` to a short folder directly under `/tmp`, for example `/tmp/my-opencode-pty`, only on the command that starts the sandboxed OpenCode and not in your shell profile, and grant that folder in your nono profile.

@@ -1333,3 +1333,28 @@ func stage2HasPort(args []string, flag string, port int) bool {
 	}
 	return false
 }
+
+func TestResolveGrantsKeepsSharedOpenCodePTYDirProtected(t *testing.T) {
+	shared := sandboxprofile.SharedOpenCodePTYDir()
+	for _, grant := range []string{shared, "/tmp", "/private/tmp"} {
+		t.Run(grant, func(t *testing.T) {
+			p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{AllowUnixDir: []string{grant}}}
+			g, err := ResolveGrants(p, t.TempDir(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(g.ProtectedPaths, shared) {
+				t.Errorf("a profile that grants %s loses the protection of %s: %v", grant, shared, g.ProtectedPaths)
+			}
+		})
+	}
+
+	p := &sandboxprofile.Profile{Filesystem: sandboxprofile.Filesystem{OverrideDeny: []string{shared}}}
+	g, err := ResolveGrants(p, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(g.ProtectedPaths, shared) {
+		t.Errorf("override_deny of %s leaves it protected", shared)
+	}
+}

@@ -267,11 +267,7 @@ func TestOpenCodeProjectDiscoveryDeniedLaunch(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS discovery workaround")
 	}
-	omac := filepath.Join(t.TempDir(), "omac")
-	build := exec.Command("go", "build", "-buildvcs=false", "-o", omac, "../../cmd/omac")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, out)
-	}
+	omac := buildOmacWithTestPTYSocketParent(t)
 	for _, tc := range []struct {
 		name     string
 		args     []string
@@ -472,4 +468,16 @@ func TestWarnOpenCodeMajorOnlySpec(t *testing.T) {
 			}
 		})
 	}
+}
+
+func buildOmacWithTestPTYSocketParent(t *testing.T) string {
+	t.Helper()
+	omac := filepath.Join(t.TempDir(), "omac")
+	build := exec.Command("go", "build", "-buildvcs=false",
+		"-ldflags", "-X github.com/TNG/oh-my-agentic-coder/internal/cli.ptySocketParent="+ptySocketParent,
+		"-o", omac, "../../cmd/omac")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, out)
+	}
+	return omac
 }

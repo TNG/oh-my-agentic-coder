@@ -51,6 +51,31 @@ type sandboxPlan struct {
 	PolicyErr error
 }
 
+// profileLabel names the profile in error messages: the policy profile when
+// the launcher names one, else the launcher profile.
+func (plan sandboxPlan) profileLabel() string {
+	if plan.PolicyRef != "" {
+		return plan.PolicyRef
+	}
+	return plan.Name
+}
+
+// deniedEnvVar returns the first of names that the policy's deny_vars strip,
+// together with the deny_vars entry that matches it.
+func (plan sandboxPlan) deniedEnvVar(names ...string) (name, entry string, denied bool) {
+	if plan.Policy == nil {
+		return "", "", false
+	}
+	for _, name := range names {
+		for _, entry := range plan.Policy.Environment.DenyVars {
+			if sandboxprofile.EnvVarMatches(name, []string{entry}) {
+				return name, entry, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // resolveSandboxPlan resolves the launcher profile selected by flagProfile
 // (empty means sandbox.default_profile) and, when that launcher is omac's
 // native sandbox, its policy profile — read-only, so inspecting a profile

@@ -87,6 +87,12 @@ E2E tests use temporary home directories and do not modify your real keychain or
 | `approvals` | A skill's `approvals` block through `omac register`, `omac serve` and `omac start`: what asks, every dialog answer, path cleaning, stored answers and how far they reach. The dialog is a fake `zenity` on `PATH` (Linux only) | no | n/a (`--inner` probe) |
 | `resize` | `omac start opencode` runs in a pseudo-terminal that is resized from 24x80 to 50x160; OpenCode must redraw at the new size (Linux only) | no | OpenCode only         |
 
+The `shell` test is not part of the stage table. It makes three `echo hi` calls through OpenCode's shell API under `omac serve opencode`, with OpenCode 2.3.2 installed as `@opencode/cli` next to the pinned `opencode-ai`. The first call may take 30 s, the next two 5 s each. OpenCode's log must not report `process daemon unavailable`. The test needs no credentials. It runs in the full E2E workflow (`.github/workflows/e2e.yml`) on the OpenCode jobs, but not in the weekly drift workflow. To run it yourself:
+
+```bash
+go test -tags=e2e -run TestOpenCodeShellCallDoesNotStall -v ./internal/e2e/
+```
+
 **For the `llm` stage:** credentials are read from environment variables at runtime — `internal/e2e/versions.go` declares which variable names, and `.github/workflows/e2e.yml` wires them from GitHub Actions encrypted secrets. When running tests locally, you supply credentials through your own shell environment.
 All harnesses except claude-code use a shared OpenAI-compatible model gateway, trustedtokens.eu (`https://api.trustedtokens.eu/v1`), with `deepseek-ai/DeepSeek-V4.1-Flash-1017` (codex: `zai-org/GLM-5.3`, because codex cannot use DeepSeek's replies on the `/responses` route), because it is cost-effective.
 They read the gateway URL from `SKAINET_INTERNAL` and its key from `SKAINET_TOKEN` (the names predate the switch; CI fills them from the `TRUSTEDTOKENS_TOKEN` secret).
