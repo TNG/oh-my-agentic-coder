@@ -98,13 +98,17 @@ func (s *Service) workerArgv(metadataWrite, projectWrite bool, args []string) ([
 	return append(argv, args...), nil
 }
 
-type boundedBuffer struct{ bytes.Buffer }
+type boundedBuffer struct {
+	buffer   bytes.Buffer
+	overflow bool
+}
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if len(p) > maxOutput-b.Len() {
+	if len(p) > maxOutput-b.buffer.Len() {
+		b.overflow = true
 		return 0, fmt.Errorf("Git output exceeds limit")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
 func (s *Service) run(ctx context.Context, metadataWrite, projectWrite bool, input []byte, args ...string) ([]byte, error) {
@@ -118,12 +122,16 @@ func (s *Service) run(ctx context.Context, metadataWrite, projectWrite bool, inp
 	var stdout, stderr boundedBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	err = cmd.Run()
+	if stdout.overflow || stderr.overflow {
+		return nil, fmt.Errorf("Git worker: Git output exceeds limit")
+	}
+	if err != nil {
+		msg := strings.TrimSpace(stderr.buffer.String())
 		if len(msg) > 4096 {
 			msg = msg[:4096]
 		}
 		return nil, fmt.Errorf("Git worker: %w: %s", err, msg)
 	}
-	return stdout.Bytes(), nil
+	return stdout.buffer.Bytes(), nil
 }

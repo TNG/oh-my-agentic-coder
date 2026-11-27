@@ -279,7 +279,7 @@ func TestWorkerCancellationAndOutputLimit(t *testing.T) {
 		t.Fatal("canceled worker succeeded")
 	}
 	var b boundedBuffer
-	if _, err := b.Write(make([]byte, maxOutput+1)); err == nil || b.Len() != 0 {
+	if _, err := b.Write(make([]byte, maxOutput+1)); err == nil || b.buffer.Len() != 0 {
 		t.Fatal("worker output was not bounded")
 	}
 }
