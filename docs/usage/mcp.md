@@ -319,6 +319,10 @@ Registered servers are scanned against the harness's own entries under the same 
 
 Under `warn` or `allow`, an entry in the harness's own config with the same name as a registered server can win over the injected one: pi documents that a server in `mcp.json` takes precedence over an extension's registration, and CodeWhale's approved project file overrides same-named global servers. Codex merges a same-named `config.toml` entry field by field into the `-c` table. Only Copilot CLI documents that `--additional-mcp-config` wins over the user's and project files. The default `refuse` mode stops such a start. If a harness cannot receive MCP servers (none of the six today), `omac mcp add`, `add-json` and `register` reject it, and a start with a registered server follows `mcp.unregistered`: `refuse` stops, `warn` starts without the servers, `allow` starts silently.
 
+### Known gap: config locations omac does not know
+
+`refuse` and the switching off by name both rely on the scan finding the entry. A config location the scan does not know is not refused and not switched off, and the harness loads it. The locations come from each harness's documentation and change with its releases, so they are researched again at regular intervals; the links and the date of the last check are in `internal/mcp/mcpinject/disable.go`. If you find a place a harness reads MCP servers from that [the table](#where-omac-looks) does not list, please open an issue.
+
 ### What was checked, and how
 
 All of this is from documentation and source code, read on 2026-11-23. None of it comes from running the tool.

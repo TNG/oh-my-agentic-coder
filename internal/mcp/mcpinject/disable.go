@@ -7,6 +7,22 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 )
 
+// Turning entries off by name is only as complete as the scan: an MCP config
+// location the scan does not know is neither refused nor switched off, and the
+// harness loads it. The locations and the switches come from the harness
+// documentation and have to be researched again at regular intervals, at least
+// when a supported harness ships a release that touches MCP, MCP config or
+// plugins. Last checked 2026-11-23 (documentation and source only, nothing run).
+//
+// Codex:
+//   - https://developers.openai.com/codex/mcp
+//   - https://developers.openai.com/codex/config-advanced
+//   - https://github.com/openai/codex/blob/main/codex-rs/config/src/mcp_types.rs
+//
+// Copilot CLI:
+//   - https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
+//   - https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference
+//   - https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference
 var disableableName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // SplitDisableable separates the entries omac can turn off for one run, by

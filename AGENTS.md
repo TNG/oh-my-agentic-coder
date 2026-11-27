@@ -59,6 +59,10 @@ what the feature needs, degrade gracefully and securely:
   start until the user removes the entry or passes
   `--mcp-unregistered=allow`.
 - Document the degradation in the user docs of the feature, per harness.
+- Where a protection depends on knowing a harness's config locations or
+  switches, keep the documentation links and the date last checked next to
+  the code, and research them again regularly. A location omac does not know
+  about is a gap: state it in the docs.
 
 ## Communication
 
