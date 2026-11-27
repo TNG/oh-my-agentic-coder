@@ -52,7 +52,7 @@ Currently, the following harnesses are supported.
 | **Pi** (experimental)          | Linux Ubuntu 24.04, macOS 15 | [Pi docs](https://pi.dev) |
 | **CodeWhale** (experimental)   | Linux Ubuntu 24.04, macOS 15 | `npm install -g codewhale` |
 
-OpenCode, Claude Code, Codex and Copilot are the priority harnesses; the experimental ones may lack features. Where a feature is missing for a harness, omac degrades gracefully and securely: it keeps the session working and warns, or refuses to start when the gap cannot be made safe.
+OpenCode, Claude Code, Codex and Copilot are the priority harnesses; the experimental ones may lack features. The protection for MCP servers differs by harness, see [Safety and degradation by harness](usage/mcp.md#safety-and-degradation-by-harness). Where a feature is missing for a harness, omac degrades gracefully and securely: it keeps the session working and warns, or refuses to start when the gap cannot be made safe.
 
 codex is not supported on macOS — its HTTP client is incompatible with the macOS sandbox and every model call hangs.
 

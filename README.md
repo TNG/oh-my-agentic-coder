@@ -38,7 +38,7 @@ Please use the internal [omac-tng-installer repo](https://bitbucket.int.tngtech.
 | **Pi** (experimental)          | Linux Ubuntu 24.04, macOS 15 |
 | **CodeWhale** (experimental)   | Linux Ubuntu 24.04, macOS 15 |
 
-OpenCode, Claude Code, Codex and Copilot are the priority harnesses. Experimental harnesses may lack features, and where a feature is missing omac degrades gracefully and securely (a warning, or a refusal to start when it cannot be made safe).
+OpenCode, Claude Code, Codex and Copilot are the priority harnesses. The protection for MCP servers differs by harness, see [Safety and degradation by harness](docs/usage/mcp.md#safety-and-degradation-by-harness). Experimental harnesses may lack features, and where a feature is missing omac degrades gracefully and securely (a warning, or a refusal to start when it cannot be made safe).
 
 Windows is supported only via WSL2 (Ubuntu 24.04).
 

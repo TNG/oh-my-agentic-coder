@@ -17,6 +17,27 @@ MCP in omac is for reaching something outside the sandbox with credentials, OAut
 
 If you register no MCP server, nothing changes. omac does not touch the harness's MCP configuration. Once a server is registered for this project or globally, for any harness, the rule applies to every harness you start in it: the harness's own MCP entries are not loaded (Claude Code; Codex and Copilot CLI for the entries omac can turn off by name) or refused, because inside omac MCP configuration comes only from the registry. OpenCode, Claude Code, Codex, Copilot CLI, pi and CodeWhale can all receive registered servers. See [Other harnesses](#other-harnesses).
 
+## Safety and degradation by harness
+
+omac aims to be as safe as the harness allows. The harnesses differ in what they let omac control, so the protection differs. Read the row for the harness you use, above all if it is experimental.
+
+The goal is the same everywhere: inside omac, MCP servers come only from the registry, because a server in the harness's own config can reach credentials the agent can read. How far omac gets depends on the harness. When it cannot fully get there, it degrades in this order: it turns the harness's own entries off and warns, or it refuses to start and says what to resolve, and it never loads them silently. `--mcp-unregistered=allow` is the explicit way to accept the risk for one run.
+
+| Harness | Tier | Default | What omac does with the harness's own MCP entries | What stays open |
+|---|---|---|---|---|
+| Claude Code | priority | `ignore` | Loads none of them: `--strict-mcp-config`, plus `--no-chrome`. Only the registered servers load. | Whether strict mode also skips claude.ai connectors is not documented and needs a check with a real session. |
+| OpenCode | priority | `refuse` | Cannot switch entries off. Refuses to start while the scan finds one. | An MCP config location omac does not know loads silently, and so do remote and account-level sources. |
+| Codex | priority | `ignore` | Switches off, by name, each entry found in your own `config.toml`, with a warning. Refuses for project entries, plugin or administrator entries, same-name entries and files it cannot read. | An unknown config location is neither found nor switched off. The switch was read in the documentation and source, not run. |
+| Copilot CLI | priority | `ignore` | Switches off, by name, each entry found, with a warning. Refuses for plugin entries, same-name entries and files it cannot read. | An unknown location is not found. Copilot's built-in GitHub MCP server and servers from your account or organisation policy cannot be read by omac and stay active. The switch was read, not run. |
+| pi (experimental) | experimental | `refuse` | No switch for one entry. Refuses to start while the scan finds an entry. | Unknown locations load. The registered servers arrive through an extension (`-e`) that runs inside pi with pi's permissions. Under `warn` or `allow`, a same-name entry in pi's `mcp.json` wins over the registered one. |
+| CodeWhale (experimental) | experimental | `refuse` | No switch for one entry. Refuses to start while the scan finds an entry. | The project file `.codewhale/mcp.json` (after your approval in CodeWhale) and plugin bundles load. Under `warn` or `allow`, an approved project file wins over a same-name registered server. |
+
+What this means in practice:
+- **Where omac switches an entry off, the entry and any token in it stay in the file** and the agent can read them. Rotate the token, or register the server so the credential stays on the host.
+- **The scan only knows the locations in [Where omac looks](#where-omac-looks).** They come from each harness's documentation and are researched again at regular intervals. A location that is missing is a gap, see [Known gap](#known-gap-config-locations-omac-does-not-know).
+- **None of the Codex, Copilot CLI, pi and CodeWhale mechanisms has been run against the real harness.** Their injection and switches were checked against documentation and source code only.
+- **Experimental harnesses may lag behind.** A feature that is missing there degrades as described and is not a promise that the gap will be closed.
+
 ## How it works
 
 ```
