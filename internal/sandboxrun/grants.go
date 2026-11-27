@@ -480,6 +480,7 @@ var denyScanSkipDirNames = map[string]bool{
 	".npm":        true,
 	".yarn":       true,
 	".pnpm-store": true,
+	".conan2":     true,
 	// generic build outputs and caches
 	"dist":   true,
 	"build":  true,
