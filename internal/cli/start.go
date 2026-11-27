@@ -815,6 +815,10 @@ func runLaunch(env *Env, opts launchOpts) int {
 		inner = append(inner, innerArgs...)
 	}
 
+	if harness.Name == "opencode" && classifyOpenCode(inner) == openCodeV1 {
+		fmt.Fprintf(env.Stderr, "%s: warning: OpenCode v1 is legacy in omac and gets no further development; features, including protections for MCP servers, are built for OpenCode v2. Please move to OpenCode v2\n", prefix)
+	}
+
 	// ocPin pins opencode v2's background service; set only for sandboxed v2 launches.
 	var ocPin *openCodeServicePin
 	var argv []string

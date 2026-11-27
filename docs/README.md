@@ -45,14 +45,14 @@ Currently, the following harnesses are supported.
 
 | Harness                        | OS                           | Install |
 |--------------------------------|------------------------------|---|
-| **OpenCode CLI** and **Desktop** | Linux Ubuntu 24.04, macOS 15 | `sudo npm install -g opencode-ai` ([docs](https://github.com/anomalyco/opencode)) |
+| **OpenCode v2** CLI and **Desktop** | Linux Ubuntu 24.04, macOS 15 | `sudo npm install -g opencode-ai` ([docs](https://github.com/anomalyco/opencode)) |
 | **Claude Code**                | Linux Ubuntu 24.04, macOS 15 | [Claude Code docs](https://code.claude.com/docs) |
 | **Copilot**                    | Linux Ubuntu 24.04, macOS 15 | [Copilot CLI docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) |
 | **Codex**                      | Linux Ubuntu 24.04           | [Codex docs](https://github.com/openai/codex) |
 | **Pi** (experimental)          | Linux Ubuntu 24.04, macOS 15 | [Pi docs](https://pi.dev) |
 | **CodeWhale** (experimental)   | Linux Ubuntu 24.04, macOS 15 | `npm install -g codewhale` |
 
-OpenCode, Claude Code, Codex and Copilot are the priority harnesses; the experimental ones may lack features. The protection for MCP servers differs by harness, see [Safety and degradation by harness](usage/mcp.md#safety-and-degradation-by-harness). Where a feature is missing for a harness, omac degrades gracefully and securely: it keeps the session working and warns, or refuses to start when the gap cannot be made safe.
+OpenCode v2, Claude Code, Codex and Copilot are the priority harnesses. OpenCode v1 is legacy: it keeps working, omac warns at every start, and it gets no further development. The experimental ones may lack features. The protection for MCP servers differs by harness, see [Safety and degradation by harness](usage/mcp.md#safety-and-degradation-by-harness). Where a feature is missing for a harness, omac degrades gracefully and securely: it keeps the session working and warns, or refuses to start when the gap cannot be made safe.
 
 codex is not supported on macOS — its HTTP client is incompatible with the macOS sandbox and every model call hangs.
 

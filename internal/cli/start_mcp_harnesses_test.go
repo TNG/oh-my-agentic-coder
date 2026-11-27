@@ -350,3 +350,22 @@ func TestExperimentalHarnessesWarnAtStart(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCodeV1WarnsAsLegacyAndV2DoesNot(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	for version, want := range map[string]bool{"1.4.2": true, "2.1.0": false} {
+		r := newMCPRig(t)
+		bin := filepath.Join(t.TempDir(), "opencode")
+		script := "#!/bin/sh\n[ \"$1\" = --version ] && echo " + version + " && exit 0\nprintf '%s\\n' \"$@\" > \"$OMAC_TEST_ARGS\"\nenv > \"$OMAC_TEST_ENV\"\n"
+		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := r.launch("opencode", bin, nil)
+		if code != ExitOK {
+			t.Fatalf("%s: exit %d\n%s", version, code, stderr)
+		}
+		if got := strings.Contains(stderr, "OpenCode v1 is legacy"); got != want {
+			t.Errorf("%s: legacy warning printed = %v, want %v\n%s", version, got, want, stderr)
+		}
+	}
+}

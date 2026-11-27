@@ -35,10 +35,11 @@ Put usage guidance in documentation and fix history in the PR.
 
 ## Harness support and degradation
 
-omac supports four harnesses with priority: OpenCode (v1 CLI and Desktop),
-Claude Code, Codex and GitHub Copilot CLI. Every feature is designed, built
-and tested for these four first. Everything else (OpenCode v2, Pi, CodeWhale)
-is experimental: it may lag behind, and a feature that does not work there
+omac supports four harnesses with priority: OpenCode v2, Claude Code, Codex
+and GitHub Copilot CLI. Every feature is designed, built and tested for these
+four first. OpenCode v1 is legacy: it keeps working, omac warns at every
+start, and no new work goes into it. Everything else (Pi, CodeWhale) is
+experimental: it may lag behind, and a feature that does not work there
 must not hold up or complicate a change for the priority four. Keep README
 and `docs/README.md` in line when the set changes.
 
