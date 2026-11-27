@@ -33,6 +33,9 @@ Requirements:
 - The built-in sandbox, a read-write checkout grant and no writable checkout
   ancestor or system-binary grants. Learn mode, `--no-sandbox`, external
   launchers and `--keep-running` are refused.
+- A complete launch-time secret-file scan. If the scan reaches its limit,
+  continue scanning or raise `filesystem.deny_scan.max_entries`; starting with
+  incomplete protection is not supported by the Git service.
 - A real `.git` directory, not a linked worktree, submodule or separate gitdir.
   Metadata symlinks, special files and multiply linked files are refused.
   For a locally hardlinked clone, make a fresh clone with `--no-hardlinks`.

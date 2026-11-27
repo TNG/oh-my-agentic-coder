@@ -64,31 +64,32 @@ func gitServiceRoute(s *gitservice.Service) facade.Route {
 	return facade.Route{Mount: "git", Skill: "builtin:git", Owner: "builtin:git", Handler: s, Approvals: set, MaxBodyBytes: 1 << 20, HealthPath: "/status"}
 }
 
-func configureGitService(s *gitservice.Service, plan sandboxPlan, argv []string) ([]string, error) {
+func configureGitService(s *gitservice.Service, plan sandboxPlan, argv []string) error {
 	if len(argv) < 4 || argv[1] != "sandbox" || argv[2] != "run" {
-		return nil, fmt.Errorf("Git prototype requires the native sandbox launcher")
+		return fmt.Errorf("Git prototype requires the native sandbox launcher")
 	}
-	argv = injectSandboxFlag(argv, "--git-read-only", "")
-	argv = injectSandboxFlag(argv, "--deny-literal", s.RuntimeDir())
 	flags, err := sandboxprofile.ParseFlags(argv[3:])
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if flags.Learn {
-		return nil, fmt.Errorf("Git prototype cannot use learn mode")
+		return fmt.Errorf("Git prototype cannot use learn mode")
+	}
+	if !flags.GitReadOnly {
+		return fmt.Errorf("Git prototype requires read-only Git metadata")
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
+	if len(profile.DenyScanAcceptIncomplete()) != 0 {
+		return fmt.Errorf("Git prototype requires a complete secret-file scan; continue scanning or raise filesystem.deny_scan.max_entries")
+	}
 	grants, err := sandboxrun.ResolveGrants(profile, s.Workdir(), io.Discard)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := grants.ValidateReadOnlyGit(); err != nil {
-		return nil, err
+		return err
 	}
-	if err := s.ConfigureDenies(grants.ProtectedPaths); err != nil {
-		return nil, err
-	}
-	return argv, nil
+	return s.ConfigureDenies(grants.ProtectedPaths)
 }
 
 func gitServiceAudit(a audit.Auditor, dir string) func(string, string, string) {
