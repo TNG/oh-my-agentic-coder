@@ -129,7 +129,7 @@ The gateway on your host connects to the server, not the sandbox, so the bearer 
 - **`-H 'Name: value'`** adds a literal header that is not a credential. A header whose name looks like a credential (`Authorization`, anything with `token`, `key`, `secret`, `cookie`, `password`) is refused.
 - **Redirects are not followed**, because they would carry the token to another host. A redirect is an error.
 - **Private addresses are refused.** The gateway checks the address the name resolves to when it connects. A host that resolves to a private, link-local or carrier-grade-NAT address (`10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `100.64/10`, unique-local IPv6) is refused, so a hostile or rebinding DNS answer cannot point your token at an internal service. A server inside your company network needs `--allow-private-network` for that server. Loopback is allowed only when the URL itself names a loopback host. If an HTTP proxy is set in the environment of `omac`, the proxy resolves the name and this check sees the proxy, not the target.
-- The first connection to a remote host goes through omac's usual network approval.
+- **The network prompt does not cover this connection yet.** The gateway runs on the host, outside the sandbox, so omac's domain allow/deny list and prompt for sandboxed traffic do not apply to it. Registering the server is the approval: check the URL before you register it.
 
 Not supported yet: OAuth, the legacy SSE transport, resuming a dropped event stream, and registering a remote entry with `add-json` or from a harness config.
 
