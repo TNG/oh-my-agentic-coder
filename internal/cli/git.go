@@ -83,21 +83,37 @@ func runGit(args []string, env *Env) int {
 		}
 		r.Header.Set("X-Omac-Facade-Token", os.Getenv("OMAC_FACADE_TOKEN"))
 		r.Header.Set("Content-Type", "application/json")
+		uncertain := gitservice.Result{Unknown: method == http.MethodPost}
 		resp, e := client.Do(r)
 		if e != nil {
-			return gitservice.Result{}, e
+			return uncertain, e
 		}
 		defer resp.Body.Close()
-		data, e := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		reason := resp.Header.Get("X-Omac-Reason")
+		if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusServiceUnavailable) &&
+			(reason == "approval-denied" || reason == "approval-timeout" || reason == "approval-abandoned" || reason == "approval-unavailable") {
+			return gitservice.Result{}, fmt.Errorf("HTTP %d: omac: %s", resp.StatusCode, reason)
+		}
+		const maxResponse = 4 << 20
+		data, e := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 		if e != nil {
-			return gitservice.Result{}, e
+			return uncertain, e
 		}
 		var result gitservice.Result
-		if e := json.Unmarshal(data, &result); e != nil {
-			return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, data)
+		if len(data) > maxResponse || json.Unmarshal(data, &result) != nil {
+			return uncertain, fmt.Errorf("HTTP %d: invalid or oversized Git response", resp.StatusCode)
 		}
-		if resp.StatusCode != 200 {
+		if method == http.MethodPost && result.ID != "" && result.ID != req.ID {
+			return uncertain, fmt.Errorf("Git response has a different operation ID")
+		}
+		if resp.StatusCode != http.StatusOK {
+			if result.Error == "" {
+				return uncertain, fmt.Errorf("HTTP %d: missing Git error details", resp.StatusCode)
+			}
 			return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, result.Error)
+		}
+		if method == http.MethodPost && (result.ID != req.ID || result.State == nil || result.Unknown || result.Error != "") {
+			return uncertain, fmt.Errorf("incomplete Git mutation result")
 		}
 		return result, nil
 	}
@@ -138,7 +154,11 @@ func runGit(args []string, env *Env) int {
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac git:", err)
 		if req.ID != "" {
-			fmt.Fprintf(env.Stderr, "Operation %s. Do not retry with a new ID; inspect omac git operation %s and omac git status.\n", req.ID, req.ID)
+			if result.Unknown {
+				fmt.Fprintf(env.Stderr, "Operation %s. Do not retry with a new ID; inspect omac git operation %s and omac git status.\n", req.ID, req.ID)
+			} else {
+				fmt.Fprintln(env.Stderr, "Request rejected; inspect omac git status and re-run when ready.")
+			}
 		}
 		return ExitGeneric
 	}

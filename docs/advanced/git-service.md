@@ -123,6 +123,10 @@ carry an operation ID and expected state. Duplicate requests with the same ID
 and body return their recorded result, not a second commit. IDs are valid only
 for the current session; the ledger holds at most 4,096 operations.
 
+Approval denials, busy responses and stale-state rejections do not execute the
+requested mutation. Inspect `omac git status`, resolve the reported cause and
+re-run the command.
+
 A rejected request that made no index change leaves the service usable. For
 example, correct a missing or ignored path and stage again. A multi-file staging
 failure may have staged some files; that remains an uncertain outcome.
