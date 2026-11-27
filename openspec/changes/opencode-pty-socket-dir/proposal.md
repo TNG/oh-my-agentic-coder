@@ -139,8 +139,8 @@ All decisions below were made with the maintainer.
   hint. A separate check, `ptySocketDirDenied` in
   `internal/cli/pty_socket_dir.go`, does this for every OpenCode launch in the
   built-in sandbox. The existing check `openCodePinDenied`
-  (`internal/cli/opencode_v2_service.go`) is unchanged and still runs only
-  for OpenCode 2.x.
+  (`internal/cli/opencode_v2_service.go`) keeps its behavior and still runs
+  only for OpenCode 2.x. Both checks share `sandboxPlan.deniedEnvVar`.
 - **No cleanup of leftovers after a crash.** Every exit that omac controls
   removes the folder, including the abort after a failed write to a strict
   audit log. If omac is killed or crashes, the folder stays until `/tmp` is
@@ -179,7 +179,7 @@ chosen design costs.
 |---|---|---|---|
 | Per-session socket folder | Grant the shared `/tmp/opencode-pty-<uid>` by default, as #520 suggests and as nono did (nolabs-ai/nono-packs#69) | One profile line, but it lets a sandboxed agent reach the helpers of unsandboxed OpenCode processes and of other sessions, whose tokens it can read. That is a way out of the sandbox | New launch code in two commands, a second temp folder per session, and a dependency on an OpenCode variable that omac does not control |
 | Shared folder on the protected list | Leave it ungranted but grantable; or only report it in the audit | Users who copied the #520 workaround would keep the escape path open without noticing. A report alone does not close it | An existing profile grant silently stops working. Lifting it needs `override_deny`. On macOS it only holds once #513 is merged |
-| Refuse to launch when `deny_vars` blocks the variable | Start anyway, with or without a warning | The stall is silent and looks like a broken agent; a launch warning scrolls away | A profile with a broad `OPENCODE_*` deny no longer starts OpenCode 1.x either, where the variable is not needed |
+| Refuse to launch when `deny_vars` blocks the variable | Start anyway, with or without a warning | The stall is silent and looks like a broken agent; a launch warning scrolls away. A profile entry stays until the user changes it, so every launch would be slow. A folder that cannot be created is different: it is a rare problem of the machine that the user often cannot fix, so there omac warns and launches | A profile with a broad `OPENCODE_*` deny no longer starts OpenCode 1.x either, where the variable is not needed |
 | Same folder and protected path on Linux | macOS only | Two code paths, and the fix would run only on the platform with the weakest automated coverage | A change on a platform where nothing stalls today, and one more folder under `/tmp` per session |
 | No OpenCode version check | Set the variable only for 2.x | A wrong version detection would bring the stall back silently | OpenCode 1.x sessions get an unused variable and an empty folder |
 | Built-in sandbox only | Set the variable for the nono backend too | omac cannot grant the folder to nono, so the helper would move out of reach of the user's nono profile | nono users on OpenCode ≥ 2.3.0 keep the stall until they change their nono profile |

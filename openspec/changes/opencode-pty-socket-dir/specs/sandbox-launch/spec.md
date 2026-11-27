@@ -10,7 +10,7 @@ native-sandbox before archiving this change.
 ## ADDED Requirements
 
 ### Requirement: Per-session OpenCode PTY socket folder
-When omac launches the OpenCode harness through the built-in sandbox (`omac sandbox run`), with `omac start` or `omac serve`, on macOS or Linux and for every OpenCode version, it SHALL create a new folder for this launch directly under `/tmp`, readable and writable by the current user only. It SHALL export `OPENCODE_PTY_SOCKET_DIR=<folder>` to the harness, replacing any value inherited from the host, and SHALL grant the sandbox read, write and AF_UNIX connect on that folder, equivalent to `--allow-unix-dir <folder>`. omac SHALL remove the folder when the launch ends.
+When omac launches the OpenCode harness through the built-in sandbox (`omac sandbox run`), with `omac start` or `omac serve`, on macOS or Linux and for every OpenCode version, it SHALL create a new folder for this launch directly under `/tmp`, readable and writable by the current user only. It SHALL export `OPENCODE_PTY_SOCKET_DIR=<folder>` to the harness, replacing any value inherited from the host, and SHALL grant the sandbox read, write and AF_UNIX connect on that folder, equivalent to `--allow-unix-dir <folder>`. omac SHALL remove the folder when the launch ends. If omac cannot create the folder, it SHALL NOT stop the launch: it SHALL warn and launch the harness without the folder, the grant and the variable.
 
 The folder name SHALL be short enough that `<folder>/opencode-pty-<uid>/<32 hex characters>.sock` stays below the macOS Unix-socket path limit of 104 bytes for a 10-digit uid, measured on the resolved path (`/private/tmp/…`).
 

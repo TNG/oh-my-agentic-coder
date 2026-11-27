@@ -47,7 +47,7 @@ the sandbox. Any setup with the same effect is fine.
 ## 3. Launch (`internal/cli/start.go`, `internal/cli/serve.go`)
 
 - [x] 3.1 One shared helper creates the folder under `/tmp` with mode 0700 and
-  returns a cleanup function. Used by both `start` and `serve`
+  returns a handle whose `Close` removes it. Used by both `start` and `serve`
 - [x] 3.2 Only when the launch uses the built-in sandbox and the harness
   declares a socket folder: inject `--allow-unix-dir <folder>` and export the
   variable. Follow how the tool cache folder is granted
@@ -103,18 +103,20 @@ Protected path:
   test-only folder name so the test does not touch a real helper
 - [x] 5.8 Unit, audit: a profile whose `allow_unix_dir` covers the folder
   yields a high-severity finding
+- [x] 5.11 Unit and launch: when the folder cannot be created, omac prints a
+  warning and launches without the folder, the grant and the variable (row
+  `folder cannot be created` in `internal/cli/pty_socket_dir_test.go`)
 
 End to end:
 
-- [ ] 5.9 (written as `TestOpenCodeShellCallDoesNotStall`; first real run
-  still open, on a host shell or in the e2e workflow) A model-free test with a real OpenCode ≥ 2.3.0 (`internal/e2e`):
+- [x] 5.9 (written as `TestOpenCodeShellCallDoesNotStall`; passed on Ubuntu
+  and macOS in e2e workflow run 45829182879) A model-free test with a real OpenCode ≥ 2.3.0 (`internal/e2e`):
   start `omac serve opencode` in the built-in sandbox, send `echo hi` through
   `POST /api/shell`, and fail if the call takes longer than a few seconds. It
   selects its own OpenCode version and leaves the 1.18.29 pin
   (`internal/e2e/pinned_package.go`) unchanged. Run it on macOS and Linux
-- [ ] 5.10 Fallback for 5.9: if OpenCode 2.x cannot be installed through the
-  suite's existing route, open a follow-up issue for the test, state the gap
-  in the pull request, and rely on 6.1
+- [x] 5.10 Not needed: OpenCode 2.x installs through the suite's existing
+  route once the test switches on the install recovery (`E2E_RECOVER_INSTALL`)
 
 ## 6. Manual checks
 
