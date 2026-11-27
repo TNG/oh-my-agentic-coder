@@ -106,7 +106,7 @@ func TestMCPUnsupportedHarnessWarnAndAllowStartWithoutMCP(t *testing.T) {
 			if warned != tt.wantWarning {
 				t.Errorf("warning present = %v, want %v:\n%s", warned, tt.wantWarning, stderr)
 			}
-			if !tt.wantWarning && strings.Contains(stderr, "MCP") {
+			if !tt.wantWarning && strings.Contains(withoutExperimentalNotice(stderr), "MCP") {
 				t.Errorf("allow printed something:\n%s", stderr)
 			}
 			args, env, ran := r.captured()
@@ -133,7 +133,7 @@ func TestMCPUnsupportedHarnessWithNothingRegisteredChangesNothing(t *testing.T) 
 	r.writeFile(".pi/mcp.json", `{"mcpServers":{"native":{"command":"x"}}}`)
 
 	code, stderr := r.launch("pi", r.capture, nil)
-	if code != ExitOK || strings.Contains(stderr, "MCP") {
+	if code != ExitOK || strings.Contains(withoutExperimentalNotice(stderr), "MCP") {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	if _, _, ran := r.captured(); !ran {
@@ -267,3 +267,15 @@ func TestMCPDiagnoseScansHarnessesWithoutInjectionAndFlagsUnsupportedRegistratio
 
 // supportedMCPHarnesses is the list the unsupported-harness message names.
 func supportedMCPHarnesses() string { return strings.Join(config.MCPCapableHarnessNames(), ", ") }
+
+// withoutExperimentalNotice drops the start notice for experimental harnesses, which names MCP
+// but is not about the MCP handling these tests check.
+func withoutExperimentalNotice(stderr string) string {
+	var kept []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if !strings.Contains(line, "experimental harness in omac") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}

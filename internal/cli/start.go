@@ -264,6 +264,9 @@ func runLaunch(env *Env, opts launchOpts) int {
 	if verbose && cfgPath != "" {
 		fmt.Fprintf(env.Stderr, "[verbose] loaded launcher config: %s\n", cfgPath)
 	}
+	if harness.Experimental {
+		fmt.Fprintf(env.Stderr, "%s: warning: %s is an experimental harness in omac: features and protections, including those for MCP servers, may be missing or weaker than for OpenCode, Claude Code, Codex and Copilot CLI; see \"Safety and degradation by harness\" in the MCP documentation\n", prefix, harness.Name)
+	}
 	mcp, mcpCode := prepareMCP(env, harness, lc, opts)
 	if mcpCode != ExitOK {
 		return mcpCode

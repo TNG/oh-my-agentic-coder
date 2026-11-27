@@ -336,3 +336,17 @@ func TestMCPPiDefaultsToRefuseAndIgnoreFallsBack(t *testing.T) {
 		}
 	}
 }
+
+func TestExperimentalHarnessesWarnAtStart(t *testing.T) {
+	clearHarnessMCPEnv(t)
+	for name, want := range map[string]bool{"pi": true, "codewhale": true, "codex": false, "copilot": false, "claude": false, "opencode": false} {
+		r := newMCPRig(t)
+		code, stderr := r.launch(name, r.capture, nil)
+		if code != ExitOK {
+			t.Fatalf("%s: exit %d\n%s", name, code, stderr)
+		}
+		if got := strings.Contains(stderr, "experimental harness in omac"); got != want {
+			t.Errorf("%s: warning printed = %v, want %v\n%s", name, got, want, stderr)
+		}
+	}
+}

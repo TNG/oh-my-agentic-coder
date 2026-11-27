@@ -36,7 +36,7 @@ What this means in practice:
 - **Where omac switches an entry off, the entry and any token in it stay in the file** and the agent can read them. Rotate the token, or register the server so the credential stays on the host.
 - **The scan only knows the locations in [Where omac looks](#where-omac-looks).** They come from each harness's documentation and are researched again at regular intervals. A location that is missing is a gap, see [Known gap](#known-gap-config-locations-omac-does-not-know).
 - **None of the Codex, Copilot CLI, pi and CodeWhale mechanisms has been run against the real harness.** Their injection and switches were checked against documentation and source code only.
-- **Experimental harnesses may lag behind.** A feature that is missing there degrades as described and is not a promise that the gap will be closed.
+- **Experimental harnesses may lag behind.** A feature that is missing there degrades as described and is not a promise that the gap will be closed. omac prints a warning at every start of an experimental harness (pi, CodeWhale).
 
 ## How it works
 

@@ -164,6 +164,10 @@ type Harness struct {
 	// this empty.
 	SandboxEnvAllow []string
 
+	// Experimental marks a harness that is not one of the priority harnesses. omac
+	// warns at every start, because features and protections may be missing or weaker.
+	Experimental bool
+
 	// MCPInjection selects how omac hands registered MCP servers to this
 	// harness. MCPInjectNone means the harness gets no MCP injection.
 	MCPInjection MCPInjectionKind
@@ -548,6 +552,7 @@ func builtinHarnessRegistry() []Harness {
 		},
 		{
 			Name:         "pi",
+			Experimental: true,
 			MCPScan:      MCPScanPi,
 			MCPInjection: MCPInjectPiExtension,
 			Aliases:      []string{},
@@ -593,6 +598,7 @@ func builtinHarnessRegistry() []Harness {
 		},
 		{
 			Name:         "codewhale",
+			Experimental: true,
 			MCPScan:      MCPScanCodeWhale,
 			MCPInjection: MCPInjectCodeWhaleEnv,
 			Aliases:      []string{"cw"},
