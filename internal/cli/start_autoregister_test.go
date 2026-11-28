@@ -830,6 +830,16 @@ func TestParseLaunchArgs_SkipUnregistered(t *testing.T) {
 
 func TestRunStart_SkipUnregisteredStartsWithWarning(t *testing.T) {
 	isolateHome(t)
+	// Keep the bridge socket path under the kernel's Unix socket limit even
+	// though the test name makes t.TempDir's path long.
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-start-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("TMPDIR", shortTmp)
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
+
 	wd := t.TempDir()
 	stageSkillWithSidecar(t, wd, "no-required", sidecarNoRequired)
 
