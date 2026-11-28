@@ -143,6 +143,42 @@ func (s *Service) checkAttributes(ctx context.Context, paths []string, source st
 	return nil
 }
 
+func (s *Service) validateExplicitIndexPaths(ctx context.Context, paths []string, source string) error {
+	explicit := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if err := s.validatePath(path, false); err != nil {
+			return err
+		}
+		explicit[path] = true
+	}
+	indexed, err := s.run(ctx, false, false, nil, append([]string{"ls-files", "--cached", "-z", "--"}, paths...)...)
+	if err != nil {
+		return err
+	}
+	for _, path := range strings.Split(strings.TrimSuffix(string(indexed), "\x00"), "\x00") {
+		if path != "" && !explicit[path] {
+			return fmt.Errorf("index operations require explicit files, not directories")
+		}
+	}
+	if source == "" {
+		return nil
+	}
+	tree, err := s.run(ctx, false, false, nil, append([]string{"ls-tree", "-z", source, "--"}, paths...)...)
+	if err != nil {
+		return err
+	}
+	for _, entry := range strings.Split(strings.TrimSuffix(string(tree), "\x00"), "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, path, ok := strings.Cut(entry, "\t")
+		if !ok || !strings.Contains(meta, " blob ") || !explicit[path] {
+			return fmt.Errorf("index operations require explicit files, not directories or submodules")
+		}
+	}
+	return nil
+}
+
 func (s *Service) mutate(ctx context.Context, action string, req Request, before State) (State, bool, error) {
 	changed := false
 	run := func(args ...string) ([]byte, error) {
@@ -151,10 +187,8 @@ func (s *Service) mutate(ctx context.Context, action string, req Request, before
 	}
 	switch action {
 	case "stage":
-		for _, p := range req.Paths {
-			if err := s.validatePath(p, false); err != nil {
-				return before, false, err
-			}
+		if err := s.validateExplicitIndexPaths(ctx, req.Paths, ""); err != nil {
+			return before, false, err
 		}
 		if err := s.checkAttributes(ctx, req.Paths, ""); err != nil {
 			return before, false, err
@@ -165,6 +199,23 @@ func (s *Service) mutate(ctx context.Context, action string, req Request, before
 		diff, err := s.run(ctx, false, false, nil, append([]string{"diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"}, req.Paths...)...)
 		if err != nil || len(diff) != 0 {
 			return before, true, fmt.Errorf("staging did not produce the requested working-tree state; inspect status")
+		}
+	case "unstage":
+		if err := s.validateExplicitIndexPaths(ctx, req.Paths, before.Head); err != nil {
+			return before, false, err
+		}
+		args := []string{"restore", "--source=" + before.Head, "--staged", "--"}
+		check := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-only", "-z", before.Head, "--"}
+		if before.Head == "" {
+			args = []string{"update-index", "--force-remove", "--"}
+			check = []string{"ls-files", "--cached", "-z", "--"}
+		}
+		if _, err := run(append(args, req.Paths...)...); err != nil {
+			return before, s.indexMayHaveChanged(ctx, before, err), err
+		}
+		remaining, err := s.run(ctx, false, false, nil, append(check, req.Paths...)...)
+		if err != nil || len(remaining) != 0 {
+			return before, true, fmt.Errorf("unstaging did not restore the requested index entries; inspect status")
 		}
 	case "commit":
 		index, err := s.run(ctx, false, false, nil, "ls-files", "--stage", "-z")
@@ -273,6 +324,9 @@ func (s *Service) mutate(ctx context.Context, action string, req Request, before
 	after, err := s.state(ctx)
 	if err != nil {
 		return before, changed, err
+	}
+	if (action == "stage" || action == "unstage") && (after.Head != before.Head || after.Branch != before.Branch) {
+		return after, true, fmt.Errorf("index operation changed HEAD; inspect status")
 	}
 	if action == "branches" && (after.Branches[req.Branch] != req.Target || after.Head != before.Head || after.Branch != before.Branch || after.Index != before.Index) {
 		return after, true, fmt.Errorf("branch postcondition failed; inspect status")

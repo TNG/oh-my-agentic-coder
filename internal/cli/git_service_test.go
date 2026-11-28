@@ -16,12 +16,12 @@ import (
 )
 
 func TestGitClientOnlyAcceptsSupportedForms(t *testing.T) {
-	for _, args := range [][]string{{"stage", "--", "file"}, {"stage", "--", "-literal"}, {"commit", "-m", "hello", "--signoff"}, {"branch", "topic"}, {"switch", "topic"}, {"status"}} {
+	for _, args := range [][]string{{"unstage", "--", "file"}, {"stage", "--", "file"}, {"stage", "--", "-literal"}, {"commit", "-m", "hello", "--signoff"}, {"branch", "topic"}, {"switch", "topic"}, {"status"}} {
 		if _, _, err := parseGitRequest(args, io.Discard); err != nil {
 			t.Errorf("rejected %v: %v", args, err)
 		}
 	}
-	for _, args := range [][]string{{"push"}, {"config", "core.hooksPath", "bad"}, {"rebase", "--exec", "bad"}, {"stage", "-A"}, {"commit", "--amend", "-m", "bad"}, {"branch", "-D", "main"}, {"switch", "--force", "main"}, {"checkout", "main"}, {"-c", "core.hooksPath=bad", "commit"}} {
+	for _, args := range [][]string{{"unstage", "--worktree", "file"}, {"unstage"}, {"push"}, {"config", "core.hooksPath", "bad"}, {"rebase", "--exec", "bad"}, {"stage", "-A"}, {"commit", "--amend", "-m", "bad"}, {"branch", "-D", "main"}, {"switch", "--force", "main"}, {"checkout", "main"}, {"-c", "core.hooksPath=bad", "commit"}} {
 		if _, _, err := parseGitRequest(args, io.Discard); err == nil {
 			t.Errorf("accepted unsupported %v", args)
 		}
@@ -33,7 +33,7 @@ func TestGitServicePermissionsAreSeparateAndDefaultClosed(t *testing.T) {
 	if config.ValidSkillName(r.Skill) == nil {
 		t.Fatal("a project skill could inherit Git service approvals")
 	}
-	for _, action := range []string{"stage", "commit", "branches", "switch"} {
+	for _, action := range []string{"stage", "unstage", "commit", "branches", "switch"} {
 		e, ok := r.Approvals.Lookup("POST", []string{action})
 		if !ok || e.Approval != approval.Required || e.Match != "POST /"+action {
 			t.Errorf("bad permission for %s: %+v", action, e)
@@ -75,13 +75,13 @@ func TestGitServiceLaunchFailsClosed(t *testing.T) {
 	}
 }
 
-func TestGitStagePathsRespectClientDirectory(t *testing.T) {
-	paths, err := gitStagePaths("/repo", "/repo/sub", []string{"file", "../rootfile"})
+func TestGitIndexPathsRespectClientDirectory(t *testing.T) {
+	paths, err := gitIndexPaths("/repo", "/repo/sub", []string{"file", "../rootfile"})
 	if err != nil || len(paths) != 2 || paths[0] != "sub/file" || paths[1] != "rootfile" {
 		t.Fatalf("relative paths: %v %v", paths, err)
 	}
 	for _, cwd := range []string{"/repo-other", "/"} {
-		if _, err := gitStagePaths("/repo", cwd, []string{"file"}); err == nil {
+		if _, err := gitIndexPaths("/repo", cwd, []string{"file"}); err == nil {
 			t.Fatal("outside checkout accepted")
 		}
 	}
@@ -121,7 +121,7 @@ func TestGitServiceApprovalsStayWithinOperationProjectAndPrincipal(t *testing.T)
 	if !request("stage", "one", route.Skill).Allow || !request("stage", "one", route.Skill).Allow || chooser.calls != 1 {
 		t.Fatal("stage session permission was not reused")
 	}
-	for _, args := range [][3]string{{"commit", "one", route.Skill}, {"switch", "one", route.Skill}, {"branches", "one", route.Skill}, {"stage", "two", route.Skill}, {"stage", "one", "builtin-git"}} {
+	for _, args := range [][3]string{{"unstage", "one", route.Skill}, {"commit", "one", route.Skill}, {"switch", "one", route.Skill}, {"branches", "one", route.Skill}, {"stage", "two", route.Skill}, {"stage", "one", "builtin-git"}} {
 		if request(args[0], args[1], args[2]).Allow {
 			t.Fatalf("approval crossed boundary: %v", args)
 		}

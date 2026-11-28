@@ -326,9 +326,9 @@ configuration that a later host Git command may run outside the sandbox
 default plain-checkout policy as protection against that persistence vector.
 
 On Linux, `omac start --git-service=prototype` makes the **whole enrolled
-`.git` directory** read-only. Permission-controlled staging, commits, branch
-creation and clean branch switching run through isolated workers with private
-configuration, no hooks or credentials, and no network. Source editing, builds,
+`.git` directory** read-only. Permission-controlled staging, unstaging, commits,
+branch creation and clean branch switching run through isolated workers with
+private configuration, no hooks or credentials, and no network. Source editing, builds,
 tests and local Git reads remain available under the usual grants. Setup failure
 aborts launch; a service failure never makes metadata writable. Directories
 containing protected files are also fixed in place for the session, while their

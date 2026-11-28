@@ -110,6 +110,9 @@ echo DENIAL-PRESERVED
 if git add -- deployment/local/.env; then exit 39; fi
 mkdir subdir
 (cd subdir; git add -- ../source)
+(cd subdir; git restore --staged -- ../source)
+/usr/bin/git diff --cached --quiet
+test "$(cat source)" = one
 git add -- source
 git commit -m first --signoff
 git branch topic

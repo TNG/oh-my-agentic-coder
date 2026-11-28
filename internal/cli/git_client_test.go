@@ -128,3 +128,26 @@ func TestGitClientReportsUnknownBranchBeforePosting(t *testing.T) {
 		t.Fatalf("exit=%d: %s", code, output)
 	}
 }
+
+func TestGitClientUnstageAndWrapper(t *testing.T) {
+	for _, args := range [][]string{{"unstage", "--", "source"}, {"--compat", "restore", "--staged", "--", "source"}} {
+		code, output := runGitClientTest(t, args, func(w http.ResponseWriter, r *http.Request, req gitservice.Request) {
+			if r.URL.Path != "/git/unstage" || len(req.Paths) != 1 || req.Paths[0] != "source" {
+				t.Errorf("wrong unstage request: %s %+v", r.URL.Path, req)
+			}
+			_ = json.NewEncoder(w).Encode(gitservice.Result{ID: req.ID, State: &gitservice.State{Index: "restored"}})
+		})
+		if code != ExitOK {
+			t.Fatalf("%v: %d %s", args, code, output)
+		}
+	}
+	for _, args := range [][]string{{"--compat", "restore", "--worktree", "--", "source"}, {"--compat", "restore", "--staged", "--worktree", "source"}, {"--compat", "restore", "--staged", "source"}, {"unstage", "--source=elsewhere", "source"}} {
+		code, output := runGitClientTest(t, args, func(w http.ResponseWriter, r *http.Request, req gitservice.Request) {
+			t.Error("posted unsupported restore")
+			w.WriteHeader(400)
+		})
+		if code != ExitMisuse {
+			t.Fatalf("%v: %d %s", args, code, output)
+		}
+	}
+}

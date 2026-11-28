@@ -57,10 +57,16 @@ omac git branch topic
 omac git switch topic
 ```
 
-`stage` accepts explicit files, including deletions. Paths on the CLI are
-relative to your current directory inside the enrolled checkout. It does not
+`stage` and `unstage` accept explicit files, including deletions. Paths on the CLI
+are relative to your current directory inside the enrolled checkout. They do not
 support directories, `-A`, `.` or traversal into another repository. The service
 refuses paths denied by the sandbox rather than staging denial-marker contents.
+
+Use `omac git unstage -- src/example.go` to restore an index entry from HEAD
+without changing the file on disk. Before the first commit, it removes the
+entry from the index instead. Unstaging does not discard edits or make a dirty
+worktree clean enough to switch branches. Ending a session also leaves the
+index and working-tree changes intact.
 
 Directories containing protected files are fixed mount points during the session:
 for example, if `deployment/local/.env` is protected, `deployment` and
@@ -84,6 +90,8 @@ requests do not prompt.
 Add `--git-wrapper` at launch to route these forms through the service:
 
 ```sh
+git add -- src/example.go
+git restore --staged -- src/example.go  # undo staging, keeping edits
 git add -- src/example.go
 git commit -m 'Update example' --signoff
 git branch topic

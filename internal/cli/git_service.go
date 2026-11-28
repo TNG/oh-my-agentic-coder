@@ -18,8 +18,9 @@ import (
 
 const gitServiceBriefing = `
 Git service prototype: this checkout's entire .git directory is read-only.
-Use omac git status, omac git stage -- <files>, omac git commit -m <message>
-[--signoff], omac git branch <name>, and omac git switch <existing-branch>.
+Use omac git status, omac git stage -- <files>, omac git unstage -- <files>,
+omac git commit -m <message> [--signoff], omac git branch <name>, and
+omac git switch <existing-branch>. Unstage preserves working-tree edits.
 Ordinary git status/log/diff remain local. Hooks, signing, filters, network
 operations and advanced Git commands are unsupported. Stop file-generating
 watchers and concurrent edits before switching branches. A lost response is
@@ -53,6 +54,7 @@ func gitServiceRoute(s *gitservice.Service) facade.Route {
 		{Match: "GET /status", Approval: approval.None},
 		{Match: "GET /operations/{id}", Approval: approval.None},
 		{Match: "POST /stage", Approval: approval.Required, Description: "Stages explicit files in this repository; no hooks or filters."},
+		{Match: "POST /unstage", Approval: approval.Required, Description: "Unstages explicit files without changing working-tree contents."},
 		{Match: "POST /commit", Approval: approval.Required, Description: "Creates a local commit; this approves the operation, not a particular diff."},
 		{Match: "POST /branches", Approval: approval.Required, Description: "Creates a local branch without replacing another branch."},
 		{Match: "POST /switch", Approval: approval.Required, Description: "Switches local branches and updates source files; requires a clean working tree."},

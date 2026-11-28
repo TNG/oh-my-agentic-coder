@@ -23,7 +23,7 @@ import (
 
 func runGit(args []string, env *Env) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(env.Stdout, "Usage: omac git status | stage -- <files> | commit -m <message> [--signoff] | branch <name> | switch <branch> | operation <id>")
+		fmt.Fprintln(env.Stdout, "Usage: omac git status | stage -- <files> | unstage -- <files> | commit -m <message> [--signoff] | branch <name> | switch <branch> | operation <id>")
 		return ExitOK
 	}
 	if args[0] == "--compat" {
@@ -47,6 +47,12 @@ func runGit(args []string, env *Env) int {
 			return ExitOK
 		case "add":
 			args = append([]string{"stage"}, args[1:]...)
+		case "restore":
+			if len(args) < 4 || args[1] != "--staged" || args[2] != "--" {
+				fmt.Fprintln(env.Stderr, "omac git: use git restore --staged -- <files>; worktree restoration is unsupported")
+				return ExitMisuse
+			}
+			args = append([]string{"unstage", "--"}, args[3:]...)
 		}
 	}
 	action, req, err := parseGitRequest(args, env.Stderr)
@@ -130,8 +136,8 @@ func runGit(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac git:", err)
 				return ExitMisuse
 			}
-			if action == "stage" {
-				req.Paths, err = gitStagePaths(result.State.Repository, env.Workdir, req.Paths)
+			if action == "stage" || action == "unstage" {
+				req.Paths, err = gitIndexPaths(result.State.Repository, env.Workdir, req.Paths)
 				if err != nil {
 					fmt.Fprintln(env.Stderr, "omac git:", err)
 					return ExitMisuse
@@ -194,7 +200,7 @@ func gitClientDirectory(root, cwd string) (string, error) {
 	return prefix, nil
 }
 
-func gitStagePaths(root, cwd string, paths []string) ([]string, error) {
+func gitIndexPaths(root, cwd string, paths []string) ([]string, error) {
 	prefix, err := gitClientDirectory(root, cwd)
 	if err != nil {
 		return nil, err
@@ -202,7 +208,7 @@ func gitStagePaths(root, cwd string, paths []string) ([]string, error) {
 	out := make([]string, len(paths))
 	for i, path := range paths {
 		if filepath.IsAbs(path) {
-			return nil, fmt.Errorf("stage requires relative paths")
+			return nil, fmt.Errorf("index operations require relative paths")
 		}
 		out[i] = filepath.Join(prefix, path)
 	}
@@ -223,7 +229,7 @@ func parseGitRequest(args []string, w io.Writer) (string, gitservice.Request, er
 		if len(args) == 2 && !strings.ContainsAny(args[1], "/\\?#\x00") {
 			return "operation", req, nil
 		}
-	case "stage":
+	case "stage", "unstage":
 		paths := args[1:]
 		literal := len(paths) > 0 && paths[0] == "--"
 		if literal {
@@ -232,11 +238,11 @@ func parseGitRequest(args []string, w io.Writer) (string, gitservice.Request, er
 		if len(paths) > 0 {
 			for _, p := range paths {
 				if !literal && strings.HasPrefix(p, "-") {
-					return "", req, fmt.Errorf("stage requires explicit paths; no Git options")
+					return "", req, fmt.Errorf("%s requires explicit paths; no Git options", args[0])
 				}
 			}
 			req.Paths = paths
-			return "stage", req, nil
+			return args[0], req, nil
 		}
 	case "commit":
 		fs := flag.NewFlagSet("commit", flag.ContinueOnError)
