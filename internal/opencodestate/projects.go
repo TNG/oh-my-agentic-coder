@@ -1,24 +1,25 @@
-// Package opencodestate reads project records from the local OpenCode
-// installation so `omac serve --for-opencode-desktop` can grant every
+// Package opencodestate reads project records from the OpenCode Desktop
+// app's own store so `omac serve --for-opencode-desktop` can grant every
 // known project worktree to the sandbox up front.
 //
-// OpenCode persists projects in three places that all drift apart:
-//   - storage JSON files under ~/.local/share/opencode/storage/project/
-//   - the opencode.db SQLite `project` table
-//   - the Desktop app's own store (opencode.global.dat, key
-//     "globalSync.project") under the ai.opencode.desktop[.beta] data
-//     dir — folders opened in the Desktop UI can exist ONLY here.
+// OpenCode also persists projects in storage JSON files and an
+// opencode.db SQLite table under ~/.local/share/opencode, which the
+// harness mounts read+write into the confined agent. Those files are
+// therefore not a trustworthy source for grant decisions and are ignored.
+// The Desktop store (opencode.global.dat, keys "globalSync.project" and
+// "layout.page") is outside that writable tree and remains the only
+// record source; folders opened in the Desktop UI can exist only there.
 //
-// We read all three (the db via the sqlite3 CLI when available — no
-// driver dependency) and merge. The pseudo-project with worktree "/"
-// (OpenCode's "global" record) is always skipped, as are worktrees
-// that no longer exist.
+// Even for the Desktop store, Worktrees rejects records whose paths are
+// in the user's home, shared temp locations, filesystem roots, or
+// world-writable/sticky directories. The pseudo-project with worktree "/"
+// (OpenCode's "global" record) is always skipped, as are worktrees that no
+// longer exist.
 package opencodestate
 
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -31,28 +32,17 @@ type projectRecord struct {
 	Worktree string `json:"worktree"`
 }
 
-// worktreeOrigin records where a harvested worktree record came from.
-// Only the Desktop store lives outside the sandbox's writable tree, so
-// only it is trusted for in-home paths; the storage JSON files and the
-// SQLite db both live under ~/.local/share/opencode, which the harness
-// mounts read+write into the confined agent.
-type worktreeOrigin int
-
-const (
-	originAgentWritable worktreeOrigin = iota // storage JSON or opencode.db
-	originDesktop                             // Desktop app's opencode.global.dat
-)
-
 // SkipReason tells why Worktrees rejected a recorded worktree. The
 // reason is for the human behind `omac serve`: stale means the folder
-// no longer exists, untrusted means the folder exists inside $HOME
-// but the record that named it comes from a source the confined
-// process can write, so it cannot drive a grant.
+// no longer exists, untrusted means the recorded path is too broad or
+// sits in a location that cannot safely receive an automatic grant,
+// such as the user's home, a shared temp root, or a world-writable or
+// sticky directory.
 type SkipReason string
 
 const (
 	SkipStale     SkipReason = "no longer exists"
-	SkipUntrusted SkipReason = "untrusted for a grant decision (record from agent-writable OpenCode state names an in-home path)"
+	SkipUntrusted SkipReason = "untrusted for an automatic grant (in-home, shared-temp, filesystem-root, or world-writable/sticky path)"
 )
 
 // SkippedWorktree pairs a rejected worktree path with its reason.
@@ -61,24 +51,8 @@ type SkippedWorktree struct {
 	Reason SkipReason
 }
 
-// worktreeEntry pairs a harvested worktree path with its origin so the
-// filter in Worktrees can apply a stricter rule to agent-writable sources.
-type worktreeEntry struct {
-	path   string
-	origin worktreeOrigin
-}
-
-// storageProjectDir returns ~/.local/share/opencode/storage/project.
-func storageProjectDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "share", "opencode", "storage", "project"), nil
-}
-
 // Worktrees returns the deduplicated, existing project worktree
-// directories recorded by OpenCode (storage files + db), sorted.
+// directories recorded by the OpenCode Desktop app, sorted.
 // Worktrees nested inside another recorded worktree are collapsed
 // into the ancestor: granting the parent already covers the child, so
 // emitting both would only add redundant sandbox rules.
@@ -86,40 +60,36 @@ func storageProjectDir() (string, error) {
 // list, not an error. skipped receives worktrees that were recorded
 // but rejected, each with its reason.
 //
-// Records from agent-writable sources (the storage JSON tree and the
-// opencode.db SQLite db, both under ~/.local/share/opencode) are not
-// trusted for any path inside $HOME: the confined process can write
-// them, so honoring an in-home record would let it steer a later
-// read+write grant at a path where the user owns every file. Such
-// records are routed into skipped. Records from the Desktop app's own
-// store (outside the sandbox mount) keep the looser isBroadWorktree
-// rule so the Desktop workflow still resolves in-home projects.
+// Records are only read from the Desktop store, which the confined
+// process cannot write. Each recorded path is still validated by
+// content: paths in $HOME or its ancestors, shared temp roots,
+// filesystem roots, and world-writable or sticky directories are routed
+// into skipped instead of becoming grants.
 func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
-	storage, err := storageWorktrees()
-	if err != nil {
-		return nil, nil, err
-	}
-	raw := append(storage, dbWorktrees()...)
-	raw = append(raw, desktopWorktrees()...)
+	raw := desktopWorktrees()
 
 	home, _ := os.UserHomeDir()
 	seen := map[string]bool{}
-	for _, e := range raw {
-		wt := e.path
+	for _, wt := range raw {
 		// Skip the global pseudo-project and anything non-absolute.
 		if wt == "" || wt == "/" || !filepath.IsAbs(wt) || seen[wt] {
 			continue
 		}
-		// Reject broad paths ($HOME and its ancestors) from every
-		// source, and additionally any path inside $HOME from
-		// agent-writable sources.
-		if home != "" && rejectsForHome(wt, home, e.origin) {
+		// Reject broad or unsafe paths regardless of which record
+		// named them: $HOME and its ancestors, anything inside
+		// $HOME, shared temp roots, and filesystem roots.
+		if isInHome(wt, home) || isSharedTempPath(wt) || isFilesystemRoot(wt) {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipUntrusted})
 			continue
 		}
 		seen[wt] = true
-		if fi, serr := os.Stat(wt); serr != nil || !fi.IsDir() {
+		fi, serr := os.Stat(wt)
+		if serr != nil || !fi.IsDir() {
 			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipStale})
+			continue
+		}
+		if fi.Mode().Perm()&0o002 != 0 || fi.Mode()&os.ModeSticky != 0 {
+			skipped = append(skipped, SkippedWorktree{Path: wt, Reason: SkipUntrusted})
 			continue
 		}
 		worktrees = append(worktrees, wt)
@@ -130,34 +100,47 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 	return collapseNested(worktrees), skipped, nil
 }
 
-// rejectsForHome reports whether wt must be rejected from the grant
-// list given the user's home directory and the record's origin. The
-// Desktop origin is only rejected for $HOME and its ancestors; the
-// agent-writable origins are rejected for any path inside $HOME
-// (ancestor, equal, or strict descendant) because the user owns every
-// file there and DAC offers no protection against a forged record.
-func rejectsForHome(wt, home string, origin worktreeOrigin) bool {
-	if origin == originDesktop {
-		return isBroadWorktree(wt, home)
-	}
-	return isInHome(wt, home)
-}
-
 // isInHome reports whether wt lies anywhere inside home: equal to it,
 // an ancestor of it, or a strict descendant of it.
 func isInHome(wt, home string) bool {
 	clean := filepath.Clean(wt)
-	homeClean := filepath.Clean(home)
-	if clean == homeClean {
+	if isFilesystemRoot(clean) {
 		return true
 	}
-	// wt is an ancestor of home.
-	if strings.HasPrefix(homeClean, clean+string(filepath.Separator)) {
+	if home == "" {
+		return false
+	}
+	homeClean := filepath.Clean(home)
+	// wt is $HOME itself or an ancestor of it.
+	if isBroadWorktree(clean, homeClean) {
 		return true
 	}
 	// wt is a descendant of home.
-	if strings.HasPrefix(clean, homeClean+string(filepath.Separator)) {
-		return true
+	return strings.HasPrefix(clean, homeClean+string(filepath.Separator))
+}
+
+// isFilesystemRoot reports whether p is a filesystem root or has no
+// non-root components (e.g. "/" or a bare volume name).
+func isFilesystemRoot(p string) bool {
+	clean := filepath.Clean(p)
+	return clean == string(filepath.Separator) || clean == filepath.Dir(clean)
+}
+
+// isSharedTempPath reports whether p is one of the machine-wide temp
+// roots or lies inside one. macOS uses a per-user $TMPDIR, so it is
+// still rejected: an explicit Desktop record pointing there is not a
+// project the user opened.
+func isSharedTempPath(p string) bool {
+	clean := filepath.Clean(p)
+	roots := []string{"/tmp", "/var/tmp", "/dev/shm", os.TempDir()}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		root = filepath.Clean(root)
+		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			return true
+		}
 	}
 	return false
 }
@@ -182,40 +165,6 @@ func collapseNested(paths []string) []string {
 	return out
 }
 
-// storageWorktrees reads the JSON records under storage/project. The
-// storage tree lives under ~/.local/share/opencode, which the harness
-// mounts read+write into the confined agent, so records from here are
-// tagged originAgentWritable.
-func storageWorktrees() ([]worktreeEntry, error) {
-	dir, err := storageProjectDir()
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []worktreeEntry
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
-			continue
-		}
-		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
-		if rerr != nil {
-			continue
-		}
-		var rec projectRecord
-		if json.Unmarshal(data, &rec) != nil {
-			continue
-		}
-		out = append(out, worktreeEntry{path: rec.Worktree, origin: originAgentWritable})
-	}
-	return out, nil
-}
-
 // desktopWorktrees reads the OpenCode Desktop app's own state. Folders
 // opened in the Desktop UI may exist only here, not yet in the CLI's
 // storage/db. Two kinds of records are harvested from
@@ -226,17 +175,15 @@ func storageWorktrees() ([]worktreeEntry, error) {
 //
 // Both the stable and beta app data dirs are consulted. Best-effort:
 // missing files or unexpected shapes yield nil.
-func desktopWorktrees() []worktreeEntry {
+func desktopWorktrees() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	var out []worktreeEntry
+	var out []string
 	for _, appID := range []string{"ai.opencode.desktop", "ai.opencode.desktop.beta"} {
 		for _, base := range desktopDataDirs(home, appID) {
-			for _, p := range desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat")) {
-				out = append(out, worktreeEntry{path: p, origin: originDesktop})
-			}
+			out = append(out, desktopGlobalWorktrees(filepath.Join(base, "opencode.global.dat"))...)
 		}
 	}
 	return out
@@ -401,37 +348,4 @@ func unwrapValue(raw json.RawMessage) []byte {
 		return []byte(asString)
 	}
 	return raw
-}
-
-// dbWorktrees scrapes the project table from opencode.db via the
-// sqlite3 CLI. Best-effort: a missing db or missing sqlite3 binary
-// yields nil. The db is opened read-only so a live OpenCode instance
-// is not disturbed. The db lives under ~/.local/share/opencode, which
-// the harness mounts read+write into the confined agent, so records
-// from here are tagged originAgentWritable.
-func dbWorktrees() []worktreeEntry {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	db := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
-	if _, err := os.Stat(db); err != nil {
-		return nil
-	}
-	sqlite, err := exec.LookPath("sqlite3")
-	if err != nil {
-		return nil
-	}
-	out, err := exec.Command(sqlite,
-		"file:"+db+"?mode=ro", "SELECT worktree FROM project;").Output()
-	if err != nil {
-		return nil
-	}
-	var entries []worktreeEntry
-	for _, line := range strings.Split(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			entries = append(entries, worktreeEntry{path: line, origin: originAgentWritable})
-		}
-	}
-	return entries
 }

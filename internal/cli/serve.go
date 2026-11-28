@@ -617,7 +617,14 @@ func runServe(args []string, env *Env) int {
 			for _, s := range skipped {
 				fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (%s)\n", s.Path, s.Reason)
 			}
-			desktopWorktrees = worktrees
+			roots := sandboxWritableRoots(harness, cacheScope, rtDir, srv.sandboxTmp)
+			for _, wt := range worktrees {
+				if sandboxWritablePath(wt, roots) {
+					fmt.Fprintf(env.Stderr, "omac serve: skipping OpenCode worktree %s (inside a sandbox-writable directory)\n", wt)
+					continue
+				}
+				desktopWorktrees = append(desktopWorktrees, wt)
+			}
 		}
 		// Checked once at launch: the sandbox cannot gain new denies later, so
 		// an approved skill edited during this serve run stays visible until
@@ -662,14 +669,21 @@ func runServe(args []string, env *Env) int {
 					argv = injectSandboxFlag(argv, "--allow", wt)
 				}
 			}
-			// Grant the Desktop's shared state dir (XDG_STATE_HOME, set
-			// above) read+write so the inner opencode can read the
-			// Desktop's auth/config there. The default profile already
-			// lists it; granting here keeps it working under trimmed
-			// custom profiles too.
+			// Grant only the OpenCode state subdirectory (XDG_STATE_HOME,
+			// set above) read+write so the inner opencode can read the
+			// Desktop's auth/config there. The parent directory holds
+			// opencode.global.dat, the Desktop project store this launch
+			// reads worktree records from, so it must stay outside the
+			// grant. The default profile already lists the subdirectory;
+			// granting here keeps it working under trimmed custom profiles.
 			if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-				fmt.Fprintf(env.Stderr, "  r+w %s (shared Desktop state)\n", dir)
-				argv = injectSandboxFlag(argv, "--allow", dir)
+				stateGrant := filepath.Join(dir, "opencode")
+				if err := os.MkdirAll(stateGrant, 0o700); err != nil {
+					fmt.Fprintf(env.Stderr, "omac serve: create Desktop state dir %s: %v\n", stateGrant, err)
+					return ExitIOError
+				}
+				fmt.Fprintf(env.Stderr, "  r+w %s (shared Desktop state)\n", stateGrant)
+				argv = injectSandboxFlag(argv, "--allow", stateGrant)
 			}
 		}
 		// --learn: pass through to the built-in sandbox, which lifts
@@ -889,6 +903,44 @@ func serverExposureWarning(h config.Harness, innerArgv []string, getenv func(str
 // sandboxed inner command may connect to that loopback port.
 func injectOpenPort(argv []string, port string) []string {
 	return injectSandboxFlag(argv, "--open-port", port)
+}
+
+// sandboxWritableRoots lists the directories this launch treats as writable
+// from inside the sandbox. A harvested OpenCode worktree inside one of them is
+// not a project boundary: the confined process could have created or changed
+// the record there, so it must not become an additional grant.
+func sandboxWritableRoots(h config.Harness, cacheScope *toolcache.Scope, extra ...string) []string {
+	var roots []string
+	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
+		roots = append(roots, dir, filepath.Join(dir, "opencode"))
+	}
+	for _, d := range h.ResolvedSandboxDirs() {
+		if d == "" {
+			continue
+		}
+		if expanded, err := sandboxprofile.ExpandPath(d); err == nil {
+			roots = append(roots, expanded)
+		}
+	}
+	if cacheScope != nil && cacheScope.Dir != "" {
+		roots = append(roots, cacheScope.Dir)
+	}
+	for _, d := range extra {
+		if d != "" {
+			roots = append(roots, d)
+		}
+	}
+	return roots
+}
+
+// sandboxWritablePath reports whether wt equals or lies inside one of roots.
+func sandboxWritablePath(wt string, roots []string) bool {
+	for _, root := range roots {
+		if pathsCover(root, wt) {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareSandboxDirs creates harness-declared runtime directories before grant

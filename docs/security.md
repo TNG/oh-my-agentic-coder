@@ -287,6 +287,36 @@ keychain whose file the agent can read, which leaves two gaps:
 - The agent can send the service other requests, for example to lock your
   keychains.
 
+### Automatic project grants
+
+`omac serve --for-opencode-desktop` can grant project folders it finds in
+OpenCode's Desktop app, so a session that reopens a Desktop project does not
+need a new launch. These grants are deliberately narrow:
+
+- The only record source is the Desktop app's `opencode.global.dat`. OpenCode's
+  storage JSON files and `opencode.db` under `~/.local/share/opencode` are
+  ignored, because that directory is writable from inside the sandbox. A
+  confined agent must not be able to write the records that decide a later
+  launch's read + write access.
+- Even a Desktop record is not enough on its own. omac skips paths in your
+  home directory or its ancestors, shared temp locations (`/tmp`, `/var/tmp`,
+  `/dev/shm`, the current `$TMPDIR`), filesystem roots, and world-writable or
+  sticky directories. It also skips folders it cannot verify as existing
+  directories.
+- At grant time omac drops any worktree inside a directory the launch already
+  makes writable from the sandbox, such as harness config/state directories,
+  the tool cache, the runtime directory, or the per-session temp directory,
+  and prints each refusal. A grant cannot widen access to a directory the
+  agent already controls.
+- The shared Desktop state grant covers only `<XDG_STATE_HOME>/opencode`, not
+  its parent. The parent holds `opencode.global.dat`, so it stays outside the
+  sandbox even though provider credentials and config under the subdirectory
+  remain reachable.
+
+These checks are best-effort conveniences, not an approval mechanism. An
+unusual project that the checks reject can still be opened explicitly, for
+example with `--workdir` or by launching from that directory.
+
 ### Secrets
 
 Integrations (GitHub, GitLab, Jira, email) need API tokens. If the agent holds

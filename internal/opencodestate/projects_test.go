@@ -93,17 +93,11 @@ func TestDesktopStateDir(t *testing.T) {
 func TestWorktrees(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	stateDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("XDG_DATA_HOME", "")
 
-	// Legitimate storage records must live outside $HOME: records from
-	// the agent-writable storage tree that name an in-home path are
-	// rejected (the confined process can forge them and DAC offers no
-	// protection inside $HOME). In-home paths are exercised by the
-	// security tests in home_grant_security_test.go.
-	base := t.TempDir()
+	// Recorded worktrees must be out of home and outside shared temp
+	// roots; those filters are exercised by the security tests.
+	base := securityOutOfHomeDir(t)
 	existing1 := filepath.Join(base, "proj-a")
 	existing2 := filepath.Join(base, "proj-b")
 	nested := filepath.Join(existing1, "sub", "module") // inside proj-a
@@ -115,16 +109,20 @@ func TestWorktrees(t *testing.T) {
 	}
 	stale := filepath.Join(base, "gone") // doesn't exist
 
-	writeProject(t, stateDir, "aaa", existing1)
-	writeProject(t, stateDir, "bbb", existing2)
-	writeProject(t, stateDir, "ccc", existing2) // duplicate worktree
-	writeProject(t, stateDir, "ddd", stale)     // doesn't exist
-	writeProject(t, stateDir, "eee", nested)    // nested inside existing1 -> collapsed
-	writeProject(t, stateDir, "fff", prefixSib) // prefix sibling -> kept
-	writeProject(t, stateDir, "global", "/")    // pseudo-project
-	writeProject(t, stateDir, "rel", "relative/path")
+	records := []string{
+		existing1,
+		existing2,
+		existing2, // duplicate worktree
+		stale,     // doesn't exist
+		nested,    // nested inside existing1 -> collapsed
+		prefixSib, // prefix sibling -> kept
+		"/",       // pseudo-project
+		"relative/path",
+	}
+	securityWriteDesktopProjects(t, home, records...)
+
 	// Garbage file must not break parsing.
-	if err := os.WriteFile(filepath.Join(stateDir, "junk.json"), []byte("{nope"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop", "junk.dat"), []byte("{nope"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -160,10 +158,7 @@ func TestDesktopWorktrees(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
-	proj := filepath.Join(home, "desktop-proj")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	proj := securityOutOfHomeDir(t)
 
 	// Shape captured from a real opencode.global.dat: the
 	// globalSync.project value is a JSON-encoded *string* of
@@ -202,8 +197,9 @@ func TestDesktopOpenTabsPickedUp(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
 
-	pinned := filepath.Join(home, "pinned-proj")
-	openTab := filepath.Join(home, "open-tab-proj") // open tab, NOT in globalSync.project
+	base := securityOutOfHomeDir(t)
+	pinned := filepath.Join(base, "pinned-proj")
+	openTab := filepath.Join(base, "open-tab-proj") // open tab, NOT in globalSync.project
 	for _, d := range []string{pinned, openTab} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -242,10 +238,7 @@ func TestDesktopWorktreesPlainObject(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", "")
-	proj := filepath.Join(home, "p2")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	proj := securityOutOfHomeDir(t)
 	raw := `{"globalSync.project": {"value":[{"id":"x","worktree":"` + proj + `"}]}}`
 	dir := filepath.Join(home, ".local", "share", "ai.opencode.desktop.beta")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
