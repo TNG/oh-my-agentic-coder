@@ -31,6 +31,11 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	if len(stage2Argv) == 0 {
 		return nil, fmt.Errorf("bwrap: empty stage2 argv")
 	}
+	if g.GitReadOnly {
+		if err := g.ValidateReadOnlyGit(); err != nil {
+			return nil, err
+		}
+	}
 	argv := []string{
 		"bwrap",
 		"--die-with-parent",
@@ -80,6 +85,11 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 	}
 	for _, p := range g.AllowPaths {
 		add(p, true)
+	}
+	if g.GitReadOnly {
+		if err := pinGitDenyParents(g, mounts); err != nil {
+			return nil, err
+		}
 	}
 	// Unix-socket dirs are the one grant ResolveGrants doesn't
 	// existence-filter (the daemon may mint the dir after launch). bwrap
@@ -153,6 +163,11 @@ func BuildBwrapArgv(g *Grants, stage2Argv []string) ([]string, error) {
 			flag += "-try"
 		}
 		argv = append(argv, flag, m.path, m.path)
+	}
+
+	if g.GitReadOnly {
+		gitdir := filepath.Join(g.Workdir, ".git")
+		argv = append(argv, "--ro-bind", gitdir, gitdir)
 	}
 
 	// Protected-path masking: when rootGranted every protected path is

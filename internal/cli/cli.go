@@ -145,6 +145,7 @@ func commands() map[string]Command {
 		"setup":      {Name: "setup", Short: "Provision omac's built-in skills into installed harnesses' skills dirs.", Run: runSetup},
 		"plugin":     {Name: "plugin", Short: "Install client-side harness bridge plugins (e.g. opencode-desktop).", Run: runPlugin},
 		"sandbox":    {Name: "sandbox", Short: "Built-in kernel sandbox (run|stage2).", Run: runSandbox},
+		"git":        {Name: "git", Short: "Use the opt-in local Git service.", Run: runGit},
 		"doctor":     {Name: "doctor", Short: "Run sanity checks.", Run: runDoctor},
 		"diagnose":   {Name: "diagnose", Short: "Explain why a run failed: blocked connections + config clashes.", Run: runDiagnose},
 		"update":     {Name: "update", Short: "Check GitHub for a newer release and install it.", Run: runUpdate},
@@ -182,6 +183,7 @@ Subcommands:
   serve        Long-lived multi-directory server.        [harness]: %s
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.
+  git          Use the opt-in Git service (status|stage|unstage|commit|branch|switch).
   doctor       Run sanity checks (is my setup correct?).
   diagnose     Explain why a run failed: blocked connections + config clashes.
   update       Check GitHub for a newer release and install it.

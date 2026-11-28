@@ -37,6 +37,12 @@ omac start claude       # specific harness
 
 For all flags: `omac start --help`.
 
+**Experimental Linux Git service:** add `--git-service=prototype`,
+`--git-user-name` and `--git-user-email` to make the checkout's `.git` read-only
+and use permission-controlled local operations via `omac git`. Optional
+`--git-wrapper` handles a small subset of ordinary Git commands. See the
+[Git service guide](../advanced/git-service.md) for requirements and limitations.
+
 ### omac serve
 
 Use this instead of `omac start` when running **OpenCode Desktop**. Unlike `omac start`, which handles one project at a time and requires a restart to switch projects, `omac serve` is designed to stay running and serve multiple projects. Use `--workdir` to specify which project to activate at startup — automatic project switching from OpenCode Desktop is not yet implemented.

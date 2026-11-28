@@ -130,6 +130,15 @@ func Run(opts Options) int {
 		}
 		return fail("%v", err)
 	}
+	if opts.Flags.GitReadOnly {
+		if opts.Flags.Learn || runtime.GOOS != "linux" {
+			return fail("read-only Git prototype requires Linux without learn mode")
+		}
+		grants.GitReadOnly = true
+		if err := grants.ValidateReadOnlyGit(); err != nil {
+			return fail("%v", err)
+		}
+	}
 	if err := grants.Validate(); err != nil {
 		return fail("%v", err)
 	}

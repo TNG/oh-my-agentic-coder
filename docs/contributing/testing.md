@@ -50,6 +50,31 @@ Two Linux sandbox integration tests (`TestIntegrationProtectedMaskedUnderGrant`,
 
 ---
 
+## Git service prototype checks
+
+On Linux with Git 2.43+, bubblewrap network/process namespaces, and a C compiler:
+
+```sh
+OMAC_REQUIRE_GIT_WORKER_TESTS=1 go test -race ./internal/gitservice
+OMAC_REQUIRE_GIT_WORKER_TESTS=1 go test -race ./internal/cli ./internal/sandboxrun ./internal/facade \
+  -run 'TestGit|TestIntegrationGitMetadataReadOnly|TestInternalHandler'
+```
+
+These tests use disposable repositories, fake approval answers and no model
+credentials. They cover confined workers, metadata write denial, and a real
+`omac start --inner` session that builds/tests a small program, stages, unstages,
+commits, creates and switches branches. Approval denial and repeated sessions are covered
+as well. The environment variable makes unavailable worker namespaces a failure
+rather than a skip; CI also requires them. The worker probe test is skipped in
+the parent process because the confinement test runs it inside bubblewrap.
+
+Run `go test -race ./...` on an unrestricted test host or CI as well. Running
+inside an existing omac sandbox may block the suite's loopback socket fixtures,
+UDP control cases or toolchain discovery, even if the prototype checks pass.
+Do not use `--no-sandbox` as a substitute for the prototype's enforcement tests.
+
+---
+
 ## E2E tests
 
 E2E tests run against real installed harnesses and are **not** run on every PR. Running them requires real model credentials and takes several minutes; the full suite runs weekly on `main` instead (and can be triggered manually on any branch). Run them locally when your change touches the sandbox, harness integration, or the Facade.

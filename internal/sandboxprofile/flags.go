@@ -26,6 +26,7 @@ type Flags struct {
 	AllowEnv      []string // --allow-env <name>    additive env allow_vars entry
 	BlockNet      bool     // --block-net
 	Learn         bool     // --learn: unrestricted fs + folder recording
+	GitReadOnly   bool     // --git-read-only: Linux prototype metadata protection
 	WorkdirAccess string   // --workdir-access <level>
 	AuditLog      string   // --audit-log <path>: append net.decision events here ("" = disabled)
 	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
@@ -208,6 +209,11 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, fmt.Errorf("--learn takes no value")
 			}
 			f.Learn = true
+		case "--git-read-only":
+			if hasInline {
+				return nil, fmt.Errorf("--git-read-only takes no value")
+			}
+			f.GitReadOnly = true
 		case "--audit-log":
 			v, err := val(a)
 			if err != nil {

@@ -1,10 +1,11 @@
-// Package pathutil holds the small path helpers shared by the CLI and the
-// user-global preferences: symlink-aware canonicalisation and a
-// separator-boundary containment check.
+// Package pathutil provides shared path handling for the CLI, preferences and sandbox.
 package pathutil
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -49,4 +50,39 @@ func Under(root, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// ExistingParentsWithin returns sorted, unique parent directories strictly
+// below root. Inputs must be absolute; existing symlink parents are refused.
+func ExistingParentsWithin(root string, paths []string) ([]string, error) {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("parent root must be absolute")
+	}
+	prefix := strings.TrimSuffix(root, string(filepath.Separator)) + string(filepath.Separator)
+	parents := map[string]bool{}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("protected path must be absolute: %s", path)
+		}
+		for dir := filepath.Dir(path); dir != root && strings.HasPrefix(dir, prefix); dir = filepath.Dir(dir) {
+			if parents[dir] {
+				continue
+			}
+			info, err := os.Lstat(dir)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil || !info.IsDir() {
+				return nil, fmt.Errorf("protected-path parent must be a real directory: %s", dir)
+			}
+			parents[dir] = true
+		}
+	}
+	out := make([]string, 0, len(parents))
+	for path := range parents {
+		out = append(out, path)
+	}
+	slices.Sort(out)
+	return out, nil
 }

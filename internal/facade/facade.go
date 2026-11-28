@@ -59,7 +59,7 @@ const (
 	RouteBroken RouteState = "broken"
 )
 
-// Route maps a mount prefix to an upstream localhost port.
+// Route maps a mount prefix to a sidecar or a first-party handler.
 //
 // In single-workdir (omac start) mode the mount is a single segment
 // (e.g. "slack") and the request path is /<mount>/<rest>. In serve mode
@@ -72,6 +72,9 @@ type Route struct {
 	Mount        string // e.g. "slack"
 	Namespace    string // "" (flat) or a dir token or "__global__" (serve mode)
 	UpstreamPort int
+	// Handler runs after authentication and approvals, without an upstream port.
+	// Its route is immutable until the facade closes.
+	Handler      http.Handler
 	MaxBodyBytes int64         // 0 = inherit facade default
 	IdleTimeout  time.Duration // inactivity limit of upgraded connections; 0 = Facade.IdleTimeout
 	Skill        string        // registry name
@@ -260,17 +263,19 @@ func (f *Facade) SetAuditor(a audit.Auditor) {
 // opened through the old one, as RemoveRoute does: they were let through
 // under the old route's upstream and approvals.
 //
-// When both the existing route and the new route carry a non-empty Owner,
-// a replacement is refused if the owners differ — this prevents a forged
-// skill from claiming the mount of an already-running, approved skill.
+// Owned routes cannot be replaced by another owner. First-party handlers
+// cannot be replaced at all.
 func (f *Facade) AddRoute(r Route) {
+	if err := validateInternalRoute(r); err != nil {
+		return
+	}
 	rr := r
 	f.mu.Lock()
 	if f.routes == nil {
 		f.routes = make(map[string]*Route)
 	}
 	existing, ok := f.routes[rr.key()]
-	if ok && existing.Owner != "" && existing.Owner != rr.Owner {
+	if ok && (existing.Handler != nil || (existing.Owner != "" && existing.Owner != rr.Owner)) {
 		f.mu.Unlock()
 		return
 	}
@@ -281,11 +286,15 @@ func (f *Facade) AddRoute(r Route) {
 }
 
 // RemoveRoute drops the route with the given namespace/mount. A no-op if
-// absent. Used by serve mode when a directory is deactivated. WebSocket
-// connections opened through the route are closed.
+// absent or reserved for a first-party handler. Used by serve mode when a
+// directory is deactivated. WebSocket connections through the route are closed.
 func (f *Facade) RemoveRoute(namespace, mount string) {
 	f.mu.Lock()
 	key := routeKey(namespace, mount)
+	if r := f.routes[key]; r != nil && r.Handler != nil {
+		f.mu.Unlock()
+		return
+	}
 	stale := f.takeUpgradesLocked(f.routes[key])
 	delete(f.routes, key)
 	f.mu.Unlock()
@@ -398,6 +407,16 @@ func (f *Facade) UpstreamPort(namespace, mount string) int {
 // Start opens the listeners and begins serving. Returns once both are
 // bound. Call Close to stop.
 func (f *Facade) Start(ctx context.Context) error {
+	seen := map[string]Route{}
+	for _, r := range f.Routes {
+		if err := validateInternalRoute(r); err != nil {
+			return err
+		}
+		if previous, ok := seen[r.key()]; ok && (r.Handler != nil || previous.Handler != nil) {
+			return fmt.Errorf("reserved facade route collision: %s", r.key())
+		}
+		seen[r.key()] = r
+	}
 	f.server = &http.Server{
 		Handler:           http.HandlerFunc(f.handle),
 		ReadHeaderTimeout: 15 * time.Second,
@@ -687,12 +706,38 @@ func (f *Facade) handle(w http.ResponseWriter, r *http.Request) {
 		rest = cleaned
 	}
 
+	if route.Handler != nil {
+		if r.Header.Get("Upgrade") != "" {
+			http.Error(w, "internal routes do not support upgrades", http.StatusBadRequest)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clone.URL.Path, clone.URL.RawPath = "/"+rest, ""
+		limit := route.MaxBodyBytes
+		if limit == 0 {
+			limit = f.MaxBodyBytes
+		}
+		if limit > 0 && clone.Body != nil {
+			clone.Body = http.MaxBytesReader(w, clone.Body, limit)
+		}
+		wr := &statusCaptureWriter{ResponseWriter: w, status: http.StatusOK}
+		route.Handler.ServeHTTP(wr, clone)
+		f.logAccess(r, route, rest, wr.status, wr.bytes, time.Since(started))
+		return
+	}
 	// WebSocket / generic Upgrade path.
 	if isUpgrade(r) {
 		f.proxyUpgrade(w, r, route, rest, started)
 		return
 	}
 	f.proxyHTTP(w, r, route, rest, started)
+}
+
+func validateInternalRoute(r Route) error {
+	if r.Handler != nil && (r.Owner == "" || r.Approvals == nil || r.UpstreamPort != 0 || r.SkillDir != "" || (r.State != "" && r.State != RouteReady)) {
+		return fmt.Errorf("internal facade route %q requires an owner, approvals and no upstream, skill directory or stub state", r.key())
+	}
+	return nil
 }
 
 // skillDocName is the conventional human-readable manifest a skill ships
