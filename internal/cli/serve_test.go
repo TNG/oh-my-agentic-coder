@@ -882,6 +882,7 @@ func TestDirsEndpointDoesNotLeakTokens(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/__omac__/dirs", nil)
+	addServeTestToken(req)
 	rec := httptest.NewRecorder()
 	s.controlMux().ServeHTTP(rec, req)
 	if rec.Code != 200 {
