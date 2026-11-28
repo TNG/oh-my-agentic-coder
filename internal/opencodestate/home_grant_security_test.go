@@ -1,7 +1,6 @@
 package opencodestate
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,61 +56,35 @@ func TestSecurityPlantedRecordRejectsStrictHomeDescendant(t *testing.T) {
 	}
 }
 
-// TestSecurityDesktopWorktreeInHomeStillHonored pins the trust distinction
-// between sources. The Desktop store lives outside the sandbox's writable
-// tree, so an in-home project recorded there must still be honored even
-// though the same path planted through the agent-writable storage tree must
-// be rejected. Asserting both halves keeps the test honest about which source
-// contributed the grant.
-func TestSecurityDesktopWorktreeInHomeStillHonored(t *testing.T) {
+// TestSecurityDesktopInHomeWorktreeRejected asserts that the source of a
+// record does not make an in-home path safe to grant. A Desktop project
+// record pointing inside the user's home must be rejected like any other
+// in-home record; an out-of-home Desktop record still resolves so a fix
+// cannot pass by ignoring the trusted source entirely.
+func TestSecurityDesktopInHomeWorktreeRejected(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
-
-	stateDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	inHome := filepath.Join(home, "Documents")
 	if err := os.MkdirAll(inHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	// Same in-home path through both sources: the storage copy must be
-	// rejected, the Desktop copy must still grant.
-	writeProject(t, stateDir, "planted", inHome)
-	writeDesktopPinnedProject(t, home, inHome)
+	control := securityOutOfHomeDir(t)
+	securityWriteDesktopProjects(t, home, inHome, control)
 
 	worktrees, skipped, err := Worktrees()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if !slices.Contains(worktrees, inHome) {
-		t.Errorf("in-home Desktop record %q was not honored: %v", inHome, worktrees)
+	if slices.Contains(worktrees, inHome) {
+		t.Errorf("in-home Desktop record %q was returned as a grant source: %v", inHome, worktrees)
 	}
 	if !slices.Contains(skipped, SkippedWorktree{Path: inHome, Reason: SkipUntrusted}) {
-		t.Errorf("in-home storage record %q was not surfaced in skipped as untrusted: %v", inHome, skipped)
+		t.Errorf("in-home Desktop record %q was not surfaced in skipped as untrusted: %v", inHome, skipped)
 	}
-}
-
-// writeDesktopPinnedProject writes an opencode.global.dat entry naming worktree
-// as a pinned project under the Desktop app's data dir, mirroring the real
-// double-encoded on-disk shape.
-func writeDesktopPinnedProject(t *testing.T, home, worktree string) {
-	t.Helper()
-	inner := `{"value":[{"id":"d","worktree":"` + worktree + `"}]}`
-	top := map[string]any{"globalSync.project": inner}
-	data, err := json.Marshal(top)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "opencode.global.dat"), data, 0o644); err != nil {
-		t.Fatal(err)
+	if !slices.Contains(worktrees, control) {
+		t.Errorf("control: out-of-home Desktop record %q was not returned: %v", control, worktrees)
 	}
 }
