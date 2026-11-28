@@ -594,9 +594,9 @@ func pathsCover(grantPath, targetPath string) bool {
 	if rel == "." {
 		return true
 	}
-	// If the relative path starts with ".." the target is outside the
-	// grant; otherwise it is a subpath and covered.
-	return !strings.HasPrefix(rel, "..")
+	// Only the parent ("..") and paths below it are outside the grant;
+	// names such as "..data" are ordinary children.
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // cargoSentinelWarnings checks for the presence of cargo config /

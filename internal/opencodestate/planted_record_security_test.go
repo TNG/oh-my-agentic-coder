@@ -10,10 +10,7 @@ import (
 // Agent-writable storage records never become grant sources; the Desktop
 // control keeps a source that must still work.
 func TestSecurityPlantedProjectRecordYieldsNoWorktree(t *testing.T) {
-	home := securityOutOfHomeDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
+	home := securityFakeHome(t)
 	stateDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)

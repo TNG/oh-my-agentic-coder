@@ -6,16 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 )
 
 func TestSecurityAgentWritableStateNotGrantSource(t *testing.T) {
-	home := securityOutOfHomeDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
+	home := securityFakeHome(t)
 
 	storageDir := filepath.Join(home, ".local", "share", "opencode", "storage", "project")
 	if err := os.MkdirAll(storageDir, 0o755); err != nil {
@@ -51,10 +49,7 @@ func TestSecurityAgentWritableStateNotGrantSource(t *testing.T) {
 }
 
 func TestSecurityWorktreeGrantExcludesSharedTemp(t *testing.T) {
-	home := securityOutOfHomeDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("XDG_DATA_HOME", "")
+	home := securityFakeHome(t)
 
 	// A fresh, owner-only temp root outside the literal paths pins the
 	// dynamic os.TempDir rule, not just the sticky and world-writable checks.
@@ -113,6 +108,15 @@ func securityUniquePaths(paths ...string) []string {
 	return out
 }
 
+func securityFakeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	return home
+}
+
 func securityOutOfHomeDir(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -121,13 +125,13 @@ func securityOutOfHomeDir(t *testing.T) string {
 	}
 	dir, err := os.MkdirTemp(wd, ".grant-control-")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("working directory %q cannot host an out-of-home control: %v", wd, err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	home, _ := os.UserHomeDir()
 	if securityPathWithin(home, dir) || securitySharedTempPath(dir) {
-		t.Skipf("working directory %q cannot host an out-of-home control", wd)
+		t.Fatalf("working directory %q cannot host an out-of-home control", wd)
 	}
 	return dir
 }
@@ -196,5 +200,58 @@ func securityWriteProjectDB(t *testing.T, home string, worktrees ...string) {
 	}
 	if out, err := exec.Command(sqlite, db, statement.String()).CombinedOutput(); err != nil {
 		t.Fatalf("sqlite3 fixture: %v: %s", err, out)
+	}
+}
+
+// A symlink outside the temp roots must still be rejected when its target is
+// a shared temp location.
+func TestSecurityDesktopSymlinkIntoSharedTempRejected(t *testing.T) {
+	home := securityFakeHome(t)
+
+	link := filepath.Join(securityOutOfHomeDir(t), "link")
+	if err := os.Symlink(os.TempDir(), link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	control := securityOutOfHomeDir(t)
+	securityWriteDesktopProjects(t, home, link, control)
+
+	worktrees, skipped, err := Worktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(worktrees, link) {
+		t.Errorf("out-of-home symlink to a shared temp directory %q was returned as a grant source: %v", link, worktrees)
+	}
+	if !slices.Contains(skipped, SkippedWorktree{Path: link, Reason: SkipUntrusted}) {
+		t.Errorf("out-of-home symlink to a shared temp directory %q was not surfaced as untrusted: %v", link, skipped)
+	}
+	if !slices.Contains(worktrees, control) {
+		t.Errorf("control: out-of-home Desktop record %q was not returned: %v", control, worktrees)
+	}
+}
+
+// Platform temp aliases and generic symlinked aliases must match their
+// canonical roots.
+func TestSecuritySharedTempAliases(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "tmp-alias")
+	if err := os.Symlink("/tmp", link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if !isSharedTempPath(filepath.Join(link, "project")) {
+		t.Errorf("symlinked alias %q of /tmp was not recognised as a shared temp path", link)
+	}
+
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	for _, path := range []string{"/private/tmp/project", "/private/var/tmp/project"} {
+		if !isSharedTempPath(path) {
+			t.Errorf("macOS alias %q was not recognised as a shared temp path", path)
+		}
+	}
+	privateTmp := "/private/var/folders/ab/cd/T"
+	t.Setenv("TMPDIR", privateTmp)
+	if !isSharedTempPath(filepath.Join(privateTmp, "project")) {
+		t.Errorf("macOS TMPDIR alias %q was not recognised as a shared temp path", privateTmp)
 	}
 }

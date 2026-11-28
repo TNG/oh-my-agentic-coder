@@ -24,6 +24,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 )
 
 // projectRecord is the subset of OpenCode's project JSON we care about.
@@ -101,22 +103,58 @@ func Worktrees() (worktrees []string, skipped []SkippedWorktree, err error) {
 }
 
 // isInHome reports whether wt lies anywhere inside home: equal to it,
-// an ancestor of it, or a strict descendant of it.
+// an ancestor of it, or a strict descendant of it. Both the recorded
+// spelling and the resolved location are checked, so a link or platform
+// alias cannot hide a protected target.
 func isInHome(wt, home string) bool {
-	clean := filepath.Clean(wt)
-	if isFilesystemRoot(clean) {
-		return true
+	wtForms := pathForms(wt)
+	for _, form := range wtForms {
+		if isFilesystemRoot(form) {
+			return true
+		}
 	}
 	if home == "" {
 		return false
 	}
-	homeClean := filepath.Clean(home)
-	// wt is $HOME itself or an ancestor of it.
-	if isBroadWorktree(clean, homeClean) {
-		return true
+	homeForms := pathForms(home)
+	for _, w := range wtForms {
+		for _, h := range homeForms {
+			// wt is $HOME itself or an ancestor of it.
+			if isBroadWorktree(w, h) {
+				return true
+			}
+			// wt is a descendant of home.
+			if pathWithin(h, w) {
+				return true
+			}
+		}
 	}
-	// wt is a descendant of home.
-	return strings.HasPrefix(clean, homeClean+string(filepath.Separator))
+	return false
+}
+
+// pathForms returns the cleaned spelling and, when it differs, the
+// symlink-resolved location.
+func pathForms(p string) []string {
+	if p == "" {
+		return nil
+	}
+	clean := filepath.Clean(p)
+	forms := []string{clean}
+	if resolved := pathutil.Canonical(p); resolved != "" && resolved != clean {
+		forms = append(forms, resolved)
+	}
+	return forms
+}
+
+// pathWithin reports whether p equals root or lies below it, using a
+// separator-aware comparison rather than a raw string prefix.
+func pathWithin(root, p string) bool {
+	if root == "" || p == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	p = filepath.Clean(p)
+	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
 // isFilesystemRoot reports whether p is a filesystem root or has no
@@ -129,17 +167,21 @@ func isFilesystemRoot(p string) bool {
 // isSharedTempPath reports whether p is one of the machine-wide temp
 // roots or lies inside one. macOS uses a per-user $TMPDIR, so it is
 // still rejected: an explicit Desktop record pointing there is not a
-// project the user opened.
+// project the user opened. Roots and the record are compared in both
+// their lexical and symlink-resolved forms so platform aliases match.
 func isSharedTempPath(p string) bool {
-	clean := filepath.Clean(p)
 	roots := []string{"/tmp", "/var/tmp", "/dev/shm", os.TempDir()}
+	pathFormsList := pathForms(p)
 	for _, root := range roots {
 		if root == "" {
 			continue
 		}
-		root = filepath.Clean(root)
-		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
-			return true
+		for _, rootForm := range pathForms(root) {
+			for _, pathForm := range pathFormsList {
+				if pathWithin(rootForm, pathForm) {
+					return true
+				}
+			}
 		}
 	}
 	return false

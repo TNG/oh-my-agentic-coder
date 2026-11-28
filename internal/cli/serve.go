@@ -28,6 +28,7 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/keychain"
 	"github.com/TNG/oh-my-agentic-coder/internal/opencodestate"
+	"github.com/TNG/oh-my-agentic-coder/internal/pathutil"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandbox"
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
@@ -933,10 +934,13 @@ func sandboxWritableRoots(h config.Harness, cacheScope *toolcache.Scope, extra .
 	return roots
 }
 
-// sandboxWritablePath reports whether wt equals or lies inside one of roots.
+// sandboxWritablePath reports whether wt equals or lies inside one of roots,
+// checking both the recorded spelling and the resolved location so links and
+// platform aliases cannot point a grant at a writable directory.
 func sandboxWritablePath(wt string, roots []string) bool {
+	resolvedWt := pathutil.Canonical(wt)
 	for _, root := range roots {
-		if pathsCover(root, wt) {
+		if pathsCover(root, wt) || pathsCover(pathutil.Canonical(root), resolvedWt) {
 			return true
 		}
 	}

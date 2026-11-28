@@ -1580,3 +1580,66 @@ func TestInjectSandboxDenies(t *testing.T) {
 		t.Errorf("no deny paths must be a no-op: %v", got)
 	}
 }
+
+func TestPathsCoverDotDotPrefixedChild(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if !pathsCover(root, filepath.Join(root, "..data")) {
+		t.Error("a child whose name starts with two dots must count as covered")
+	}
+	if !pathsCover(root, filepath.Join(root, "..foo", "bar")) {
+		t.Error("a descendant of a two-dot-prefixed child must count as covered")
+	}
+	if pathsCover(root, filepath.Dir(root)) {
+		t.Error("the parent must not count as covered")
+	}
+	if pathsCover(root, filepath.Join(root, "..")) {
+		t.Error("the parent spelled with .. must not count as covered")
+	}
+}
+
+func TestSecurityDesktopWorktreeInsideWritableRootNotGranted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+
+	stateDir := filepath.Join(home, "Library", "Application Support", "ai.opencode.desktop")
+
+	writable := securityOutOfHomeDir(t)
+	t.Setenv("XDG_STATE_HOME", writable)
+	inside := filepath.Join(writable, "opencode", "project")
+	dotDotChild := filepath.Join(writable, "opencode", "..data", "project")
+	for _, dir := range []string{inside, dotDotChild} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A link outside the writable root still resolves into it, so the
+	// resolved location must decide the grant.
+	link := filepath.Join(securityOutOfHomeDir(t), "link")
+	if err := os.Symlink(inside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	control := securityOutOfHomeDir(t)
+	securityWriteDesktopStore(t, stateDir, inside, dotDotChild, link, control)
+
+	args, stderr := securityCaptureDesktopServe(t, home)
+	allowed := map[string]bool{}
+	for i, arg := range args {
+		if arg == "--allow" && i+1 < len(args) {
+			allowed[args[i+1]] = true
+		}
+	}
+	for _, path := range []string{inside, dotDotChild, link} {
+		if allowed[path] {
+			t.Errorf("worktree inside a sandbox-writable directory %q was granted: %v\n%s", path, args, stderr)
+		}
+	}
+	if !strings.Contains(stderr, "inside a sandbox-writable directory") {
+		t.Errorf("missing grant-time refusal for a worktree inside a sandbox-writable directory:\n%s", stderr)
+	}
+	if !allowed[control] {
+		t.Errorf("control: Desktop worktree %q was not granted: %v\n%s", control, args, stderr)
+	}
+}

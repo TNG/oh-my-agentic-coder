@@ -302,12 +302,14 @@ need a new launch. These grants are deliberately narrow:
   home directory or its ancestors, shared temp locations (`/tmp`, `/var/tmp`,
   `/dev/shm`, the current `$TMPDIR`), filesystem roots, and world-writable or
   sticky directories. It also skips folders it cannot verify as existing
-  directories.
-- At grant time omac drops any worktree inside a directory the launch already
-  makes writable from the sandbox, such as harness config/state directories,
-  the tool cache, the runtime directory, or the per-session temp directory,
-  and prints each refusal. A grant cannot widen access to a directory the
-  agent already controls.
+  directories. Symlinks and platform aliases are resolved before these
+  comparisons, so a link to a protected location is rejected even when its
+  recorded spelling points elsewhere.
+- At grant time omac resolves the worktree again and drops any worktree inside
+  a directory the launch already makes writable from the sandbox, such as
+  harness config/state directories, the tool cache, the runtime directory, or
+  the per-session temp directory, and prints each refusal. A grant cannot
+  widen access to a directory the agent already controls.
 - The shared Desktop state grant covers only `<XDG_STATE_HOME>/opencode`, not
   its parent. The parent holds `opencode.global.dat`, so it stays outside the
   sandbox even though provider credentials and config under the subdirectory
