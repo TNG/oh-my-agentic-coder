@@ -118,7 +118,7 @@ All mutation endpoints (`POST`) require the per-session bearer token delivered a
 X-Omac-Control-Token: <value of OMAC_CONTROL_TOKEN>
 ```
 
-Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (`GET`) are not token-gated.
+Requests without a valid token receive `401 Unauthorized`. `GET /__omac__/dirs` is also token-gated because it reveals absolute workdir paths. `GET /__omac__/global` is the only remaining unauthenticated read-only endpoint.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -126,8 +126,8 @@ Requests without a valid token receive `401 Unauthorized`. Read-only endpoints (
 | `POST` | `/__omac__/deactivate` | required | Body `{"dir": "/abs/path"}`. Tears down sidecars and routes. |
 | `POST` | `/__omac__/reload` | required | Body `{"dir": "/abs/path"}`. Re-resolves secrets; promotes `pending-credentials` skills to active. |
 | `POST` | `/__omac__/reload-global` | required | Re-activates the global skill layer (after `omac register --global`). |
-| `GET` | `/__omac__/dirs` | none | List active dirs and their states. |
-| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. |
+| `GET` | `/__omac__/dirs` | required | List active dirs and their states. |
+| `GET` | `/__omac__/global` | none | Global skills and their `/__global__/<mount>` URLs. This is the only read-only endpoint left unauthenticated. |
 
 ---
 

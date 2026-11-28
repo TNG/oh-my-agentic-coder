@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/audit"
 	"github.com/TNG/oh-my-agentic-coder/internal/config"
 	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/registry"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
+	"github.com/TNG/oh-my-agentic-coder/internal/supervisor"
 )
 
 // The live-reload control plane.
@@ -182,5 +185,84 @@ func TestSecurityReloadRejectsUnauthenticatedCaller(t *testing.T) {
 
 	if r.facade.HasRoute("", "pwn") {
 		t.Errorf("an unauthenticated POST changed the session's routing table (status %d): any process on the machine can drive this session's control plane", resp.StatusCode)
+	}
+}
+
+// TestSecurityReloadDoesNotRotateNamespace asserts that reloading an active
+// directory keeps its token, route and sidecar in place. Reload may discover
+// new or previously non-ready skills, but it must not tear down the namespace
+// the owning session is already using, nor hand a fresh one to whoever asked.
+func TestSecurityReloadDoesNotRotateNamespace(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	s.sup = supervisor.New(nil, audit.Nop(), skillSpawnAuthorizer)
+
+	workdir := t.TempDir()
+	stageSkillWithSecret(t, workdir, "slack")
+
+	const privateBody = "answer from the live sidecar"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(privateBody))
+	}))
+	t.Cleanup(upstream.Close)
+
+	manifest, err := s.activate(workdir)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	token, _ := manifest["dir_token"].(string)
+	if token == "" {
+		t.Fatal("the first activation returned no dir token: the fixture is broken, not the security property")
+	}
+	if s.tcpPort == 0 {
+		t.Fatal("no facade TCP port: the fixture is broken, not the security property")
+	}
+	upstreamPort := portOf(t, upstream.URL)
+	promoteToReady(t, s, workdir, "slack", token, upstreamPort)
+
+	baseURL := "http://127.0.0.1:" + strconv.Itoa(s.tcpPort) + "/" + token + "/slack"
+	resp, body := httpGet(t, baseURL+"/whoami")
+	if resp.StatusCode != http.StatusOK || body != privateBody {
+		t.Fatalf("the owner's base did not route before reload (status %d body %q): the fixture is broken", resp.StatusCode, body)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/__omac__/reload",
+		strings.NewReader(`{"dir":"`+workdir+`"}`))
+	addServeTestToken(req)
+	rec := httptest.NewRecorder()
+	s.controlMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /__omac__/reload: status %d body %s", rec.Code, rec.Body.String())
+	}
+	var reloaded map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&reloaded); err != nil {
+		t.Fatalf("decode reload response: %v", err)
+	}
+
+	s.mu.RLock()
+	d, active := s.dirs[workdir]
+	var activeToken string
+	if d != nil {
+		activeToken = d.Token
+	}
+	s.mu.RUnlock()
+	if !active || d == nil {
+		t.Fatalf("reload removed the active directory: the fixture is broken, not the security property")
+	}
+	if activeToken != token {
+		t.Errorf("reload rotated the directory token from %q to %q: the owning session's existing URLs stop working and the caller learns a fresh namespace", token, activeToken)
+	}
+	if got, ok := reloaded["dir_token"]; ok {
+		t.Errorf("reload returned a fresh dir_token %v: a caller that knows only the path learns a live namespace", got)
+	}
+	if !s.facade.HasRoute(token, "slack") {
+		t.Errorf("reload removed the owning session's existing route")
+	}
+	if got := s.facade.UpstreamPort(token, "slack"); got != upstreamPort {
+		t.Errorf("reload replaced the live upstream port: got %d, want %d", got, upstreamPort)
+	}
+	resp, body = httpGet(t, baseURL+"/whoami")
+	if resp.StatusCode != http.StatusOK || body != privateBody {
+		t.Errorf("the owner's existing base stopped routing after reload (status %d body %q): reload cut off the session it was serving", resp.StatusCode, body)
 	}
 }

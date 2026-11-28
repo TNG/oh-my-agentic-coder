@@ -2065,12 +2065,6 @@ func (s *serveServer) clearFlatAliases() {
 func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	d.mu.Lock()
 	state := d.State
-	// Non-nil so an empty manifest serializes as `"skills": []`, not null
-	// (clients otherwise crash on a null skills list).
-	skills := make([]map[string]any, 0, len(d.Skills))
-	for _, sr := range d.Skills {
-		skills = append(skills, s.skillJSON(sr, "workdir"))
-	}
 	// Emit dir_token exactly once (first activation). A caller that already
 	// received the token and re-activates the same directory must not receive
 	// it again: nothing about a second POST identifies its sender, so
@@ -2078,6 +2072,19 @@ func (s *serveServer) manifestFor(d *dirState) map[string]any {
 	emitToken := !d.tokenEmitted
 	if emitToken {
 		d.tokenEmitted = true
+	}
+	// Non-nil so an empty manifest serializes as `"skills": []`, not null
+	// (clients otherwise crash on a null skills list).
+	skills := make([]map[string]any, 0, len(d.Skills))
+	for _, sr := range d.Skills {
+		sk := s.skillJSON(sr, "workdir")
+		if !emitToken {
+			// The per-skill URLs embed the directory namespace, so
+			// withholding only dir_token would still disclose it.
+			delete(sk, "base")
+			delete(sk, "socket_base")
+		}
+		skills = append(skills, sk)
 	}
 	d.mu.Unlock()
 
@@ -2142,7 +2149,7 @@ func (s *serveServer) controlMux() *http.ServeMux {
 	mux.HandleFunc("/__omac__/deactivate", s.requireControlToken(s.handleDeactivate))
 	mux.HandleFunc("/__omac__/reload", s.requireControlToken(s.handleReload))
 	mux.HandleFunc("/__omac__/reload-global", s.requireControlToken(s.handleReloadGlobal))
-	mux.HandleFunc("/__omac__/dirs", s.handleDirs)
+	mux.HandleFunc("/__omac__/dirs", s.requireControlToken(s.handleDirs))
 	mux.HandleFunc("/__omac__/global", s.handleGlobal)
 	return mux
 }
@@ -2230,14 +2237,24 @@ func (s *serveServer) handleReload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Reload = re-run activation logic for an already-known dir: drop and
-	// re-activate so pending-credentials skills get promoted.
-	s.deactivate(abs)
-	manifest, err := s.activate(abs)
-	if err != nil {
-		s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+	s.mu.RLock()
+	existing, active := s.dirs[abs]
+	s.mu.RUnlock()
+	var manifest map[string]any
+	if active {
+		// Reload an already-active directory in place: rediscover may promote
+		// non-ready skills without rotating the namespace or stopping sidecars
+		// the owning session is already using.
+		s.rediscover(existing)
+		manifest = s.manifestFor(existing)
+	} else {
+		// First-time reload still needs the full activation path.
+		manifest, err = s.activate(abs)
+		if err != nil {
+			s.aud().Emit(audit.ControlMutation("reload", abs, "error: "+err.Error()))
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	s.aud().Emit(audit.ControlMutation("reload", abs, "ok"))
 	writeJSON(w, http.StatusOK, manifest)
