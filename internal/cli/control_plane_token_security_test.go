@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TNG/oh-my-agentic-coder/internal/facade"
 	"github.com/TNG/oh-my-agentic-coder/internal/sectest"
 )
 
@@ -193,6 +194,18 @@ func TestSecurityActivateDoesNotDiscloseNamespaceOnRepeat(t *testing.T) {
 		t.Fatalf("owner base did not route before repeat activation (status %d body %q): the fixture is broken", resp.StatusCode, body)
 	}
 
+	// A global skill's namespace is the shared global one, not the withheld
+	// directory capability. Seeding one here prevents an overbroad fix that
+	// strips every skill from passing the workdir assertions below.
+	s.mu.Lock()
+	s.global["shared"] = &skillRoute{
+		Name:      "shared",
+		Mount:     "shared",
+		Namespace: facade.GlobalNamespace,
+		State:     facade.RouteReady,
+	}
+	s.mu.Unlock()
+
 	// A second caller names the same directory. It must receive no token and
 	// no URL from which the live namespace can be recovered.
 	repeat, err := s.activate(victimDir)
@@ -202,7 +215,17 @@ func TestSecurityActivateDoesNotDiscloseNamespaceOnRepeat(t *testing.T) {
 	if got, ok := repeat["dir_token"]; ok {
 		t.Errorf("repeat activation returned dir_token %v: a caller that knows only the path gains the live namespace", got)
 	}
+	sawGlobal := false
 	for _, sk := range repeat["skills"].([]map[string]any) {
+		if sk["scope"] == "global" && sk["mount"] == "shared" {
+			sawGlobal = true
+			if base, _ := sk["base"].(string); base == "" {
+				t.Errorf("repeat activation removed a global skill's base URL: the shared global namespace is not the withheld directory capability")
+			}
+			if socketBase, _ := sk["socket_base"].(string); socketBase == "" {
+				t.Errorf("repeat activation removed a global skill's socket base: the shared global namespace is not the withheld directory capability")
+			}
+		}
 		if sk["scope"] != "workdir" {
 			continue
 		}
@@ -223,6 +246,9 @@ func TestSecurityActivateDoesNotDiscloseNamespaceOnRepeat(t *testing.T) {
 				}
 			}
 		}
+	}
+	if !sawGlobal {
+		t.Fatal("repeat activation did not include the READY global skill: the fixture is broken, not the security property")
 	}
 }
 
