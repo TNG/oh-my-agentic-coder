@@ -113,12 +113,26 @@ func (r *learnRecorder) candidates() []string {
 
 	var kept []string
 	for _, p := range raw {
-		if r.isExcluded(p) || r.isProtected(p) {
+		observed := resolvedForm(p)
+		if r.isExcluded(observed) || r.isProtected(observed) {
 			continue
 		}
-		kept = append(kept, r.projectRoot(p))
+		candidate := r.projectRoot(p)
+		if r.isProtected(candidate) {
+			continue
+		}
+		kept = append(kept, candidate)
 	}
 	return collapseAncestors(dedupe(kept))
+}
+
+// resolvedForm returns path with symlinks resolved when possible, and the
+// lexical path otherwise (a path may not exist yet).
+func resolvedForm(path string) string {
+	if resolved := canonicalPath(path); resolved != "" {
+		return resolved
+	}
+	return path
 }
 
 func (r *learnRecorder) isExcluded(path string) bool {
@@ -138,14 +152,23 @@ func (r *learnRecorder) isExcluded(path string) bool {
 
 func (r *learnRecorder) isProtected(path string) bool {
 	for _, prot := range r.protected {
-		if path == prot || strings.HasPrefix(path, prot+string(filepath.Separator)) ||
-			strings.HasPrefix(prot, path+string(filepath.Separator)) {
-			// Also reject ancestors of protected paths: offering
-			// /Users/u would implicitly cover ~/.ssh.
-			if strings.HasPrefix(prot, path+string(filepath.Separator)) {
+		if sameOrWithin(path, prot) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameOrWithin reports whether a and b are the same path or one lies
+// below the other, comparing both their lexical and resolved forms. It
+// rejects ancestors too: offering a parent would implicitly cover a
+// protected path below it.
+func sameOrWithin(a, b string) bool {
+	for _, af := range pathForms(a) {
+		for _, bf := range pathForms(b) {
+			if isUnder(af, bf) || isUnder(bf, af) {
 				return true
 			}
-			return true
 		}
 	}
 	return false
@@ -242,7 +265,11 @@ func OfferLearnedFolders(profilePath string, candidates []string, in io.Reader, 
 	fmt.Fprintln(out, "\nomac sandbox: learn mode observed these folders outside the current profile:")
 	intentLines := lookupIntentLines(intentBase, candidates)
 	for i, c := range candidates {
-		fmt.Fprintf(out, "  %-40s — %s\n", sanitizePath(c), intentLines[i])
+		display := sanitizePath(c)
+		if target := canonicalPath(c); target != "" && target != c {
+			display += " -> " + sanitizePath(target)
+		}
+		fmt.Fprintf(out, "  %-40s — %s\n", display, intentLines[i])
 	}
 	fmt.Fprintf(out, "Add them to filesystem.allow in %s? [y/N] ", profilePath)
 	reader := bufio.NewReader(in)
