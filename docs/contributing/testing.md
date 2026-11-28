@@ -62,8 +62,8 @@ OMAC_REQUIRE_GIT_WORKER_TESTS=1 go test -race ./internal/cli ./internal/sandboxr
 
 These tests use disposable repositories, fake approval answers and no model
 credentials. They cover confined workers, metadata write denial, and a real
-`omac start --inner` session that builds/tests a small program, stages, commits,
-creates and switches branches. Approval denial and repeated sessions are covered
+`omac start --inner` session that builds/tests a small program, stages, unstages,
+commits, creates and switches branches. Approval denial and repeated sessions are covered
 as well. The environment variable makes unavailable worker namespaces a failure
 rather than a skip; CI also requires them. The worker probe test is skipped in
 the parent process because the confinement test runs it inside bubblewrap.

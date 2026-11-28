@@ -18,8 +18,9 @@ import (
 
 const gitServiceBriefing = `
 Git service prototype: this checkout's entire .git directory is read-only.
-Use omac git status, omac git stage -- <files>, omac git commit -m <message>
-[--signoff], omac git branch <name>, and omac git switch <existing-branch>.
+Use omac git status, omac git stage -- <files>, omac git unstage -- <files>,
+omac git commit -m <message> [--signoff], omac git branch <name>, and
+omac git switch <existing-branch>. Unstage preserves working-tree edits.
 Ordinary git status/log/diff remain local. Hooks, signing, filters, network
 operations and advanced Git commands are unsupported. Stop file-generating
 watchers and concurrent edits before switching branches. A lost response is
@@ -53,6 +54,7 @@ func gitServiceRoute(s *gitservice.Service) facade.Route {
 		{Match: "GET /status", Approval: approval.None},
 		{Match: "GET /operations/{id}", Approval: approval.None},
 		{Match: "POST /stage", Approval: approval.Required, Description: "Stages explicit files in this repository; no hooks or filters."},
+		{Match: "POST /unstage", Approval: approval.Required, Description: "Unstages explicit files without changing working-tree contents."},
 		{Match: "POST /commit", Approval: approval.Required, Description: "Creates a local commit; this approves the operation, not a particular diff."},
 		{Match: "POST /branches", Approval: approval.Required, Description: "Creates a local branch without replacing another branch."},
 		{Match: "POST /switch", Approval: approval.Required, Description: "Switches local branches and updates source files; requires a clean working tree."},
@@ -64,31 +66,32 @@ func gitServiceRoute(s *gitservice.Service) facade.Route {
 	return facade.Route{Mount: "git", Skill: "builtin:git", Owner: "builtin:git", Handler: s, Approvals: set, MaxBodyBytes: 1 << 20, HealthPath: "/status"}
 }
 
-func configureGitService(s *gitservice.Service, plan sandboxPlan, argv []string) ([]string, error) {
+func configureGitService(s *gitservice.Service, plan sandboxPlan, argv []string) error {
 	if len(argv) < 4 || argv[1] != "sandbox" || argv[2] != "run" {
-		return nil, fmt.Errorf("Git prototype requires the native sandbox launcher")
+		return fmt.Errorf("Git prototype requires the native sandbox launcher")
 	}
-	argv = injectSandboxFlag(argv, "--git-read-only", "")
-	argv = injectSandboxFlag(argv, "--deny-literal", s.RuntimeDir())
 	flags, err := sandboxprofile.ParseFlags(argv[3:])
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if flags.Learn {
-		return nil, fmt.Errorf("Git prototype cannot use learn mode")
+		return fmt.Errorf("Git prototype cannot use learn mode")
+	}
+	if !flags.GitReadOnly {
+		return fmt.Errorf("Git prototype requires read-only Git metadata")
 	}
 	profile, _ := sandboxprofile.Merge(plan.Policy, flags)
+	if len(profile.DenyScanAcceptIncomplete()) != 0 {
+		return fmt.Errorf("Git prototype requires a complete secret-file scan; continue scanning or raise filesystem.deny_scan.max_entries")
+	}
 	grants, err := sandboxrun.ResolveGrants(profile, s.Workdir(), io.Discard)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := grants.ValidateReadOnlyGit(); err != nil {
-		return nil, err
+		return err
 	}
-	if err := s.ConfigureDenies(grants.ProtectedPaths); err != nil {
-		return nil, err
-	}
-	return argv, nil
+	return s.ConfigureDenies(grants.ProtectedPaths)
 }
 
 func gitServiceAudit(a audit.Auditor, dir string) func(string, string, string) {

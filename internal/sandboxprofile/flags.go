@@ -32,6 +32,11 @@ type Flags struct {
 	AuditRunID    string   // --audit-run-id <id>: inherit parent's run_id ("" = mint fresh)
 	AuditMode     string   // --audit-mode <start|serve>: inherit parent's mode ("" = start)
 	InnerArgv     []string // everything after --
+
+	// Internal: the parent process passes its scan decision down. Not
+	// listed in any usage text.
+	DenyScanLimit            int64    // --deny-scan-limit <n>
+	DenyScanAcceptIncomplete []string // --deny-scan-accept-incomplete <root>
 }
 
 // ParseFlags parses the argument vector for `omac sandbox run` (the
@@ -227,6 +232,22 @@ func ParseFlags(args []string) (*Flags, error) {
 				return nil, err
 			}
 			f.AuditMode = v
+		case "--deny-scan-limit":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("%s: invalid limit %q (want a positive number)", a, v)
+			}
+			f.DenyScanLimit = n
+		case "--deny-scan-accept-incomplete":
+			v, err := val(a)
+			if err != nil {
+				return nil, err
+			}
+			f.DenyScanAcceptIncomplete = append(f.DenyScanAcceptIncomplete, v)
 		case "--workdir-access":
 			v, err := val(a)
 			if err != nil {
@@ -267,6 +288,21 @@ func Merge(p *Profile, f *Flags) (*Profile, []string) {
 	out.Network.DenyDomain = appendCopy(p.Network.DenyDomain, f.DenyDomain...)
 
 	out.Environment.AllowVars = appendCopy(p.Environment.AllowVars, f.AllowEnv...)
+
+	if f.DenyScanLimit > 0 || len(f.DenyScanAcceptIncomplete) > 0 {
+		var scan DenyScan
+		if p.Filesystem.DenyScan != nil {
+			scan = *p.Filesystem.DenyScan
+		}
+		scan.baseLimit = p.DenyScanBaseLimit()
+		if f.DenyScanLimit > 0 {
+			limit := f.DenyScanLimit
+			scan.MaxEntries = &limit
+			scan.Decided = true
+		}
+		scan.AcceptIncomplete = appendCopy(scan.AcceptIncomplete, f.DenyScanAcceptIncomplete...)
+		out.Filesystem.DenyScan = &scan
+	}
 
 	if f.WorkdirAccess != "" {
 		out.Workdir.Access = f.WorkdirAccess

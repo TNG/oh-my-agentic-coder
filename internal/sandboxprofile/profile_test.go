@@ -1509,3 +1509,90 @@ func TestUnknownFieldErrorHintsAtVersionSkew(t *testing.T) {
 		t.Errorf("version hint leaked onto an unrelated parse error: %v", err)
 	}
 }
+
+func TestDenyScanProfileField(t *testing.T) {
+	p, err := Parse([]byte(`{"filesystem":{"deny_scan":{"max_entries":3000000,"skip_dir_names":["build-gradle"]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.DenyScanLimit(); got != 3000000 {
+		t.Errorf("DenyScanLimit() = %d, want 3000000", got)
+	}
+	if got := p.DenyScanSkipDirNames(); !slices.Equal(got, []string{"build-gradle"}) {
+		t.Errorf("DenyScanSkipDirNames() = %v", got)
+	}
+	bare, err := Parse([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bare.DenyScanLimit(); got != DefaultDenyScanMaxEntries {
+		t.Errorf("default DenyScanLimit() = %d, want %d", got, DefaultDenyScanMaxEntries)
+	}
+}
+
+func TestDenyScanValidation(t *testing.T) {
+	for name, c := range map[string]struct{ json, want string }{
+		"zero": {
+			`{"max_entries":0}`,
+			`filesystem.deny_scan.max_entries is 0, but it must be a positive number such as 2000000`,
+		},
+		"negative": {
+			`{"max_entries":-5}`,
+			`filesystem.deny_scan.max_entries is -5, but it must be a positive number`,
+		},
+		"slash": {
+			`{"skip_dir_names":["build-gradle","app/build-gradle"]}`,
+			`filesystem.deny_scan.skip_dir_names[1] is "app/build-gradle", but each entry must be a single folder name without "/"`,
+		},
+		"empty": {
+			`{"skip_dir_names":[""]}`,
+			`filesystem.deny_scan.skip_dir_names[0] is empty`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(`{"filesystem":{"deny_scan":` + c.json + `}}`))
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want substring %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestDenyScanFlagsMerge(t *testing.T) {
+	f, err := ParseFlags([]string{"--deny-scan-limit", "2000000", "--deny-scan-accept-incomplete", "/a", "--", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Parse([]byte(`{"filesystem":{"deny_scan":{"max_entries":1500000}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, _ := Merge(p, f)
+	if got := merged.DenyScanLimit(); got != 2000000 {
+		t.Errorf("DenyScanLimit() = %d, want 2000000", got)
+	}
+	if got := merged.DenyScanBaseLimit(); got != 1500000 {
+		t.Errorf("DenyScanBaseLimit() = %d, want 1500000", got)
+	}
+	if !merged.DenyScanDecided() {
+		t.Error("DenyScanDecided() = false, want true")
+	}
+	if got := merged.DenyScanAcceptIncomplete(); !slices.Equal(got, []string{"/a"}) {
+		t.Errorf("DenyScanAcceptIncomplete() = %v", got)
+	}
+	if p.DenyScanLimit() != 1500000 || p.DenyScanDecided() {
+		t.Error("Merge mutated the input profile")
+	}
+
+	noBlock, _ := Merge(&Profile{}, f)
+	if got := noBlock.DenyScanBaseLimit(); got != DefaultDenyScanMaxEntries {
+		t.Errorf("base limit without profile block = %d, want default", got)
+	}
+	if got := noBlock.DenyScanLimit(); got != 2000000 {
+		t.Errorf("limit without profile block = %d, want 2000000", got)
+	}
+
+	if _, err := ParseFlags([]string{"--deny-scan-limit", "0", "--", "x"}); err == nil {
+		t.Error("--deny-scan-limit 0 should be a parse error")
+	}
+}

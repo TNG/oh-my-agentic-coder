@@ -173,83 +173,101 @@ granting it is how the agent gets to run them, and it is far too large to
 list at launch. Nix makes everything in the store readable by every user on
 the machine, so a secret there is not protected by hiding it.
 
-Some directories have more files and folders than omac lists at launch.
+Some directories have more files and folders than omac lists at launch
+(1,000,000 per directory by default; `filesystem.deny_scan.max_entries` in
+the [sandbox grants file](./configuration.md#sandbox-grants) changes it).
 What happens then depends on the system:
 
-- **Linux:** launch stops rather than run with a partially protected set.
+- **Linux:** omac asks what to do, see below.
 - **macOS:** launch goes ahead. Instead of listing the directory, a sandbox
   rule hides every file or folder in it whose name matches (for example any
   `.env`, however deep). This rule also covers the skipped trees above and
   files created during the session. omac notes the directory in the sandbox
   log. Upper and lower case count as the same, as on the macOS disk.
 
-  Launch still stops in two cases the rule cannot express: you made one such
-  file readable with an absolute `override_deny` path inside that directory
-  (the rule would hide it too), or a `filesystem.deny` pattern uses `[...]`
-  or `\` (for example `*.[pk]em`).
+  The rule cannot be used in two cases, so omac asks what to do there as
+  well: you made one such file readable with an absolute `override_deny` path
+  inside that directory (the rule would hide it too), or a `filesystem.deny`
+  pattern uses `[...]` or `\` (for example `*.[pk]em`).
 
-  **During the session:** the masking above is fixed at launch — a `.env`
-  file created later is *not* masked, because the sandbox rules cannot be
-  changed while the session runs. The omac parent therefore re-scans the
-  same roots every 10 seconds and warns you when a new protected file
-  appears; the warning tells you that only a restart restores protection.
-  The watch warns, it does not block or mask. Detections from one scan
-  arrive as one decision dialog, not one popup per file. It lists up to
-  eight paths and offers "Suppress warnings for this path" by exact path,
-  "Suppress warnings for all N files" for the whole batch (the label says
-  "(8 listed)" when the dialog showed only the first eight), and "Suppress
-  warnings for every file `<name>` under `<full path>`" for the session folder
-  or an explicitly selected parent folder. Choose one option at a time: after
-  suppressing warnings for one path or a filename under a folder, the dialog
-  reopens for any remaining files, so you can handle several paths in turn.
-  "Keep warning every time (default)"
-  is the first option, so pressing Enter keeps it. Keeping the
-  warning saves no exception: the file stays in the audit log and is listed
-  in the session-end report, and the dialog does not reopen for that path in
-  this session. Exact paths are stored in
-  `~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
-  stores `{root, name}` under `protected_watch_project_ignores`, where
-  `root` is the selected folder. Selecting `repo/` covers existing and future
-  worktrees under `repo/.worktrees/`; selecting just `repo/.worktrees/A/`
-  leaves sibling worktrees unaffected. A parent-folder exception also covers
-  any other projects below that folder, so check the full path before selecting
-  it. There is no global basename exception. The file stays protected at launch and every detection is still
-  audited. The prefs file lives outside the sandbox, so the agent cannot
-  grant itself an exception. Concurrent sessions merge preferences under a
-  shared file lock so they cannot overwrite each other's choices.
-  If no dialog backend is installed, omac falls
-  back to the informational dialog and a desktop notification.
+When omac asks, you can choose:
 
-  The 10-second scan pauses while a decision dialog is open; a protected
-  file created then is caught on the next tick after it closes, except one
-  created and deleted while the dialog is open.
+- **continue scanning:** omac lists another 1,000,000 entries (or your
+  `max_entries`) and asks again if that is still not enough.
+- **start with incomplete protection:** the session starts, but a `.env` in
+  the part omac did not list stays readable for the agent. Use this only if
+  you know that part holds no secrets.
+- **abort:** nothing starts. This is the default, also for an empty answer.
+  Ctrl-C at the question aborts the same way.
 
-  Folder choices come only from the session's launch path, never from `.git`
-  files or repository configuration. The session folder comes first, then its
-  parents, stopping before your home directory or the filesystem root. Only
-  the folder you explicitly select is saved. Worktrees outside that folder
-  are not covered, regardless of whether they share a Git repository. These
-  choices also work in non-Git projects. The exact-path and batch choices
-  remain available when no folder scope can be offered.
+Without a terminal, omac cannot ask and does not start; it prints how to
+raise the limit or skip folders.
 
-  The end-of-session report collapses a burst to one summary line. Pass
-  `--verbose` to list every warning you kept; ignored files are not listed
-  because their warning was dismissed. The audit log always records one
-  event per path, including ignored files.
+**During the session:** the masking omac sets up at launch cannot change
+while the session runs, so a `.env` file created later is *not* masked.
+The omac parent therefore re-scans the
+same roots every 10 seconds and warns you when a new protected file
+appears; the warning tells you that only a restart restores protection.
+The watch does not re-scan a directory you started with incomplete
+protection. If a directory outgrows the limit during the session, the
+watch stops and says so; raise `max_entries` to keep it running.
+The watch warns, it does not block or mask. Detections from one scan
+arrive as one decision dialog, not one popup per file. It lists up to
+eight paths and offers "Suppress warnings for this path" by exact path,
+"Suppress warnings for all N files" for the whole batch (the label says
+"(8 listed)" when the dialog showed only the first eight), and "Suppress
+warnings for every file `<name>` under `<full path>`" for the session folder
+or an explicitly selected parent folder. Choose one option at a time: after
+suppressing warnings for one path or a filename under a folder, the dialog
+reopens for any remaining files, so you can handle several paths in turn.
+"Keep warning every time (default)"
+is the first option, so pressing Enter keeps it. Keeping the
+warning saves no exception: the file stays in the audit log and is listed
+in the session-end report, and the dialog does not reopen for that path in
+this session. Exact paths are stored in
+`~/.config/omac/prefs.yaml` (`protected_watch_ignore`). A project choice
+stores `{root, name}` under `protected_watch_project_ignores`, where
+`root` is the selected folder. Selecting `repo/` covers existing and future
+worktrees under `repo/.worktrees/`; selecting just `repo/.worktrees/A/`
+leaves sibling worktrees unaffected. A parent-folder exception also covers
+any other projects below that folder, so check the full path before selecting
+it. There is no global basename exception. The file stays protected at launch and every detection is still
+audited. The prefs file lives outside the sandbox, so the agent cannot
+grant itself an exception. Concurrent sessions merge preferences under a
+shared file lock so they cannot overwrite each other's choices.
+If no dialog backend is installed, omac falls
+back to the informational dialog and a desktop notification.
 
-  Directory timestamps come
-  from the filesystem's coarse clock, so a file created in the same clock
-  tick as a scan can share the previous scan's timestamp and slip past
-  that scan. The watch therefore lists any directory once more on the
-  next pass if its last scan fell within one timestamp tick; that catches
-  the hidden file, so a mid-session `.env` is detected within 10 seconds
-  on filesystems whose timestamps are no coarser than the two-second
-  re-check window. For coarser filesystems (some network mounts) you can
-  opt into a periodic full re-scan with
-  `sandbox.midsession_watch.full_pass_ticks: N` in the user config: it is
-  off by default, runs every Nth tick, and bounds that case at N × 10
-  seconds. `full_pass_concurrency` throttles that optional pass. A file
-  that appears and disappears between two scans is never detected.
+The 10-second scan pauses while a decision dialog is open; a protected
+file created then is caught on the next tick after it closes, except one
+created and deleted while the dialog is open.
+
+Folder choices come only from the session's launch path, never from `.git`
+files or repository configuration. The session folder comes first, then its
+parents, stopping before your home directory or the filesystem root. Only
+the folder you explicitly select is saved. Worktrees outside that folder
+are not covered, regardless of whether they share a Git repository. These
+choices also work in non-Git projects. The exact-path and batch choices
+remain available when no folder scope can be offered.
+
+The end-of-session report collapses a burst to one summary line. Pass
+`--verbose` to list every warning you kept; ignored files are not listed
+because their warning was dismissed. The audit log always records one
+event per path, including ignored files.
+
+Directory timestamps come
+from the filesystem's coarse clock, so a file created in the same clock
+tick as a scan can share the previous scan's timestamp and slip past
+that scan. The watch therefore lists any directory once more on the
+next pass if its last scan fell within one timestamp tick; that catches
+the hidden file, so a mid-session `.env` is detected within 10 seconds
+on filesystems whose timestamps are no coarser than the two-second
+re-check window. For coarser filesystems (some network mounts) you can
+opt into a periodic full re-scan with
+`sandbox.midsession_watch.full_pass_ticks: N` in the user config: it is
+off by default, runs every Nth tick, and bounds that case at N × 10
+seconds. `full_pass_concurrency` throttles that optional pass. A file
+that appears and disappears between two scans is never detected.
 
 On macOS, keychain files are also blocked: the keychain folders
 (`~/Library/Keychains`, `/Library/Keychains`) and any file named
@@ -308,9 +326,9 @@ configuration that a later host Git command may run outside the sandbox
 default plain-checkout policy as protection against that persistence vector.
 
 On Linux, `omac start --git-service=prototype` makes the **whole enrolled
-`.git` directory** read-only. Permission-controlled staging, commits, branch
-creation and clean branch switching run through isolated workers with private
-configuration, no hooks or credentials, and no network. Source editing, builds,
+`.git` directory** read-only. Permission-controlled staging, unstaging, commits,
+branch creation and clean branch switching run through isolated workers with
+private configuration, no hooks or credentials, and no network. Source editing, builds,
 tests and local Git reads remain available under the usual grants. Setup failure
 aborts launch; a service failure never makes metadata writable. Directories
 containing protected files are also fixed in place for the session, while their

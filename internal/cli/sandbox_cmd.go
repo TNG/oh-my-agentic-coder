@@ -47,6 +47,7 @@ func runSandboxRun(args []string, env *Env) int {
 		Flags:   flags,
 		Workdir: env.Workdir,
 		Stderr:  env.Stderr,
+		Stdin:   env.Stdin,
 	})
 }
 

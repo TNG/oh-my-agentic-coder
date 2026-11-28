@@ -12,7 +12,7 @@ can still run under the usual sandbox policy.
 
 ## Start a session
 
-From an ordinary checkout, including an empty `git init` repository:
+From the root of an ordinary checkout, including an empty `git init` repository:
 
 ```sh
 omac start --git-service=prototype \
@@ -33,10 +33,14 @@ Requirements:
 - The built-in sandbox, a read-write checkout grant and no writable checkout
   ancestor or system-binary grants. Learn mode, `--no-sandbox`, external
   launchers and `--keep-running` are refused.
+- A complete launch-time secret-file scan. If the scan reaches its limit,
+  continue scanning or raise `filesystem.deny_scan.max_entries`; starting with
+  incomplete protection is not supported by the Git service.
 - A real `.git` directory, not a linked worktree, submodule or separate gitdir.
   Metadata symlinks, special files and multiply linked files are refused.
   For a locally hardlinked clone, make a fresh clone with `--no-hardlinks`.
-  Metadata scans are limited to 100,000 entries.
+  Metadata scans are limited to 100,000 entries. Parsed Git output, including
+  index and branch listings, is limited to 4 MiB per worker command.
 
 The option currently works with `start`, not `continue`, `resume` or `serve`.
 Launch fails rather than silently dropping the restriction if setup fails.
@@ -53,10 +57,16 @@ omac git branch topic
 omac git switch topic
 ```
 
-`stage` accepts explicit files, including deletions. Paths on the CLI are
-relative to your current directory inside the enrolled checkout. It does not
+`stage` and `unstage` accept explicit files, including deletions. Paths on the CLI
+are relative to your current directory inside the enrolled checkout. They do not
 support directories, `-A`, `.` or traversal into another repository. The service
 refuses paths denied by the sandbox rather than staging denial-marker contents.
+
+Use `omac git unstage -- src/example.go` to restore an index entry from HEAD
+without changing the file on disk. Before the first commit, it removes the
+entry from the index instead. Unstaging does not discard edits or make a dirty
+worktree clean enough to switch branches. Ending a session also leaves the
+index and working-tree changes intact.
 
 Directories containing protected files are fixed mount points during the session:
 for example, if `deployment/local/.env` is protected, `deployment` and
@@ -80,6 +90,8 @@ requests do not prompt.
 Add `--git-wrapper` at launch to route these forms through the service:
 
 ```sh
+git add -- src/example.go
+git restore --staged -- src/example.go  # undo staging, keeping edits
 git add -- src/example.go
 git commit -m 'Update example' --signoff
 git branch topic
@@ -118,7 +130,17 @@ host Git or agents launched without this option.
 Results include the session, HEAD, branch and an index fingerprint. Mutations
 carry an operation ID and expected state. Duplicate requests with the same ID
 and body return their recorded result, not a second commit. IDs are valid only
-for the current session; the ledger holds at most 4,096 operations.
+for the current session; the ledger holds at most 4,096 operations. Only
+`omac git status` includes the branch map; mutation results and their recorded
+replays contain the compact repository state.
+
+Approval denials, busy responses and stale-state rejections do not execute the
+requested mutation. Inspect `omac git status`, resolve the reported cause and
+re-run the command.
+
+A rejected request that made no index change leaves the service usable. For
+example, correct a missing or ignored path and stage again. A multi-file staging
+failure may have staged some files; that remains an uncertain outcome.
 
 After a lost response, use the ID printed by the client:
 

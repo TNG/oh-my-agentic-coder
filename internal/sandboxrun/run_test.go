@@ -2,6 +2,8 @@ package sandboxrun
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -353,5 +355,125 @@ func TestRunRejectsFlagPortsAboveCap(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "1000-port limit") {
 		t.Errorf("stderr does not name the cap: %q", stderr.String())
+	}
+}
+
+func writeScanProfile(t *testing.T, maxEntries int) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("OMAC_CACHE_DIR", "")
+	dir := filepath.Join(home, ".config", "omac", "sandbox-profiles")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := fmt.Sprintf(`{"workdir":{"access":"readwrite"},"network":{"mode":"blocked"},"environment":{"allow_vars":["PATH"]},"filesystem":{"deny_scan":{"max_entries":%d}}}`, maxEntries)
+	if err := os.WriteFile(filepath.Join(dir, "scan.json"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stubChild(t *testing.T, code int) *int {
+	t.Helper()
+	runs := new(int)
+	old := runChild
+	runChild = func([]string, []string, string, func(int)) (int, error) {
+		*runs++
+		return code, nil
+	}
+	t.Cleanup(func() { runChild = old })
+	return runs
+}
+
+func stubScanAsk(t *testing.T, answers string) *int {
+	t.Helper()
+	asked := new(int)
+	old := newScanAsk
+	newScanAsk = func(_ Options, w io.Writer, profilePath string) ScanAsk {
+		ask := scanAskFrom(strings.NewReader(answers), w, profilePath)
+		return func(roots []string, limit int64) ScanChoice {
+			*asked++
+			return ask(roots, limit)
+		}
+	}
+	t.Cleanup(func() { newScanAsk = old })
+	return asked
+}
+
+func TestRunDirectAsksAndContinues(t *testing.T) {
+	setDenyByName(t, false)
+	writeScanProfile(t, 1000)
+	workdir, _ := lateEnvTree(t)
+	asked := stubScanAsk(t, "c\nc\n")
+	children := stubChild(t, 3)
+	var stderr bytes.Buffer
+
+	code := Run(Options{
+		Flags:   &sandboxprofile.Flags{ProfileRef: "scan", InnerArgv: []string{"true"}},
+		Workdir: workdir,
+		Stderr:  &stderr,
+	})
+
+	if code != 3 || *children != 1 {
+		t.Fatalf("code = %d, child runs = %d; want the child's exit code 3 from one run\n%s", code, *children, stderr.String())
+	}
+	if *asked != 2 {
+		t.Errorf("asked %d times, want 2", *asked)
+	}
+	out := stderr.String()
+	notes := strings.Index(out, "needed")
+	if notes < 0 || !strings.Contains(out, "filesystem.deny_scan.max_entries to 1000000 in") {
+		t.Fatalf("no session-end note about the needed entries:\n%s", out)
+	}
+	if strings.Index(out, "abort (default)") > notes {
+		t.Errorf("the note must come after the question:\n%s", out)
+	}
+}
+
+func TestRunDirectAbortStartsNothing(t *testing.T) {
+	setDenyByName(t, false)
+	writeScanProfile(t, 1000)
+	workdir, _ := lateEnvTree(t)
+	stubScanAsk(t, "\n")
+	children := stubChild(t, 0)
+	var stderr bytes.Buffer
+
+	code := Run(Options{
+		Flags:   &sandboxprofile.Flags{ProfileRef: "scan", InnerArgv: []string{"true"}},
+		Workdir: workdir,
+		Stderr:  &stderr,
+	})
+
+	if code == 0 || *children != 0 {
+		t.Fatalf("code = %d, child runs = %d; want a refusal without a child", code, *children)
+	}
+	if strings.Contains(stderr.String(), "needed") {
+		t.Errorf("a refused start must not print the session-end note:\n%s", stderr.String())
+	}
+}
+
+func TestRunDecidedDoesNotAsk(t *testing.T) {
+	setDenyByName(t, false)
+	writeScanProfile(t, 1000000)
+	workdir, _ := lateEnvTree(t)
+	asked := stubScanAsk(t, "c\nc\n")
+	children := stubChild(t, 0)
+	var stderr bytes.Buffer
+
+	code := Run(Options{
+		Flags:   &sandboxprofile.Flags{ProfileRef: "scan", InnerArgv: []string{"true"}, DenyScanLimit: 1000},
+		Workdir: workdir,
+		Stderr:  &stderr,
+	})
+
+	if code == 0 || *children != 0 {
+		t.Fatalf("code = %d, child runs = %d; want a refusal without a child", code, *children)
+	}
+	if *asked != 0 {
+		t.Errorf("a decided run asked %d times, want 0", *asked)
+	}
+	out := stderr.String()
+	if !strings.Contains(out, "grew past 1,000 entries") || !strings.Contains(out, "scan.json") {
+		t.Errorf("want the grew-past text naming the profile file, got:\n%s", out)
 	}
 }

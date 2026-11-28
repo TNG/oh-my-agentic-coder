@@ -681,14 +681,15 @@ func runServe(args []string, env *Env) int {
 			warnOpenCodeMajorOnlySpec(env, ocClass)
 			warnOpenCodeAgentsAccess(env, argv, plan, ocClass)
 		}
-		// The kernel mask cannot grow mid-session, so detect
-		// protected-pattern files (e.g. .env) created after launch and
-		// warn the user.
 		if !noInner && !learn {
-			watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+			watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
 				FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 				FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
 			})
+			if err != nil {
+				fmt.Fprintln(env.Stderr, "omac serve:", err)
+				return ExitConfigInvalid
+			}
 		}
 	}
 	if verbose {

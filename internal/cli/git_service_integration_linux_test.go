@@ -15,7 +15,8 @@ import (
 	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
-func TestGitServiceLaunchIntegration(t *testing.T) {
+func requireGitServiceWorker(t *testing.T) {
+	t.Helper()
 	probe := exec.Command("/usr/bin/bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev", "--", "/usr/bin/git", "--version")
 	if out, err := probe.CombinedOutput(); err != nil {
 		if os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("OMAC_REQUIRE_GIT_WORKER_TESTS") == "1" {
@@ -23,6 +24,10 @@ func TestGitServiceLaunchIntegration(t *testing.T) {
 		}
 		t.Skipf("worker namespaces unavailable: %v %s", err, out)
 	}
+}
+
+func TestGitServiceLaunchIntegration(t *testing.T) {
+	requireGitServiceWorker(t)
 	binary := filepath.Join(t.TempDir(), "omac")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/omac")
 	build.Dir = "../.."
@@ -105,6 +110,9 @@ echo DENIAL-PRESERVED
 if git add -- deployment/local/.env; then exit 39; fi
 mkdir subdir
 (cd subdir; git add -- ../source)
+(cd subdir; git restore --staged -- ../source)
+/usr/bin/git diff --cached --quiet
+test "$(cat source)" = one
 git add -- source
 git commit -m first --signoff
 git branch topic

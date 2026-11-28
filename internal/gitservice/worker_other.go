@@ -5,6 +5,7 @@ package gitservice
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -15,4 +16,10 @@ func multipleLinks(os.FileInfo) bool          { return true }
 func lockRepository(string) (*os.File, error) { return nil, supportedPlatform() }
 func (s *Service) run(context.Context, bool, bool, []byte, ...string) ([]byte, error) {
 	return nil, supportedPlatform()
+}
+
+func completedWorkerFailure(error) bool { return false }
+
+func (s *Service) runTo(context.Context, bool, bool, []byte, io.Writer, ...string) error {
+	return supportedPlatform()
 }

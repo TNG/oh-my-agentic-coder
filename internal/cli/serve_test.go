@@ -1266,6 +1266,58 @@ func TestRunServeRetainsCacheLockAndAllowsOnlyScope(t *testing.T) {
 	}
 }
 
+func TestServeRefusesWithoutTerminal(t *testing.T) {
+	isolateHome(t)
+	// A short runtime dir keeps the facade socket under the Unix socket path limit.
+	shortTmp, err := os.MkdirTemp("/tmp", "omac-serve-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(shortTmp) })
+	t.Setenv("TMPDIR", shortTmp)
+	t.Setenv("XDG_RUNTIME_DIR", shortTmp)
+
+	workdir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 150 {
+		if err := os.WriteFile(filepath.Join(workdir, fmt.Sprintf("f%03d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// override_deny inside the workdir keeps the macOS name rule from
+	// covering it, so the limit refuses on every platform.
+	stageProfile(t, home, fmt.Sprintf(`{"workdir": {"access": "readwrite"}, "filesystem": {"deny_scan": {"max_entries": 100}, "override_deny": [%q]}}`,
+		filepath.Join(workdir, ".env")))
+	configPath := filepath.Join(home, ".config", "omac", "config.yaml")
+	configText := "sandbox:\n  default_profile: builtin\n  profiles:\n    builtin:\n      command: [\"{{self}}\", sandbox, run, --profile, default, --, \"{{inner_cmd}}\", \"{{inner_args}}\"]\n"
+	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, stderr := launchTestEnv(t, workdir)
+	stdin, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stdin.Close(); stdinWrite.Close() })
+	env.Stdin = stdin
+
+	code := runServe([]string{"claude", "--inner", "/bin/true"}, env)
+	out := stderr()
+	if code != ExitConfigInvalid {
+		t.Errorf("exit = %d, want ExitConfigInvalid (%d)\nstderr:\n%s", code, ExitConfigInvalid, out)
+	}
+	if !strings.Contains(out, "omac serve: the .env scan of "+workdir) || !strings.Contains(out, "no terminal") {
+		t.Errorf("stderr = %q, want the no-terminal refusal", out)
+	}
+}
+
 func TestTwoDirsDistinctTokensAndRoutes(t *testing.T) {
 	s := newServeServerForTest(t)
 	wdA := t.TempDir()

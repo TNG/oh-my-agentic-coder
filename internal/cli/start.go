@@ -977,21 +977,28 @@ func runLaunch(env *Env, opts launchOpts) int {
 			argv = injectSandboxFlag(argv, "--read", dir)
 			extra["PATH"] = dir + string(os.PathListSeparator) + os.Getenv("PATH")
 		}
-		argv, err = configureGitService(gitService, plan, argv)
-		if err != nil {
-			fmt.Fprintln(env.Stderr, prefix+": Git service policy:", err)
-			return ExitConfigInvalid
-		}
+		argv = injectSandboxFlag(argv, "--git-read-only", "")
+		argv = injectSandboxFlag(argv, "--deny-literal", gitService.RuntimeDir())
 	}
 	if !noSandbox {
 		// Resolve the watch only after every launch-time grant and deny is final.
-		watch = startProtectedWatch(auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
+		watch, argv, err = startProtectedWatch(env, auditor, protectedChecker(f), plan, argv, env.Workdir, sandboxrun.WatchTuning{
 			FullPassTicks:       lc.Sandbox.MidsessionWatch.FullPassTicks,
 			FullPassConcurrency: lc.Sandbox.MidsessionWatch.FullPassConcurrency,
 		})
+		if err != nil {
+			fmt.Fprintf(env.Stderr, "%s: %v\n", prefix, err)
+			return ExitConfigInvalid
+		}
 		defer watch.report(verbose, func(format string, args ...any) {
 			fmt.Fprintf(env.Stderr, prefix+": "+format+"\n", args...)
 		})
+	}
+	if gitService != nil {
+		if err := configureGitService(gitService, plan, argv); err != nil {
+			fmt.Fprintln(env.Stderr, prefix+": Git service policy:", err)
+			return ExitConfigInvalid
+		}
 	}
 	if injectBriefing {
 		// The OpenCode plugin reads this and pushes it into the system prompt;

@@ -7,12 +7,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/TNG/oh-my-agentic-coder/internal/sandboxprofile"
 )
 
 // walkOneDenyRootSequential is the walk as it was before folders were
 // read in parallel. TestWalkOneDenyRootMatchesSequentialWalk checks the
 // parallel walk against it.
-func walkOneDenyRootSequential(root string, globs []string, protected map[string]bool) (matches []string, hitCap bool) {
+func walkOneDenyRootSequential(root string, globs []string, protected map[string]bool, params denyScanParams) (matches []string, hitCap bool) {
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		resolved = root
@@ -24,7 +26,7 @@ func walkOneDenyRootSequential(root string, globs []string, protected map[string
 			return nil
 		}
 		count++
-		if count > denyScanLimit.Load() {
+		if count > params.limit {
 			hitCap = true
 			return filepath.SkipAll
 		}
@@ -43,7 +45,7 @@ func walkOneDenyRootSequential(root string, globs []string, protected map[string
 				return nil
 			}
 		}
-		if d.IsDir() && denyScanSkipDirNames[d.Name()] {
+		if d.IsDir() && params.skipNames[d.Name()] {
 			return filepath.SkipDir
 		}
 		return nil
@@ -105,12 +107,14 @@ func TestWalkOneDenyRootMatchesSequentialWalk(t *testing.T) {
 
 	globs := []string{".env", ".envrc"}
 	protected := map[string]bool{filepath.Join(real, "protected"): true}
-	want, wantCap := walkOneDenyRootSequential(root, globs, protected)
+	params := denyScanParamsFor(&sandboxprofile.Profile{})
+	want, wantCap := walkOneDenyRootSequential(root, globs, protected, params)
 	if len(want) < 33 || wantCap {
 		t.Fatalf("test setup: sequential walk found %d matches (cap %v)", len(want), wantCap)
 	}
 	for range 20 { // repeat: the parallel walk's order varies run to run
-		got, hitCap := walkOneDenyRoot(root, globs, protected, make(chan struct{}, denyScanConcurrency), nil, denyScanConcurrency)
+		scan := walkOneDenyRoot(root, globs, protected, params, make(chan struct{}, denyScanConcurrency), nil, denyScanConcurrency)
+		got, hitCap := scan.matches, scan.hitCap
 		slices.Sort(got)
 		if hitCap || !slices.Equal(got, want) {
 			t.Fatalf("parallel walk differs from the sequential walk:\n got  %v (cap %v)\n want %v", got, hitCap, want)

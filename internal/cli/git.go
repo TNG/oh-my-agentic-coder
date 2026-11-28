@@ -23,7 +23,7 @@ import (
 
 func runGit(args []string, env *Env) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(env.Stdout, "Usage: omac git status | stage -- <files> | commit -m <message> [--signoff] | branch <name> | switch <branch> | operation <id>")
+		fmt.Fprintln(env.Stdout, "Usage: omac git status | stage -- <files> | unstage -- <files> | commit -m <message> [--signoff] | branch <name> | switch <branch> | operation <id>")
 		return ExitOK
 	}
 	if args[0] == "--compat" {
@@ -47,6 +47,12 @@ func runGit(args []string, env *Env) int {
 			return ExitOK
 		case "add":
 			args = append([]string{"stage"}, args[1:]...)
+		case "restore":
+			if len(args) < 4 || args[1] != "--staged" || args[2] != "--" {
+				fmt.Fprintln(env.Stderr, "omac git: use git restore --staged -- <files>; worktree restoration is unsupported")
+				return ExitMisuse
+			}
+			args = append([]string{"unstage", "--"}, args[3:]...)
 		}
 	}
 	action, req, err := parseGitRequest(args, env.Stderr)
@@ -83,21 +89,37 @@ func runGit(args []string, env *Env) int {
 		}
 		r.Header.Set("X-Omac-Facade-Token", os.Getenv("OMAC_FACADE_TOKEN"))
 		r.Header.Set("Content-Type", "application/json")
+		uncertain := gitservice.Result{Unknown: method == http.MethodPost}
 		resp, e := client.Do(r)
 		if e != nil {
-			return gitservice.Result{}, e
+			return uncertain, e
 		}
 		defer resp.Body.Close()
-		data, e := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		reason := resp.Header.Get("X-Omac-Reason")
+		if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusServiceUnavailable) &&
+			(reason == "approval-denied" || reason == "approval-timeout" || reason == "approval-abandoned" || reason == "approval-unavailable") {
+			return gitservice.Result{}, fmt.Errorf("HTTP %d: omac: %s", resp.StatusCode, reason)
+		}
+		const maxResponse = 4 << 20
+		data, e := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 		if e != nil {
-			return gitservice.Result{}, e
+			return uncertain, e
 		}
 		var result gitservice.Result
-		if e := json.Unmarshal(data, &result); e != nil {
-			return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, data)
+		if len(data) > maxResponse || json.Unmarshal(data, &result) != nil {
+			return uncertain, fmt.Errorf("HTTP %d: invalid or oversized Git response", resp.StatusCode)
 		}
-		if resp.StatusCode != 200 {
+		if method == http.MethodPost && result.ID != "" && result.ID != req.ID {
+			return uncertain, fmt.Errorf("Git response has a different operation ID")
+		}
+		if resp.StatusCode != http.StatusOK {
+			if result.Error == "" {
+				return uncertain, fmt.Errorf("HTTP %d: missing Git error details", resp.StatusCode)
+			}
 			return result, fmt.Errorf("HTTP %d: %s", resp.StatusCode, result.Error)
+		}
+		if method == http.MethodPost && (result.ID != req.ID || result.State == nil || result.Unknown || result.Error != "") {
+			return uncertain, fmt.Errorf("incomplete Git mutation result")
 		}
 		return result, nil
 	}
@@ -114,22 +136,29 @@ func runGit(args []string, env *Env) int {
 				fmt.Fprintln(env.Stderr, "omac git:", err)
 				return ExitMisuse
 			}
-			if action == "stage" {
-				req.Paths, err = gitStagePaths(result.State.Repository, env.Workdir, req.Paths)
+			if action == "stage" || action == "unstage" {
+				req.Paths, err = gitIndexPaths(result.State.Repository, env.Workdir, req.Paths)
 				if err != nil {
 					fmt.Fprintln(env.Stderr, "omac git:", err)
 					return ExitMisuse
 				}
 			}
-			req.Expected = result.State
+			expected := *result.State
+			expected.Branches = nil
+			req.Expected = &expected
+			if action == "switch" {
+				var exists bool
+				req.Target, exists = result.State.Branches[req.Branch]
+				if !exists {
+					fmt.Fprintf(env.Stderr, "omac git: no local branch named %q\n", req.Branch)
+					return ExitMisuse
+				}
+			}
 			var nonce [16]byte
 			if _, err = rand.Read(nonce[:]); err == nil {
 				req.ID = result.State.Session + ":" + hex.EncodeToString(nonce[:])
 				if action == "branches" {
 					req.Target = result.State.Head
-				}
-				if action == "switch" {
-					req.Target = result.State.Branches[req.Branch]
 				}
 				result, err = call("POST", action, req)
 			}
@@ -138,7 +167,11 @@ func runGit(args []string, env *Env) int {
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "omac git:", err)
 		if req.ID != "" {
-			fmt.Fprintf(env.Stderr, "Operation %s. Do not retry with a new ID; inspect omac git operation %s and omac git status.\n", req.ID, req.ID)
+			if result.Unknown {
+				fmt.Fprintf(env.Stderr, "Operation %s. Do not retry with a new ID; inspect omac git operation %s and omac git status.\n", req.ID, req.ID)
+			} else {
+				fmt.Fprintln(env.Stderr, "Request rejected; inspect omac git status and re-run when ready.")
+			}
 		}
 		return ExitGeneric
 	}
@@ -167,7 +200,7 @@ func gitClientDirectory(root, cwd string) (string, error) {
 	return prefix, nil
 }
 
-func gitStagePaths(root, cwd string, paths []string) ([]string, error) {
+func gitIndexPaths(root, cwd string, paths []string) ([]string, error) {
 	prefix, err := gitClientDirectory(root, cwd)
 	if err != nil {
 		return nil, err
@@ -175,7 +208,7 @@ func gitStagePaths(root, cwd string, paths []string) ([]string, error) {
 	out := make([]string, len(paths))
 	for i, path := range paths {
 		if filepath.IsAbs(path) {
-			return nil, fmt.Errorf("stage requires relative paths")
+			return nil, fmt.Errorf("index operations require relative paths")
 		}
 		out[i] = filepath.Join(prefix, path)
 	}
@@ -196,7 +229,7 @@ func parseGitRequest(args []string, w io.Writer) (string, gitservice.Request, er
 		if len(args) == 2 && !strings.ContainsAny(args[1], "/\\?#\x00") {
 			return "operation", req, nil
 		}
-	case "stage":
+	case "stage", "unstage":
 		paths := args[1:]
 		literal := len(paths) > 0 && paths[0] == "--"
 		if literal {
@@ -205,11 +238,11 @@ func parseGitRequest(args []string, w io.Writer) (string, gitservice.Request, er
 		if len(paths) > 0 {
 			for _, p := range paths {
 				if !literal && strings.HasPrefix(p, "-") {
-					return "", req, fmt.Errorf("stage requires explicit paths; no Git options")
+					return "", req, fmt.Errorf("%s requires explicit paths; no Git options", args[0])
 				}
 			}
 			req.Paths = paths
-			return "stage", req, nil
+			return args[0], req, nil
 		}
 	case "commit":
 		fs := flag.NewFlagSet("commit", flag.ContinueOnError)

@@ -183,7 +183,7 @@ Subcommands:
   serve        Long-lived multi-directory server.        [harness]: %s
   plugin       Install client-side bridge plugins (e.g. opencode-desktop).
   sandbox      Built-in kernel sandbox: omac sandbox run [flags] -- <cmd>.
-  git          Use the opt-in Git service (status|stage|commit|branch|switch).
+  git          Use the opt-in Git service (status|stage|unstage|commit|branch|switch).
   doctor       Run sanity checks (is my setup correct?).
   diagnose     Explain why a run failed: blocked connections + config clashes.
   update       Check GitHub for a newer release and install it.

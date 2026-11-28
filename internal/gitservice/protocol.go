@@ -18,7 +18,7 @@ type State struct {
 	Branch     string            `json:"branch"`
 	Index      string            `json:"index"`
 	Dirty      bool              `json:"dirty"`
-	Branches   map[string]string `json:"branches"`
+	Branches   map[string]string `json:"branches,omitempty"`
 }
 
 type Request struct {
@@ -54,7 +54,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	var req Request
 	if r.Method == http.MethodPost {
-		if path != "stage" && path != "commit" && path != "branches" && path != "switch" {
+		if path != "stage" && path != "unstage" && path != "commit" && path != "branches" && path != "switch" {
 			answer(404, Result{Error: "unsupported Git operation"})
 			return
 		}
@@ -146,6 +146,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = 409
 		} else {
 			state, changed, err := s.mutate(ctx, path, req, before)
+			state.Branches = nil
 			result.State = &state
 			if err != nil {
 				result.Error = err.Error()
@@ -187,11 +188,12 @@ func (s *Service) validateRequest(action string, r Request) error {
 	if r.Expected == nil || r.Expected.Session != s.session {
 		return fmt.Errorf("expected state from this session is required")
 	}
-	if (action != "stage" && len(r.Paths) != 0) || (action != "commit" && (r.Message != "" || r.Signoff)) || ((action == "stage" || action == "commit") && (r.Branch != "" || r.Target != "")) {
+	indexOnly := action == "stage" || action == "unstage"
+	if (!indexOnly && len(r.Paths) != 0) || (action != "commit" && (r.Message != "" || r.Signoff)) || ((indexOnly || action == "commit") && (r.Branch != "" || r.Target != "")) {
 		return fmt.Errorf("fields do not belong to this operation")
 	}
-	if action == "stage" && (len(r.Paths) == 0 || len(r.Paths) > 256) {
-		return fmt.Errorf("stage requires 1 to 256 explicit paths")
+	if indexOnly && (len(r.Paths) == 0 || len(r.Paths) > 256) {
+		return fmt.Errorf("%s requires 1 to 256 explicit paths", action)
 	}
 	if action == "commit" && (strings.TrimSpace(r.Message) == "" || len(r.Message) > 65536 || strings.ContainsRune(r.Message, 0)) {
 		return fmt.Errorf("commit requires a message of at most 65536 bytes without NUL")
