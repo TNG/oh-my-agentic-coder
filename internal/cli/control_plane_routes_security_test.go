@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -235,5 +236,53 @@ func TestSecurityStartReloadGlobalRejectsUnauthenticatedCaller(t *testing.T) {
 
 	if r.facade.HasRoute("", "pwn") {
 		t.Errorf("an unauthenticated POST /__omac__/reload-global (status %d) changed the session's routing table", resp.StatusCode)
+	}
+}
+
+// TestSecurityDirsEndpointRequiresControlToken asserts that the directory
+// listing is gated like the other control endpoints. The handler exposes
+// absolute workdir paths, so an unauthenticated local process must not be
+// able to enumerate them.
+func TestSecurityDirsEndpointRequiresControlToken(t *testing.T) {
+	sectest.RequireLoopbackListener(t)
+	s := newServeServerForTest(t)
+	wd := t.TempDir()
+	stageSkillWithSecret(t, wd, "slack")
+	if _, err := s.activate(wd); err != nil {
+		t.Fatalf("control: s.activate: %v", err)
+	}
+
+	srv := httptest.NewServer(s.controlMux())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/__omac__/dirs")
+	if err != nil {
+		t.Fatalf("GET /__omac__/dirs: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an unauthenticated GET /__omac__/dirs returned status %d: any process on the machine can enumerate active workdirs", resp.StatusCode)
+	}
+	if strings.Contains(string(body), wd) {
+		t.Errorf("an unauthenticated GET /__omac__/dirs disclosed the active workdir path: %s", body)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/__omac__/dirs", nil)
+	if err != nil {
+		t.Fatalf("build authenticated GET: %v", err)
+	}
+	addServeTestToken(req)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated GET /__omac__/dirs: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated GET /__omac__/dirs returned status %d body %s: the fixture is broken", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), wd) {
+		t.Fatalf("authenticated GET /__omac__/dirs did not list the active directory %q: the fixture is broken", wd)
 	}
 }
