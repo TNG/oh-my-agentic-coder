@@ -144,7 +144,11 @@ func securityCaptureDesktopServe(t *testing.T, home string) ([]string, string) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for runServe to exit:\n%s", stderr())
 	}
-	return strings.Fields(string(data)), stderr()
+	captured := strings.TrimRight(string(data), "\n")
+	if captured == "" {
+		return nil, stderr()
+	}
+	return strings.Split(captured, "\n"), stderr()
 }
 
 func securityOutOfHomeDir(t *testing.T) string {

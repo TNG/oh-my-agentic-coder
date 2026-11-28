@@ -12,7 +12,7 @@ import (
 )
 
 func TestSecurityAgentWritableStateNotGrantSource(t *testing.T) {
-	home := t.TempDir()
+	home := securityOutOfHomeDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
@@ -27,7 +27,9 @@ func TestSecurityAgentWritableStateNotGrantSource(t *testing.T) {
 	}
 
 	control := securityOutOfHomeDir(t)
-	records := []string{os.TempDir(), "/etc", inHome}
+	// An otherwise grantable path pins that the storage and db sources are
+	// dropped, not merely filtered.
+	records := []string{"/tmp", "/etc", inHome, securityOutOfHomeDir(t)}
 	for i, worktree := range records {
 		writeProject(t, storageDir, fmt.Sprintf("planted-%d", i), worktree)
 	}
@@ -49,10 +51,15 @@ func TestSecurityAgentWritableStateNotGrantSource(t *testing.T) {
 }
 
 func TestSecurityWorktreeGrantExcludesSharedTemp(t *testing.T) {
-	home := t.TempDir()
+	home := securityOutOfHomeDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
+
+	// A fresh, owner-only temp root outside the literal paths pins the
+	// dynamic os.TempDir rule, not just the sticky and world-writable checks.
+	dynamicTemp := securityOutOfHomeDir(t)
+	t.Setenv("TMPDIR", dynamicTemp)
 
 	base := securityOutOfHomeDir(t)
 	control := securityOutOfHomeDir(t)
@@ -72,19 +79,7 @@ func TestSecurityWorktreeGrantExcludesSharedTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var rejected []string
-	seen := map[string]bool{}
-	add := func(path string) {
-		path = filepath.Clean(path)
-		if !seen[path] {
-			seen[path] = true
-			rejected = append(rejected, path)
-		}
-	}
-	for _, path := range []string{"/tmp", "/var/tmp", "/dev/shm", worldWritable, sticky} {
-		add(path)
-	}
-
+	rejected := securityUniquePaths("/tmp", "/var/tmp", "/dev/shm", os.TempDir(), worldWritable, sticky)
 	securityWriteDesktopProjects(t, home, append(rejected, control)...)
 
 	worktrees, skipped, err := Worktrees()
@@ -98,12 +93,24 @@ func TestSecurityWorktreeGrantExcludesSharedTemp(t *testing.T) {
 		if slices.Contains(worktrees, worktree) {
 			t.Errorf("shared-temp or writable directory %q was returned as a grant source: %v", worktree, worktrees)
 		}
-	}
-	for _, worktree := range []string{worldWritable, sticky} {
 		if !slices.Contains(skipped, SkippedWorktree{Path: worktree, Reason: SkipUntrusted}) {
-			t.Errorf("writable directory %q was not rejected as untrusted: %v", worktree, skipped)
+			t.Errorf("shared-temp or writable directory %q was not rejected as untrusted: %v", worktree, skipped)
 		}
 	}
+}
+
+func securityUniquePaths(paths ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
 }
 
 func securityOutOfHomeDir(t *testing.T) string {
