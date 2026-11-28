@@ -215,14 +215,39 @@ func TestE2EServeDirTokenIsolation(t *testing.T) {
 	}
 
 	// --- Core regression: /__omac__/dirs must not leak either token. ---
-	resp, err := client.Get(controlBase + "/__omac__/dirs")
+	req, _ := http.NewRequest(http.MethodGet, controlBase+"/__omac__/dirs", nil)
+	req.Header.Set("X-Omac-Control-Token", controlToken)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /__omac__/dirs: %v", err)
 	}
 	dirsBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /__omac__/dirs: status %d body=%s", resp.StatusCode, dirsBody)
+	}
 	if strings.Contains(string(dirsBody), tokA) || strings.Contains(string(dirsBody), tokB) {
 		t.Errorf("/__omac__/dirs leaked a dir_token over the wire (issue #74 regression): %s", dirsBody)
+	}
+	var listing struct {
+		Dirs []struct {
+			Dir string `json:"dir"`
+		} `json:"dirs"`
+	}
+	if err := json.Unmarshal(dirsBody, &listing); err != nil {
+		t.Fatalf("decode GET /__omac__/dirs: %v", err)
+	}
+	foundA, foundB := false, false
+	for _, d := range listing.Dirs {
+		if d.Dir == wdA {
+			foundA = true
+		}
+		if d.Dir == wdB {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("GET /__omac__/dirs listed dirs %v, want both %q and %q", listing.Dirs, wdA, wdB)
 	}
 
 	// --- Positive control: each dir's own token still resolves its own
